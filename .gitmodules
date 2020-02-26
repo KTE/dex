@@ -4,3 +4,6 @@
 [submodule "packages/pi-gen"]
 	path = packages/pi-gen
 	url = https://github.com/eins78/pi-gen
+[submodule "packages/dexd"]
+	path = packages/dexd
+	url = https://github.com/eins78/dexd
