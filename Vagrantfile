@@ -4,10 +4,16 @@ $provision_script = <<~"SHELL"
   export IMG_NAME="Dexbian"
   export TARGET_HOSTNAME="dexpi"
   export LOCALE_DEFAULT="en_US.UTF-8"
+  export KEYBOARD_KEYMAP="us"
+  export GIT_HASH="#{`git rev-parse HEAD`.chomp!}"
+
+  # only export the light image
+  export STAGE_LIST="stage0 stage1 stage2"
 
   export DEBIAN_FRONTEND=noninteractive
   export RPIGEN_DIR="${1:-/home/vagrant/rpi-gen}"
   export APT_PROXY='http://127.0.0.1:3142' 
+  
 
   # Prepare. Copy the repo to another location to run as root
   rsync -a --delete --exclude 'work' --exclude 'deploy' \
@@ -15,12 +21,14 @@ $provision_script = <<~"SHELL"
 
   cd ${RPIGEN_DIR}
 
+  # touch stage{0,1,2}/SKIP
+
   # Clean previous builds. Start always from scratch (the proxy helps here!)
   sudo umount --recursive work/*/stage*/rootfs/{dev,proc,sys} || true
-  sudo rm -rf work/*
+  # sudo rm -rf work/*
 
   # Build it again
-  sudo --preserve-env=APT_PROXY,IMG_NAME,TARGET_HOSTNAME,LOCALE_DEFAULT \
+  sudo --preserve-env=APT_PROXY,IMG_NAME,TARGET_HOSTNAME,LOCALE_DEFAULT,KEYBOARD_KEYMAP,GIT_HASH,STAGE_LIST \
     ./build.sh
 
   # Copy images back to host
@@ -35,7 +43,7 @@ Vagrant.configure("2") do |config|
   #config.ssh.password = "vagrant"
 
   config.vm.define "virtualbox" do |virtualbox|
-    virtualbox.vm.hostname = "builder-vm"
+    virtualbox.vm.hostname = "rpi-builder-vm"
     virtualbox.vm.box = "file://packages/builder-vm/builds/buster-10.2_rpibuilder-4_virtualbox.box"
 
     config.vm.provider :virtualbox do |v|
