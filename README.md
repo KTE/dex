@@ -34,6 +34,19 @@ brew cask install virtualbox vagrant
    vagrant provision         # run build script from clean state
    ```
 
+## roadmap
+
+1. add customizations (stage )
+
+   - more packages: omxplayer
+
+2. more overriding. one option how to do this:
+   - custom stage2 with less stuff and our customizations
+     - exports the "PROD" image
+   - custom stage3 with more developer tools
+     - exports the "DEV" image
+   - alternative: stage 3 does more removals and cleanup, then exports the "DEV" image. a bit less clean but maybe simpler to handle the forked code/config.
+
 ## development
 
 ### creating patches
