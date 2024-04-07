@@ -70,6 +70,12 @@ quilt add ./packages/some-upstream-code/some-file
 quilt refresh # pathfile is added to ./patches and name added to ./patches/series 
 quilt rename "99-better-name-of-my-patch"
 ```
+## alternatives 
+
+### distro building 
+
+* https://github.com/guysoft/CustomPiOS
+* https://dietpi.com/
 
 # old notes
 
