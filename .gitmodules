@@ -1,6 +1,3 @@
-[submodule "packages/builder-vm"]
-	path = packages/builder-vm
-	url = https://github.com/eins78/packer-rpibuilder-vagrant
 [submodule "packages/pi-gen"]
 	path = packages/pi-gen
 	url = https://github.com/eins78/pi-gen
