@@ -1,15 +1,12 @@
+# dexd
+
 ## prepare
 
-Install VirtualBox and Vagrant.
-
-on macOs:
-
-```sh
-brew install packer jq quilt
-brew install --cask virtualbox vagrant
-```
+Install [Docker](https://www.docker.com).
 
 ## build
+
+Builds a custom Raspbian image, based on `2024-03-12-raspios-bullseye-arm64-lite.img`.
 
 1. set up customized pi-gen
 
@@ -19,11 +16,10 @@ brew install --cask virtualbox vagrant
    quilt push -a
    ```
 
-1. boot "builder" VM and build Raspbian-based image
+1. build Raspbian-based image in docker container
 
    ```sh
-   vagrant up --no-provision # start VM
-   vagrant provision         # run build script from clean state
+   time ./build.sh
    ```
 
 ## roadmap
@@ -209,3 +205,14 @@ quilt rename "99-better-name-of-my-patch"
     cd /usr/local/exhd
     npm link
     ```
+
+## housekeeping
+
+### update pi-gen repo
+
+```sh
+cd packages/pi-gen
+git remote add upstream https://github.com/RPi-Distro/pi-gen
+git fetch upstream
+git push --mirror origin
+```
