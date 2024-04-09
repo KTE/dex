@@ -39,19 +39,17 @@ Builds a custom Raspbian image, based on `2024-03-12-raspios-bullseye-arm64-lite
 
 ### creating patches
 
-upstream repos like `pi-gen` are not forked directly,
+Upstream repos like `pi-gen` are not forked directly,
 rather a series of patches is maintained.
-this makes the list of changes we make self-documenting,
+This makes the list of changes we make self-documenting,
 and over time should be easier than maintaining a regular fork using `git`.
 
-the *result* of applying the pathes are then checked in,
-meaning the patches are only used when developing in the main repo,
-not when using it to build images.
-this could be automated:every push to `master` of repo with patches
-is applied to the forked repo (using the referenced version of submodule).
+Good tutorials on using `quilt`:
+
+- <https://raphaelhertzog.com/2012/08/08/how-to-use-quilt-to-manage-patches-in-debian-packages/>
+- <https://wiki.debian.org/UsingQuilt>
 
 ```sh
-cd dex-os
 quilt new "99-name-of-my-patch"
 quilt add ./packages/some-upstream-code/some-file
 # edit ./packages/some-upstream-code/some-file

@@ -1,1 +1,3 @@
-/dist/
+# quilt working directory:
+/.pc
+/dist/ 
