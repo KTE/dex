@@ -2,61 +2,80 @@ Index: dex-os/packages/pi-gen/export-image/prerun.sh
 ===================================================================
 --- dex-os.orig/packages/pi-gen/export-image/prerun.sh
 +++ dex-os/packages/pi-gen/export-image/prerun.sh
-@@ -1,6 +1,8 @@
- #!/bin/bash -e
+@@ -12,6 +12,7 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
  
- IMG_FILE="${STAGE_WORK_DIR}/${IMG_FILENAME}${IMG_SUFFIX}.img"
-+DATA_PART_NAME="DEXDATA"
-+DATA_PART_PATH="${ROOTFS_DIR}/dexdata"
+ 	BOOT_SIZE="$((256 * 1024 * 1024))"
+ 	ROOT_SIZE=$(du --apparent-size -s "${EXPORT_ROOTFS_DIR}" --exclude var/cache/apt/archives --exclude boot --block-size=1 | cut -f 1)
++	DATA_SIZE="$((1024 * 1024 * 1024))"
  
- unmount_image "${IMG_FILE}"
+ 	# All partition sizes and starts will be aligned to this size
+ 	ALIGN="$((4 * 1024 * 1024))"
+@@ -25,13 +26,16 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+ 	BOOT_PART_SIZE=$(((BOOT_SIZE + ALIGN - 1) / ALIGN * ALIGN))
+ 	ROOT_PART_START=$((BOOT_PART_START + BOOT_PART_SIZE))
+ 	ROOT_PART_SIZE=$(((ROOT_SIZE + ROOT_MARGIN + ALIGN  - 1) / ALIGN * ALIGN))
+-	IMG_SIZE=$((BOOT_PART_START + BOOT_PART_SIZE + ROOT_PART_SIZE))
++	DATA_PART_START=$((ROOT_PART_START + ROOT_PART_SIZE))
++	DATA_PART_SIZE=$(((DATA_SIZE + ALIGN - 1) / ALIGN * ALIGN))
++	IMG_SIZE=$((BOOT_PART_START + BOOT_PART_SIZE + ROOT_PART_SIZE + DATA_PART_SIZE))
  
-@@ -11,6 +13,7 @@ mkdir -p "${ROOTFS_DIR}"
+ 	truncate -s "${IMG_SIZE}" "${IMG_FILE}"
  
- BOOT_SIZE="$((512 * 1024 * 1024))"
- ROOT_SIZE=$(du --apparent-size -s "${EXPORT_ROOTFS_DIR}" --exclude var/cache/apt/archives --exclude boot/firmware --block-size=1 | cut -f 1)
-+DATA_SIZE="$((1024 * 1024 * 1024))"
+ 	parted --script "${IMG_FILE}" mklabel msdos
+ 	parted --script "${IMG_FILE}" unit B mkpart primary fat32 "${BOOT_PART_START}" "$((BOOT_PART_START + BOOT_PART_SIZE - 1))"
+ 	parted --script "${IMG_FILE}" unit B mkpart primary ext4 "${ROOT_PART_START}" "$((ROOT_PART_START + ROOT_PART_SIZE - 1))"
++	parted --script "${IMG_FILE}" unit B mkpart primary fat32 "${DATA_PART_START}" "$((DATA_PART_START + DATA_PART_SIZE - 1))"
  
- # All partition sizes and starts will be aligned to this size
- ALIGN="$((4 * 1024 * 1024))"
-@@ -24,13 +27,16 @@ BOOT_PART_START=$((ALIGN))
- BOOT_PART_SIZE=$(((BOOT_SIZE + ALIGN - 1) / ALIGN * ALIGN))
- ROOT_PART_START=$((BOOT_PART_START + BOOT_PART_SIZE))
- ROOT_PART_SIZE=$(((ROOT_SIZE + ROOT_MARGIN + ALIGN  - 1) / ALIGN * ALIGN))
--IMG_SIZE=$((BOOT_PART_START + BOOT_PART_SIZE + ROOT_PART_SIZE))
-+DATA_PART_START=$((ROOT_PART_START + ROOT_PART_SIZE))
-+DATA_PART_SIZE=$((1024 * 1024 * 1024))
-+IMG_SIZE=$((BOOT_PART_START + BOOT_PART_SIZE + ROOT_PART_SIZE + DATA_PART_SIZE))
+ 	PARTED_OUT=$(parted -sm "${IMG_FILE}" unit b print)
+ 	BOOT_OFFSET=$(echo "$PARTED_OUT" | grep -e '^1:' | cut -d':' -f 2 | tr -d B)
+@@ -40,6 +44,9 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+ 	ROOT_OFFSET=$(echo "$PARTED_OUT" | grep -e '^2:' | cut -d':' -f 2 | tr -d B)
+ 	ROOT_LENGTH=$(echo "$PARTED_OUT" | grep -e '^2:' | cut -d':' -f 4 | tr -d B)
  
- truncate -s "${IMG_SIZE}" "${IMG_FILE}"
++	DATA_OFFSET=$(echo "$PARTED_OUT" | grep -e '^3:' | cut -d':' -f 2 | tr -d B)
++	DATA_LENGTH=$(echo "$PARTED_OUT" | grep -e '^3:' | cut -d':' -f 4 | tr -d B)
++
+ 	echo "Mounting BOOT_DEV..."
+ 	cnt=0
+ 	until BOOT_DEV=$(losetup --show -f -o "${BOOT_OFFSET}" --sizelimit "${BOOT_LENGTH}" "${IMG_FILE}"); do
+@@ -66,8 +73,22 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+ 		fi
+ 	done
  
- parted --script "${IMG_FILE}" mklabel msdos
- parted --script "${IMG_FILE}" unit B mkpart primary fat32 "${BOOT_PART_START}" "$((BOOT_PART_START + BOOT_PART_SIZE - 1))"
- parted --script "${IMG_FILE}" unit B mkpart primary ext4 "${ROOT_PART_START}" "$((ROOT_PART_START + ROOT_PART_SIZE - 1))"
-+parted --script "${IMG_FILE}" unit B mkpart primary fat32 "${DATA_PART_START}" "$((DATA_PART_START + DATA_PART_SIZE - 1))"
+-	echo "/boot: offset $BOOT_OFFSET, length $BOOT_LENGTH"
+-	echo "/:     offset $ROOT_OFFSET, length $ROOT_LENGTH"
++	echo "Mounting DATA_DEV..."
++	cnt=0
++	until DATA_DEV=$(losetup --show -f -o "${DATA_OFFSET}" --sizelimit "${DATA_LENGTH}" "${IMG_FILE}"); do
++		if [ $cnt -lt 5 ]; then
++			cnt=$((cnt + 1))
++			echo "Error in losetup for DATA_DEV.  Retrying..."
++			sleep 5
++		else
++			echo "ERROR: losetup for DATA_DEV failed; exiting"
++			exit 1
++		fi
++	done
++
++	echo "/boot:    offset $BOOT_OFFSET, length $BOOT_LENGTH"
++	echo "/:        offset $ROOT_OFFSET, length $ROOT_LENGTH"
++	echo "/dexdata: offset $DATA_OFFSET, length $DATA_LENGTH"
  
- echo "Creating loop device..."
- cnt=0
-@@ -48,6 +54,7 @@ done
- ensure_loopdev_partitions "$LOOP_DEV"
- BOOT_DEV="${LOOP_DEV}p1"
- ROOT_DEV="${LOOP_DEV}p2"
-+DATA_DEV="${LOOP_DEV}p3"
+ 	ROOT_FEATURES="^huge_file"
+ 	for FEATURE in metadata_csum 64bit; do
+@@ -77,11 +98,15 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+ 	done
+ 	mkdosfs -n boot -F 32 -v "$BOOT_DEV" > /dev/null
+ 	mkfs.ext4 -L rootfs -O "$ROOT_FEATURES" "$ROOT_DEV" > /dev/null
++	mkdosfs -n DEXDATA -F 32 -v "$DATA_DEV" > /dev/null
  
- ROOT_FEATURES="^huge_file"
- for FEATURE in 64bit; do
-@@ -57,10 +64,14 @@ fi
- done
- mkdosfs -n bootfs -F 32 -s 4 -v "$BOOT_DEV" > /dev/null
- mkfs.ext4 -L rootfs -O "$ROOT_FEATURES" "$ROOT_DEV" > /dev/null
-+mkdosfs -n "$DATA_PART_NAME" -F 32 -v "$DATA_DEV" > /dev/null
+ 	mount -v "$ROOT_DEV" "${ROOTFS_DIR}" -t ext4
+ 	mkdir -p "${ROOTFS_DIR}/boot"
+ 	mount -v "$BOOT_DEV" "${ROOTFS_DIR}/boot" -t vfat
++	mkdir -p "${ROOTFS_DIR}/dexdata"
++	mount -v "$DATA_DEV" "${ROOTFS_DIR}/dexdata" -t vfat
  
- mount -v "$ROOT_DEV" "${ROOTFS_DIR}" -t ext4
- mkdir -p "${ROOTFS_DIR}/boot/firmware"
- mount -v "$BOOT_DEV" "${ROOTFS_DIR}/boot/firmware" -t vfat
-+mkdir -p "$DATA_PART_PATH"
-+mount -v "$DATA_DEV" "$DATA_PART_PATH" -t vfat
- 
- rsync -aHAXx --exclude /var/cache/apt/archives --exclude /boot/firmware "${EXPORT_ROOTFS_DIR}/" "${ROOTFS_DIR}/"
- rsync -rtx "${EXPORT_ROOTFS_DIR}/boot/firmware/" "${ROOTFS_DIR}/boot/firmware/"
-+echo "Hello, World!" > "${DATA_PART_PATH}/hello.txt"
+ 	rsync -aHAXx --exclude /var/cache/apt/archives --exclude /boot "${EXPORT_ROOTFS_DIR}/" "${ROOTFS_DIR}/"
+ 	rsync -rtx "${EXPORT_ROOTFS_DIR}/boot/" "${ROOTFS_DIR}/boot/"
++	echo "Hello, World!" > "${ROOTFS_DIR}/dexdata/hello.txt"
+ fi
