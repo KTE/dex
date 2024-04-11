@@ -4,7 +4,7 @@
 
 ### `dex-test-card`
 
-![first frame of 'dex-test-card' animation](./test-cards/export/dex-test-card-1080p-frame-0.png)
+![first frame of 'dex-test-card' animation](./doc/dex-test-card-1080p-frame-0.png)
 
 purpose:
 
