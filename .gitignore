@@ -3,3 +3,5 @@
 /dist/ 
 
 /packages/test-content/test-cards/animation/Adobe After Effects Auto-Save/
+/packages/test-content/test-cards/animation/*.aep Logs/
+/packages/test-content/test-cards/export/lossless/

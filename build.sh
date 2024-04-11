@@ -26,6 +26,7 @@ test -e "$DIST_DIR" && { echo "Error: dist directory already exists: $DIST_DIR";
 echo "DIST_DIR: $DIST_DIR"
 
 # rpi-gen build container
+export DOCKER_DEFAULT_PLATFORM=linux/amd64
 export CONTAINER_NAME="pigen_work"
 # DEBUG: dont delete the container after building)
 # export PRESERVE_CONTAINER=1
