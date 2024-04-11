@@ -1,0 +1,13 @@
+{
+  "screens": {
+    "HDMI-1": {
+      "mode": [1920, 1080, 30],
+      "update_hz": 30,
+      "layers": [{
+          "media": "dex-test-card-2s-1080p-h264.mp4",
+          "play": {"t": [0, 2], "rate": 1, "repeat": true},
+          "buffer": 2
+      }]
+    }
+  }
+}
