@@ -45,6 +45,9 @@ if [ "${PRESERVE_CONTAINER:-0}" != "1" ]; then
 fi
 rm -rf "$PI_GEN_DEPLOY_DIR" || { echo "Failed to remove old pi-gen/deploy directory"; exit 1; }
 
+# enable i386 architecture in docker via qemu user mode emulation
+docker run --rm --privileged aptman/qus -s -- -p i386 || true # might fail if already enabled
+
 cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
 
 # apt-cacher-ng: start container if no cache already configured or disabled with "0"
