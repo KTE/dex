@@ -29,12 +29,14 @@ echo "DIST_DIR: $DIST_DIR"
 export CONTAINER_NAME="pigen_work"
 # DEBUG: dont delete the container after building)
 # export PRESERVE_CONTAINER=1
+APT_CACHER_NG_CONTAINER='sameersbn/apt-cacher-ng@sha256:6d612ae08493af17eb5682cf0b29d75c18fd6455e786239fa63fe56ebca552fa'
 
 # work #######################################################################
 cd "$WD"
 
-# delete dist dir on any exit, but only if its not empty
-trap 'rmdir "$DIST_DIR" 2>/dev/null || true' EXIT SIGINT SIGTERM
+# * delete dist dir on any exit, but only if its not empty
+# * stop apt-cacher-ng container on exit
+trap '{ rmdir "$DIST_DIR" 2>/dev/null; docker stop apt-cacher-ng ;} || true' EXIT SIGINT SIGTERM
 
 # clean slate
 mkdir -p "$DIST_DIR" || { echo "Failed to create dist directory"; exit 1; }
@@ -47,8 +49,24 @@ cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
 
 cd "$PI_GEN_DIR"
 
-docker compose up -d apt-cacher-ng
-echo 'APT_PROXY=http://host.docker.internal:3142' >> config
+# apt-cacher-ng: start container if no cache already configured or disabled with "0"
+APT_CACHE=${APT_CACHE:-}
+if test -z "$APT_CACHE" || test "$APT_CACHE" != 0; then
+  if uname -o | grep Darwin; then
+    # macOS
+    APT_CACHER_URL=http://host.docker.internal:3142
+  else
+    # linux
+    APT_CACHER_URL=http://172.17.0.2:3142
+  fi
+  if [ -n "${APT_CACHER_URL}" ]; then
+    docker run --rm --init -d --name apt-cacher-ng \
+    --publish 3142:3142 \
+    --volume ./apt-cacher-ng:/var/cache/apt-cacher-ng \
+    "$APT_CACHER_NG_CONTAINER"
+    echo "APT_PROXY=\"${APT_CACHER_URL}\"" >> config
+  fi
+fi
 
 cat ./config
 
