@@ -47,8 +47,6 @@ rm -rf "$PI_GEN_DEPLOY_DIR" || { echo "Failed to remove old pi-gen/deploy direct
 
 cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
 
-cd "$PI_GEN_DIR"
-
 # apt-cacher-ng: start container if no cache already configured or disabled with "0"
 APT_CACHE=${APT_CACHE:-}
 if test -z "$APT_CACHE" || test "$APT_CACHE" != 0; then
@@ -64,10 +62,11 @@ if test -z "$APT_CACHE" || test "$APT_CACHE" != 0; then
     --publish 3142:3142 \
     --volume ./apt-cacher-ng:/var/cache/apt-cacher-ng \
     "$APT_CACHER_NG_CONTAINER"
-    echo "APT_PROXY=\"${APT_CACHER_URL}\"" >> config
+    echo "APT_PROXY=\"${APT_CACHER_URL}\"" >> "${PI_GEN_DIR}/config"
   fi
 fi
 
+cd "$PI_GEN_DIR"
 cat ./config
 
 # get git hash from monorepo
