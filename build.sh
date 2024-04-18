@@ -27,11 +27,13 @@ echo "DIST_DIR: $DIST_DIR"
 
 # rpi-gen build container
 export CONTAINER_NAME="pigen_work"
+# enable x86 32bit emulation so buster container works on 64 bit bullseye host
+sudo docker run --rm --privileged aptman/qus -s -- -p i386 || true
+
 # pin apt-cacher-ng container image
 APT_CACHER_NG_CONTAINER='sameersbn/apt-cacher-ng@sha256:6d612ae08493af17eb5682cf0b29d75c18fd6455e786239fa63fe56ebca552fa'
 # DEBUG: dont delete the container after building)
 # export PRESERVE_CONTAINER=1
-APT_CACHER_NG_CONTAINER='sameersbn/apt-cacher-ng@sha256:6d612ae08493af17eb5682cf0b29d75c18fd6455e786239fa63fe56ebca552fa'
 
 # work #######################################################################
 cd "$WD"
