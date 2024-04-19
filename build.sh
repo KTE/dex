@@ -1,5 +1,5 @@
 #!/bin/bash
-set -exuo pipefail
+set -euo pipefail
 
 
 # helpers ######################################################################
@@ -20,16 +20,10 @@ increment_trailing_number() { # increment last number in string by 1, keeping at
 PI_GEN_DIR="$(pwd)/packages/pi-gen"
 PI_GEN_DEPLOY_DIR="${PI_GEN_DIR}/deploy"
 
-BUILD_DATE=$(date -u +'%Y-%m-%d')
-DIST_DIR_PREFIX="${WD}/dist/deploy-${BUILD_DATE}-"
-LATEST_DAILY_BUILD="$(find "$DIST_DIR_PREFIX"* -type d 2>/dev/null | tail -1 || true)"
-if test -n "$LATEST_DAILY_BUILD"; then
-  DIST_DIR="$(increment_trailing_number "$LATEST_DAILY_BUILD")"
-else
- DIST_DIR="${DIST_DIR_PREFIX}001"
-fi
+BUILD_DATE=$(date -u +'%Y-%m-%dT%H-%M-%S')
+DIST_DIR="${WD}/dist/deploy-${BUILD_DATE}"
+test -e "$DIST_DIR" && { echo "Error: dist directory already exists: $DIST_DIR"; exit 1; }
 echo "DIST_DIR: $DIST_DIR"
-
 
 # rpi-gen build container
 export CONTAINER_NAME="pigen_work"
@@ -39,7 +33,8 @@ export CONTAINER_NAME="pigen_work"
 # work #######################################################################
 cd "$WD"
 
-trap 'rmdir "$DIST_DIR" || true' EXIT SIGINT SIGTERM
+# delete dist dir on any exit, but only if its not empty
+trap 'rmdir "$DIST_DIR" 2>/dev/null || true' EXIT SIGINT SIGTERM
 
 # clean slate
 mkdir -p "$DIST_DIR" || { echo "Failed to create dist directory"; exit 1; }
@@ -65,5 +60,6 @@ export GIT_HASH
 
 mv ./deploy/* "${DIST_DIR}/"
 
+clear
 echo "🎉 output in ${DIST_DIR}:"
 ls -lah "${DIST_DIR}"
