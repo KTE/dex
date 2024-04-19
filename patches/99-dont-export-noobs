@@ -1,0 +1,10 @@
+do not export the "NOOBS" version of the OS for now, 
+as we currently are not using it.
+
+Index: dex-os/packages/pi-gen/stage2/EXPORT_NOOBS
+===================================================================
+--- dex-os.orig/packages/pi-gen/stage2/EXPORT_NOOBS
++++ /dev/null
+@@ -1,2 +0,0 @@
+-NOOBS_NAME="Raspberry Pi OS Lite (32-bit)"
+-NOOBS_DESCRIPTION="A port of Debian with no desktop environment"
