@@ -1,3 +1,7 @@
 # quilt working directory:
 /.pc
-/dist/ 
+
+/dist/
+/tmp/
+
+/packages/pi-gen/apt-cacher-ng
