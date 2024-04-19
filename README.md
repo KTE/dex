@@ -5,21 +5,13 @@ Install VirtualBox and Vagrant.
 on macOs:
 
 ```sh
-brew install  packer jq quilt
-brew cask install virtualbox vagrant
+brew install packer jq quilt
+brew install --cask virtualbox vagrant
 ```
 
 ## build
 
-1. create the "builder" VM (Debian 32-bit)
-
-   ```sh
-   cd packages/builder-vm
-   sh build.sh
-   cd -
-   ```
-
-4. set up customized pi-gen
+1. set up customized pi-gen
 
    ```sh
    git submodule update --recursive --init --force packages/pi-gen
@@ -27,7 +19,7 @@ brew cask install virtualbox vagrant
    quilt push -a
    ```
 
-3. boot "builder" VM and build Raspbian-based image
+1. boot "builder" VM and build Raspbian-based image
 
    ```sh
    vagrant up --no-provision # start VM
@@ -70,12 +62,13 @@ quilt add ./packages/some-upstream-code/some-file
 quilt refresh # pathfile is added to ./patches and name added to ./patches/series 
 quilt rename "99-better-name-of-my-patch"
 ```
-## alternatives 
 
-### distro building 
+## alternatives
 
-* https://github.com/guysoft/CustomPiOS
-* https://dietpi.com/
+### distro building
+
+- <https://github.com/guysoft/CustomPiOS>
+- <https://dietpi.com/>
 
 # old notes
 
@@ -87,13 +80,13 @@ quilt rename "99-better-name-of-my-patch"
 
 ## Howto from Raspbian
 
-1.  Flash SD card
-2.  Boot raspian
-3.  `raspi-config` (starts automatically on first boot
+1. Flash SD card
+2. Boot raspian
+3. `raspi-config` (starts automatically on first boot
     - locale
     - enable ssh
     - reboot
-4.  ssh pi@\$IP
+4. ssh pi@\$IP
 
     ```sh
     # got root?
@@ -108,7 +101,7 @@ quilt rename "99-better-name-of-my-patch"
     # ### hostname
     # - get the serial number of your pi
     cat /proc/cpuinfo
-    #… Serial		: 00000000023caffee
+    #… Serial  : 00000000023caffee
     #
     # - set it as hostname postfix, without leading zeros
     node /usr/local/exhd/scripts/set-hostname.js
@@ -190,9 +183,9 @@ quilt rename "99-better-name-of-my-patch"
 
 ## Howto from Arch Linux
 
-1.  Flash SD card
-2.  Boot archlinuxarm
-3.  ssh root@\$IP
+1. Flash SD card
+2. Boot archlinuxarm
+3. ssh root@\$IP
 
     ```shell
     # update & install
@@ -211,7 +204,6 @@ quilt rename "99-better-name-of-my-patch"
     git clone https://github.com/fivdi/epoll.git && cd epoll && git checkout v0.1.2
     npm i
     ```
-
 
     wget/rsync … /usr/local/exhd
     cd /usr/local/exhd
