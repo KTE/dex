@@ -1,6 +1,10 @@
-# dexd
+# `dex` project
 
-## prepare
+packages:
+
+* [branding](./packages/branding/README.md)
+
+## building `dex os` image
 
 Install [Docker](https://www.docker.com).
 
