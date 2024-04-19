@@ -59,10 +59,9 @@ quilt rename "99-better-name-of-my-patch"
 
 ## alternatives
 
-### distro building
-
-- <https://github.com/guysoft/CustomPiOS>
-- <https://dietpi.com/>
+* <https://github.com/guysoft/CustomPiOS>
+* <https://dietpi.com/>
+* <https://www.get-edi.io>
 
 # old notes
 
