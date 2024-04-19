@@ -7,3 +7,6 @@
 [submodule "packages/branding"]
 	path = packages/branding
 	url = https://github.com/KTE/dex-branding
+[submodule "packages/example-content"]
+	path = packages/example-content
+	url = https://github.com/KTE/dex-example-content
