@@ -13,7 +13,7 @@ brew cask install virtualbox vagrant
 1. create the "builder" VM (Debian 32-bit)
 
    ```sh
-   cd packages/rpi-builder
+   cd packages/builder-vm
    sh build.sh
    cd -
    ```
