@@ -1,0 +1,3 @@
+[submodule "packages/builder-vm"]
+	path = packages/builder-vm
+	url = https://github.com/eins78/packer-rpibuilder-vagrant
