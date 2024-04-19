@@ -47,7 +47,7 @@ cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
 
 cd "$PI_GEN_DIR"
 
-docker-compose up -d apt-cacher-ng
+docker compose up -d apt-cacher-ng
 echo 'APT_PROXY=http://host.docker.internal:3142' >> config
 
 cat ./config
