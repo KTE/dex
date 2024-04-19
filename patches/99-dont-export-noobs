@@ -1,0 +1,7 @@
+Index: dex-os/packages/pi-gen/stage2/EXPORT_NOOBS
+===================================================================
+--- dex-os.orig/packages/pi-gen/stage2/EXPORT_NOOBS
++++ /dev/null
+@@ -1,2 +0,0 @@
+-NOOBS_NAME="Raspbian Lite"
+-NOOBS_DESCRIPTION="A port of Debian with no desktop environment"
