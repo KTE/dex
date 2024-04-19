@@ -1,7 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-
 # helpers ######################################################################
 WD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -35,6 +34,14 @@ APT_CACHER_NG_CONTAINER='sameersbn/apt-cacher-ng@sha256:6d612ae08493af17eb5682cf
 # DEBUG: dont delete the container after building)
 # export PRESERVE_CONTAINER=1
 
+# * build options
+export CONTINUE="${CONTINUE:-0}"
+export PRESERVE_CONTAINER=${PRESERVE_CONTAINER:-0}
+# build based on "light" image, with a custom stage
+STAGE_LIST="stage0 stage1 stage2 stage-dex"
+# dont use qcow2 (needed when building buster), see <https://github.com/RPi-Distro/pi-gen/issues/499>
+USE_QCOW2=0
+
 # work #######################################################################
 cd "$WD"
 
@@ -44,12 +51,11 @@ trap '{ rmdir "$DIST_DIR" 2>/dev/null; docker stop apt-cacher-ng ;} || true' EXI
 
 # clean slate
 mkdir -p "$DIST_DIR" || { echo "Failed to create dist directory"; exit 1; }
-if [ "${PRESERVE_CONTAINER:-0}" != "1" ]; then
+if [ "${CONTINUE:-0}" != "1" ]; then
   docker rm -v "${CONTAINER_NAME}" || true
 fi
 rm -rf "$PI_GEN_DEPLOY_DIR" || { echo "Failed to remove old pi-gen/deploy directory"; exit 1; }
 
-cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
 
 # apt-cacher-ng: start container if no cache already configured or disabled with "0"
 APT_CACHE=${APT_CACHE:-}
@@ -70,6 +76,14 @@ if test -z "$APT_CACHE" || test "$APT_CACHE" != 0; then
   fi
 fi
 
+# add our config and stage to pi-gen
+cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
+rm -rf "$PI_GEN_DIR/stage-dex"
+cp -r ./packages/dex-os/pi-gen/stage-dex "$PI_GEN_DIR"
+
+echo "STAGE_LIST=\"$STAGE_LIST\"" >> "${PI_GEN_DIR}/config"
+echo "USE_QCOW2=\"$USE_QCOW2\"" >> "${PI_GEN_DIR}/config"
+
 cd "$PI_GEN_DIR"
 cat ./config
 
@@ -81,6 +95,9 @@ export GIT_HASH
 
 mv ./deploy/* "${DIST_DIR}/"
 
-clear
+if [ "${CONTINUE:-0}" != "1" ]; then
+  clear
+fi
+
 echo "🎉 output in ${DIST_DIR}:"
 ls -lah "${DIST_DIR}"

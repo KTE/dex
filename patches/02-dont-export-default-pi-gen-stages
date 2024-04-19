@@ -1,6 +1,12 @@
-do not export the "NOOBS" version of the OS for now, 
-as we currently are not using it.
-
+Index: dex-os/packages/pi-gen/stage2/EXPORT_IMAGE
+===================================================================
+--- dex-os.orig/packages/pi-gen/stage2/EXPORT_IMAGE
++++ /dev/null
+@@ -1,4 +0,0 @@
+-IMG_SUFFIX="-lite"
+-if [ "${USE_QEMU}" = "1" ]; then
+-	export IMG_SUFFIX="${IMG_SUFFIX}-qemu"
+-fi
 Index: dex-os/packages/pi-gen/stage2/EXPORT_NOOBS
 ===================================================================
 --- dex-os.orig/packages/pi-gen/stage2/EXPORT_NOOBS

@@ -1,3 +1,4 @@
 00-add-data-partition
 01-use-docker-build-script-from-arm64-branch-for-buster
-99-dont-export-noobs
+02-dont-export-default-pi-gen-stages
+pi-gen-docker-build-with-tmpfs

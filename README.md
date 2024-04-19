@@ -68,6 +68,10 @@ quilt rename "99-better-name-of-my-patch"
 * <https://dietpi.com/>
 * <https://www.get-edi.io>
 
+## inspiration
+
+* <https://github.com/mogenson/organelle-m-pi-gen>
+
 # old notes
 
 ## Hardware Interfacing
