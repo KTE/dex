@@ -40,6 +40,20 @@ and then
 time PRESERVE_CONTAINER=1 CONTINUE=1 ./build.sh
 ```
 
+debug the container:
+
+```sh
+./dev-debug-container.sh
+# gives root shell in the build container
+cd pi-gen/work
+```
+
+starting from scratch:
+
+```sh
+./dev-reset.sh
+```
+
 ## alternatives
 
 * <https://github.com/guysoft/CustomPiOS>
