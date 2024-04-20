@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
+WD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # helpers ######################################################################
-WD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 increment_trailing_number() { # increment last number in string by 1, keeping at least 3 digits (foo-001, foo-002, ...)
   local prefix number
@@ -16,7 +16,7 @@ increment_trailing_number() { # increment last number in string by 1, keeping at
 
 # config #######################################################################
 
-PI_GEN_DIR="$(pwd)/packages/pi-gen"
+PI_GEN_DIR="$(pwd)/../pi-gen"
 PI_GEN_DEPLOY_DIR="${PI_GEN_DIR}/deploy"
 
 BUILD_DATE=$(date -u +'%Y-%m-%dT%H-%M-%S')
@@ -47,7 +47,7 @@ cd "$WD"
 
 # * delete dist dir on any exit, but only if its not empty
 # * stop apt-cacher-ng container on exit
-trap '{ rmdir "$DIST_DIR" 2>/dev/null; docker stop apt-cacher-ng ;} || true' EXIT SIGINT SIGTERM
+trap '{ rmdir "$DIST_DIR" 2>/dev/null; docker stop dex-os-apt-cacher-ng ;} || true' EXIT SIGINT SIGTERM
 
 # clean slate
 mkdir -p "$DIST_DIR" || { echo "Failed to create dist directory"; exit 1; }
@@ -68,7 +68,8 @@ if test -z "$APT_CACHE" || test "$APT_CACHE" != 0; then
     APT_CACHER_URL=http://172.17.0.2:3142
   fi
   if [ -n "${APT_CACHER_URL}" ]; then
-    docker run --rm --init -d --name apt-cacher-ng \
+    docker stop dex-os-apt-cacher-ng && docker rm dex-os-apt-cacher-ng || true
+    docker run --rm --init -d --name dex-os-apt-cacher-ng \
     --publish 3142:3142 \
     --volume ./tmp/apt-cacher-ng:/var/cache/apt-cacher-ng \
     "$APT_CACHER_NG_CONTAINER"
@@ -79,7 +80,7 @@ fi
 # add our config and stage to pi-gen
 cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
 rm -rf "$PI_GEN_DIR/stage-dex"
-cp -r ./packages/dex-os/pi-gen/stage-dex "$PI_GEN_DIR"
+cp -r ./pi-gen/stage-dex "$PI_GEN_DIR"
 
 echo "STAGE_LIST=\"$STAGE_LIST\"" >> "${PI_GEN_DIR}/config"
 echo "USE_QCOW2=\"$USE_QCOW2\"" >> "${PI_GEN_DIR}/config"
