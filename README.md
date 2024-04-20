@@ -24,8 +24,17 @@ Good tutorials on using `quilt`:
 quilt new "99-name-of-my-patch"
 quilt add ./packages/some-upstream-code/some-file
 # edit ./packages/some-upstream-code/some-file
-quilt refresh # pathfile is added to ./patches and name added to ./patches/series 
+quilt refresh # patchfile is added to ./patches and patch name is added to ./patches/series 
 quilt rename "99-better-name-of-my-patch"
+```
+
+editing existing patches:
+
+```sh
+PATCH_NAME="project/99-name-of-my-patch"
+quilt add -P "$PATCH_NAME" ./packages/some-upstream-code/some-file
+# edit ./packages/some-upstream-code/some-file
+quilt refresh "$PATCH_NAME" # patchfile is updated in ./patches
 ```
 
 ## housekeeping
