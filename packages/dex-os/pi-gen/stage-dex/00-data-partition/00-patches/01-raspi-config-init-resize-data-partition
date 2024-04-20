@@ -1,5 +1,5 @@
---- a/rootfs/usr/lib/raspi-config/init_resize.sh.old
-+++ a/rootfs/usr/lib/raspi-config/init_resize.sh.new
+--- a/rootfs/usr/lib/raspi-config/init_resize.sh
++++ a/rootfs/usr/lib/raspi-config/init_resize.sh
 @@ -40,7 +40,7 @@ check_noobs () {
  }
  
