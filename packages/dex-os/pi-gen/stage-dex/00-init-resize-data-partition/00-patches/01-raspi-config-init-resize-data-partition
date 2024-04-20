@@ -1,0 +1,19 @@
+--- a/rootfs/usr/lib/raspi-config/init_resize.sh.old
++++ a/rootfs/usr/lib/raspi-config/init_resize.sh.new
+@@ -40,7 +40,7 @@ check_noobs () {
+ }
+ 
+ get_variables () {
+-  ROOT_PART_DEV=$(findmnt / -o source -n)
++  ROOT_PART_DEV=$(findmnt /dexdata -o source -n)
+   ROOT_PART_NAME=$(echo "$ROOT_PART_DEV" | cut -d "/" -f 3)
+   ROOT_DEV_NAME=$(echo /sys/block/*/"${ROOT_PART_NAME}" | cut -d "/" -f 4)
+   ROOT_DEV="/dev/${ROOT_DEV_NAME}"
+@@ -182,6 +182,7 @@ mount -t tmpfs tmp /run
+ mkdir -p /run/systemd
+ 
+ mount /boot
++mount /dexdata
+ mount / -o remount,ro
+ 
+ sed -i 's| init=/usr/lib/raspi-config/init_resize\.sh||' /boot/cmdline.txt

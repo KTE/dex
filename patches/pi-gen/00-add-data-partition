@@ -1,7 +1,19 @@
-Index: dex-os/packages/pi-gen/export-image/prerun.sh
+Adds a third "data" partition to the image, mounted at /dexdata.
+
+* create partion in export-image/prerun.sh
+
+* add mount point to /etc/fstab
+
+* resize the data partition (instead of root partition) on first boot
+  * change resize2fs_once to resize the filesystem int he expanded data partition
+  * NOTE: change to /usr/lib/raspi-config/init_resize.sh is packages/dex-os/pi-gen/stage-dex/00-init-resize-data-partition,
+		because it patches the raspi-config package (in the rootfs) and not the pi-gen package (in this repo).
+		The patch was created editing a copy of the file and running `git diff --no-index` against the original file, then adding `rootfs` to the path refs.
+
+Index: dex/packages/pi-gen/export-image/prerun.sh
 ===================================================================
---- dex-os.orig/packages/pi-gen/export-image/prerun.sh
-+++ dex-os/packages/pi-gen/export-image/prerun.sh
+--- dex.orig/packages/pi-gen/export-image/prerun.sh
++++ dex/packages/pi-gen/export-image/prerun.sh
 @@ -12,6 +12,7 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
  
  	BOOT_SIZE="$((256 * 1024 * 1024))"
@@ -63,7 +75,7 @@ Index: dex-os/packages/pi-gen/export-image/prerun.sh
  
  	ROOT_FEATURES="^huge_file"
  	for FEATURE in metadata_csum 64bit; do
-@@ -77,11 +98,15 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+@@ -77,11 +98,17 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
  	done
  	mkdosfs -n boot -F 32 -v "$BOOT_DEV" > /dev/null
  	mkfs.ext4 -L rootfs -O "$ROOT_FEATURES" "$ROOT_DEV" > /dev/null
@@ -77,5 +89,53 @@ Index: dex-os/packages/pi-gen/export-image/prerun.sh
  
  	rsync -aHAXx --exclude /var/cache/apt/archives --exclude /boot "${EXPORT_ROOTFS_DIR}/" "${ROOTFS_DIR}/"
  	rsync -rtx "${EXPORT_ROOTFS_DIR}/boot/" "${ROOTFS_DIR}/boot/"
++	rsync -rtx "${EXPORT_ROOTFS_DIR}/dexdata/" "${ROOTFS_DIR}/dexdata/"
++	# FIXME: remove this once the example-content task works
 +	echo "Hello, World!" > "${ROOTFS_DIR}/dexdata/hello.txt"
  fi
+Index: dex/packages/pi-gen/stage1/01-sys-tweaks/files/fstab
+===================================================================
+--- dex.orig/packages/pi-gen/stage1/01-sys-tweaks/files/fstab
++++ dex/packages/pi-gen/stage1/01-sys-tweaks/files/fstab
+@@ -1,3 +1,4 @@
+ proc            /proc           proc    defaults          0       0
+ BOOTDEV  /boot           vfat    defaults          0       2
+ ROOTDEV  /               ext4    defaults,noatime  0       1
++DATADEV  /dexdata        vfat    defaults          0       3
+Index: dex/packages/pi-gen/export-image/03-set-partuuid/00-run.sh
+===================================================================
+--- dex.orig/packages/pi-gen/export-image/03-set-partuuid/00-run.sh
++++ dex/packages/pi-gen/export-image/03-set-partuuid/00-run.sh
+@@ -8,9 +8,11 @@ if [ "${NO_PRERUN_QCOW2}" = "0" ]; then
+ 
+ 	BOOT_PARTUUID="${IMGID}-01"
+ 	ROOT_PARTUUID="${IMGID}-02"
++	DATA_PARTUUID="${IMGID}-03"
+ 
+ 	sed -i "s/BOOTDEV/PARTUUID=${BOOT_PARTUUID}/" "${ROOTFS_DIR}/etc/fstab"
+ 	sed -i "s/ROOTDEV/PARTUUID=${ROOT_PARTUUID}/" "${ROOTFS_DIR}/etc/fstab"
++	sed -i "s/DATADEV/PARTUUID=${DATA_PARTUUID}/" "${ROOTFS_DIR}/etc/fstab"
+ 
+ 	sed -i "s/ROOTDEV/PARTUUID=${ROOT_PARTUUID}/" "${ROOTFS_DIR}/boot/cmdline.txt"
+ 
+Index: dex/packages/pi-gen/stage2/01-sys-tweaks/files/resize2fs_once
+===================================================================
+--- dex.orig/packages/pi-gen/stage2/01-sys-tweaks/files/resize2fs_once
++++ dex/packages/pi-gen/stage2/01-sys-tweaks/files/resize2fs_once
+@@ -5,14 +5,14 @@
+ # Required-Stop:
+ # Default-Start: 3
+ # Default-Stop:
+-# Short-Description: Resize the root filesystem to fill partition
++# Short-Description: Resize the data filesystem to fill partition
+ # Description:
+ ### END INIT INFO
+ . /lib/lsb/init-functions
+ case "$1" in
+   start)
+     log_daemon_msg "Starting resize2fs_once"
+-    ROOT_DEV=$(findmnt / -o source -n) &&
++    ROOT_DEV=$(findmnt /dexdata -o source -n) &&
+     resize2fs $ROOT_DEV &&
+     update-rc.d resize2fs_once remove &&
+     rm /etc/init.d/resize2fs_once &&
