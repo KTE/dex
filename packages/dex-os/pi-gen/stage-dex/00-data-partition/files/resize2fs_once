@@ -1,0 +1,51 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:           resize2fs_once
+# Required-Start:
+# Required-Stop:
+# Default-Start:      3
+# Default-Stop:
+# Short-Description:  Resize /dexdata partition to fill the SD card
+# Description:
+### END INIT INFO
+. /lib/lsb/init-functions
+case "$1" in
+  start)
+    log_daemon_msg "Starting resize2fs_once"
+    set -exu
+
+    DATA_MOUNT="/dexdata/"
+
+    # find device and partition
+    mount "$DATA_MOUNT" || mount "$DATA_MOUNT" -o remount
+    DATA_PART="$(findmnt "$DATA_MOUNT" -n -o SOURCE -r)"
+    DATA_PART_DEV="$(echo "$DATA_PART" | sed 's/p.*//')"
+
+    # backup files
+    TMP_DIR="$(mktemp -d)${DATA_MOUNT}/"
+    rsync -avPh "$DATA_MOUNT" "$TMP_DIR"
+
+    # resize partition and recreate filesystem
+    umount "$DATA_MOUNT"
+    parted "$DATA_PART_DEV" --align optimal --script 'resizepart 3 100%'
+    mkfs.vfat -F 32 -n "DEXDATA" "$DATA_PART"
+    dosfsck -w -l -a -v -f -y "$DATA_PART"
+
+    # restore files
+    mount "$DATA_MOUNT"
+    rsync -avPh "$TMP_DIR" "$DATA_MOUNT"
+
+    # remove run-once script
+    update-rc.d resize2fs_once remove
+    rm /etc/init.d/resize2fs_once
+
+    log_daemon_msg "resize2fs_once finished"
+
+    log_end_msg $?
+
+    ;;
+  *)
+    echo "Usage: $0 start" >&2
+    exit 3
+    ;;
+esac
