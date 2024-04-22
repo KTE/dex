@@ -6,6 +6,29 @@ packages:
 * [example content](./packages/example-content/README.md)
 * [branding](./packages/branding/README.md)
 
+## getting started
+
+Build a dex player by flashing the image to an SD card,
+using the official [Raspberry Pi Imager](https://www.raspberrypi.org/software/).
+
+Then boot the Raspberry Pi with the SD card.
+It it worked, it will show a 2-second demo video loop.
+
+### advanced
+
+For customizing the player/operating system,
+ssh access needs to be enabled.
+
+This can be done using the "customization" feature of the Raspberry Pi Imager,
+choosing "Enable SSH" in the "Advanced Options". It is recommended to use key-based authentication.
+The user name in the image is `dex` should not be changed, the default password is also `dex` and should be changed if SSH login is enabled and password authentication is used.
+  
+Then, after booting the Raspberry Pi, ssh into it:
+  
+```sh
+ssh dex@dexpi # or another hostname if you changed it in the customization
+```
+
 ## development
 
 ### creating patches
