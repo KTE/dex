@@ -2,12 +2,10 @@
 
 # install adafruit pi_video_looper using their install script, omitting omxplayer
 
-install -v -d -o 1000 -g 1000 files/pi_video_looper "/home/${FIRST_USER_NAME}/pi_video_looper"
+rm -rf "/home/${FIRST_USER_NAME}/pi_video_looper"
+cp -r files/pi_video_looper "${ROOTFS_DIR}/home/${FIRST_USER_NAME}/"
 
 on_chroot << EOF
-
-# rm -rf "/home/${FIRST_USER_NAME}/pi_video_looper"
-# git clone "https://github.com/adafruit/pi_video_looper" "/home/${FIRST_USER_NAME}/pi_video_looper"
 
 cd "/home/${FIRST_USER_NAME}/pi_video_looper"
 
