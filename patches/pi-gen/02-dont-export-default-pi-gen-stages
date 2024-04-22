@@ -1,15 +1,15 @@
-Index: dex-os/packages/pi-gen/stage2/EXPORT_IMAGE
+Index: dex/packages/pi-gen/stage2/EXPORT_IMAGE
 ===================================================================
---- dex-os.orig/packages/pi-gen/stage2/EXPORT_IMAGE
+--- dex.orig/packages/pi-gen/stage2/EXPORT_IMAGE
 +++ /dev/null
 @@ -1,4 +0,0 @@
 -IMG_SUFFIX="-lite"
 -if [ "${USE_QEMU}" = "1" ]; then
 -	export IMG_SUFFIX="${IMG_SUFFIX}-qemu"
 -fi
-Index: dex-os/packages/pi-gen/stage2/EXPORT_NOOBS
+Index: dex/packages/pi-gen/stage2/EXPORT_NOOBS
 ===================================================================
---- dex-os.orig/packages/pi-gen/stage2/EXPORT_NOOBS
+--- dex.orig/packages/pi-gen/stage2/EXPORT_NOOBS
 +++ /dev/null
 @@ -1,2 +0,0 @@
 -NOOBS_NAME="Raspberry Pi OS Lite (32-bit)"
