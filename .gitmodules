@@ -10,3 +10,6 @@
 [submodule "packages/example-content"]
 	path = packages/example-content
 	url = https://github.com/KTE/dex-example-content
+[submodule "packages/pi_video_looper"]
+	path = packages/pi_video_looper
+	url = https://github.com/adafruit/pi_video_looper
