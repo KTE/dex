@@ -80,17 +80,13 @@ fi
 # add our config and stage to pi-gen
 cp ./pi-gen-config.env "${PI_GEN_DIR}/config"
 rm -rf "$PI_GEN_DIR/stage-dex"
-cp -r ./pi-gen/stage-dex "$PI_GEN_DIR"
+rsync --archive --cvs-exclude --copy-links ./pi-gen/stage-dex "$PI_GEN_DIR"
 
 echo "STAGE_LIST=\"$STAGE_LIST\"" >> "${PI_GEN_DIR}/config"
 echo "USE_QCOW2=\"$USE_QCOW2\"" >> "${PI_GEN_DIR}/config"
 
 cd "$PI_GEN_DIR"
 cat ./config
-
-# get git hash from monorepo
-GIT_HASH="$(git rev-parse HEAD)"
-export GIT_HASH
 
 ./build-docker.sh
 
@@ -100,5 +96,7 @@ if [ "${CONTINUE:-0}" != "1" ]; then
   clear
 fi
 
-echo "🎉 output in ${DIST_DIR}:"
+echo; echo; echo "🎉 output in ${DIST_DIR}:"
 ls -lah "${DIST_DIR}"
+
+echo "[build] OK"
