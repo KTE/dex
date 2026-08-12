@@ -284,6 +284,71 @@ Four findings during implementation that changed the design or corrected the spe
 submodule working tree. The harness now generates its own barcoded H.264 positive-control asset via
 `encode-variants.sh --h264`, so Control 3 no longer depends on them.
 
+### 2026-08-12 17:25 — Procedural test card demoted; the real card was always better
+
+Max, on seeing the generated 4K assets: *"whoa, those test videos are way too psychedelic. is there
+a technical purpose for the animation or are the barcodes enough?"* — and proposed overlaying the
+barcode onto the existing example content instead.
+
+Correct on both counts. The animation *does* have a technical purpose — decoder load, and a
+human-visible seam — but `test-cards.aep` already serves both, better. Frames extracted and
+inspected: it has a burned-in frame counter, three rotating sweep hands, resolution wedges, a
+checkerboard border, greyscale ramp and colour bars. It looks like an instrument. The procedural
+plane-wave card looks like a screensaver.
+
+Verified rather than assumed: the existing card's wrap is matched. The top-left hand is at 12
+o'clock on frame 0 and 3 o'clock on frame 15 — 90° in 15 of 60 frames = 6°/frame = exactly one
+revolution, so the 59→0 step is +6°, identical to every other step.
+
+And the combination is free, because `add-barcode.sh` was built content-agnostic: burned the strip
+onto `test-card-2s-1080p.mov` and **all 60 frames decoded exactly**. Nothing had to change.
+
+**Decision:** the AE card is the bench asset at every resolution; `make-test-card.sh` is demoted to
+a unit-test fixture (keeps the suite fast and free of committed binary assets, and never reaches a
+screen). Max is exporting the 4K AE comp now, so the 4K measurement no longer waits on anything.
+
+Two things found while checking, both recorded in SPEC.md §3.2 because they will matter at 23:00 on
+a bench:
+
+- The barcode strip covers the **top checkerboard border** and clips the top-centre arrow. Fine —
+  that border is duplicated on all four edges.
+- **The card's own counter resets at exactly the wrap point.** That is a deliberate, large, visible
+  discontinuity sitting precisely where an accidental one is being hunted. For the eyeball A/B,
+  watch the *rotating hands*, not the counter.
+
+The psychedelic 4K assets were deleted rather than kept. The background render of the 10s variants
+was killed partway rather than allowed to finish — no point spending 35 minutes on content that was
+about to be replaced.
+
+### 2026-08-12 17:30 — `build-bench-assets.sh` added (ninth script, not in the plan)
+
+The plan had six manual steps between a lossless export and a bench-ready asset set. With Max
+exporting the 4K card right now, that is six chances to get a flag wrong at the moment it matters
+most. One script now does it end to end, and — importantly — **probes the input rather than being
+told about it**, so the variant name always describes what the file actually is:
+
+```
+scripts/build-bench-assets.sh --input <lossless.mov> [--h264]
+```
+
+It derives resolution, frame rate and duration; picks a bitrate by resolution (40M at 4K, 20M below,
+both under the Pi 4's ~80 Mbps HEVC ceiling); burns the barcode; encodes HEVC + optional raw H.264 +
+pivid/cog sidecars; and then **decodes the barcode back out of the finished encode and fails loudly
+if any frame mismatches.** A silent barcode failure would poison every measurement taken with that
+asset, so it is checked rather than trusted.
+
+Built from Max's three existing masters, all verifying clean:
+
+| Asset | Frames | HEVC | raw H.264 |
+|---|---|---|---|
+| `dex-test-card-1s-1080p30` | 30 | 384K | 346K |
+| `dex-test-card-2s-1080p30` | 60 | 796K | 667K |
+| `dex-test-card-3s-1080p30` | 90 | 1.2M | 981K |
+
+The `.h264` files are the **Control 3 positive-control assets** — the same content the proven
+`hello_video` loop can play. Note this removes the last reason to touch the untracked `.h264` files
+in the `example-content` submodule: these are generated, barcoded, and reproducible.
+
 ---
 
 ## Failed Attempts

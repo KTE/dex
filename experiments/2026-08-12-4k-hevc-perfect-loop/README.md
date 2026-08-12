@@ -29,33 +29,32 @@ Requires `ffmpeg` (with `libx265`), Node >= 22, and `shellcheck` for development
 
 ## Generate assets
 
-```bash
-mkdir -p out/lossless
-
-# 1s 4K30 test card, one exact rotation over the loop
-scripts/make-test-card.sh --width 3840 --height 2160 --fps 30 --frames 30 \
-  --output out/lossless/test-card-1s-2160p30.mkv
-
-scripts/add-barcode.sh --input out/lossless/test-card-1s-2160p30.mkv \
-  --output out/lossless/test-card-1s-2160p30-barcoded.mkv
-
-scripts/encode-variants.sh --input out/lossless/test-card-1s-2160p30-barcoded.mkv \
-  --outdir out --name dex-test-card-1s-2160p30 --fps 30 --bitrate 40M
-```
-
-`encode-variants.sh` also writes a pivid `.json` timeline and a Cog `.html` page beside
-the `.mp4`, following the convention in `packages/example-content/export/`.
-
-For the `hello_video` **positive control**, build the 1080p H.264 variant with `--h264`:
+One command per lossless test-card export. Resolution, frame rate and duration are
+**probed from the file**, so the variant name always describes what the file actually is:
 
 ```bash
-scripts/make-test-card.sh --width 1920 --height 1080 --fps 30 --frames 30 \
-  --output out/lossless/test-card-1s-1080p30.mkv
-scripts/add-barcode.sh --input out/lossless/test-card-1s-1080p30.mkv \
-  --output out/lossless/test-card-1s-1080p30-barcoded.mkv
-scripts/encode-variants.sh --input out/lossless/test-card-1s-1080p30-barcoded.mkv \
-  --outdir out --name dex-test-card-1s-1080p30 --fps 30 --bitrate 20M --h264
+scripts/build-bench-assets.sh \
+  --input ../../packages/example-content/export/lossless/test-card-1s-1080p.mov --h264
 ```
+
+Produces, in `out/`:
+
+| File | What |
+|---|---|
+| `dex-test-card-1s-1080p30.mp4` | HEVC — the mpv/pivid/cog asset |
+| `dex-test-card-1s-1080p30.h264` | raw Annex-B — the `hello_video` **positive control** |
+| `dex-test-card-1s-1080p30.json` | pivid timeline |
+| `dex-test-card-1s-1080p30.html` | cog page |
+| `lossless/test-card-1s-1080p30-barcoded.mkv` | intermediate |
+
+It picks the bitrate by resolution (40M at 4K, 20M below — both under the Pi 4's ~80 Mbps
+HEVC ceiling) and then **decodes the barcode back out of the finished encode**, failing
+loudly if any frame mismatches. A silent barcode failure would poison every measurement
+taken with that asset.
+
+The test card itself comes from `packages/example-content/test-cards/animation/test-cards.aep`.
+`scripts/make-test-card.sh` generates a *procedural* card instead — that one exists only as a
+unit-test fixture and should not be used on a bench (see SPEC.md §3.2).
 
 ## Run a probe (on the Pi)
 

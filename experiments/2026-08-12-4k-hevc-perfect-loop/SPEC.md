@@ -39,9 +39,10 @@ Lives in this directory. Seven units with hard boundaries:
 
 | Unit | Runs on | Does | Depends on |
 |---|---|---|---|
-| `make-test-card.sh` | Mac | Generates the procedural lossless test card at any res/fps/duration | ffmpeg |
+| `build-bench-assets.sh` | Mac | **One command:** lossless export -> barcoded -> encoded -> sidecars -> verified | the two below |
 | `add-barcode.sh` | Mac | Burns the binary frame-index row onto any lossless test card | ffmpeg |
 | `encode-variants.sh` | Mac | Lossless test card -> encode matrix + player sidecars | ffmpeg |
+| `make-test-card.sh` | Mac | Procedural card generator — **unit-test fixture only** (§3.2) | ffmpeg |
 | `probe.sh` | Pi | Runs one named mpv config, captures mpv's in-band stats | mpv |
 | `capture.mjs` | Mac | Cam Link -> ffmpeg -> decode barcode -> frame-index log | Node, ffmpeg |
 | `analyze.mjs` | Mac | Frame-index log -> wrap-by-wrap anomaly report + verdict | Node |
@@ -81,15 +82,42 @@ existing `test-card-1s-1080p.mov`. Player-facing encodes carry the `dex-` prefix
 `{duration}-{resolution}-{codec}` pattern extends to 4K as `2160p30` / `2160p60`, because frame rate
 now distinguishes variants where at 1080p it did not.
 
-### 3.2 Two lossless test cards, one on the critical path
+### 3.2 One bench test card, plus a throwaway fixture
 
-| Test card | Produced by | Purpose | Critical path? |
-|---|---|---|---|
-| **Procedural 4K** | `make-test-card.sh` (this repo) | **The automated experiment's input.** Smooth motion, matched wrap frames, high-frequency detail so the decoder is honestly loaded. Regenerable at any res/fps/duration by changing an argument. | **Yes** |
-| **AE 4K render** | Max, from `test-cards.aep` + `AltekaKard-4K.png` | Eyeball checks and demos. Its rotating elements are tuned for *human* perception of loop quality — which is a different instrument than the analyzer, and a legitimate one. | **No** |
+*(Revised 2026-08-12 after inspecting the existing content. An earlier draft made the procedural
+card the primary asset; that was wrong, and the reason is worth keeping.)*
 
-The automated pipeline never waits on the AE render. They cannot drift, because **the analyzer
-depends only on the barcode, never on the content** — `add-barcode.sh` applies identically to both.
+| Test card | Produced by | Purpose |
+|---|---|---|
+| **`test-cards.aep`** — the real one | Max, from `test-cards.aep` + `AltekaKard-4K.png` | **The bench asset at every resolution.** Everything the experiment needs, and it looks like an instrument. |
+| **Procedural** | `make-test-card.sh` (this repo) | **Unit-test fixture only.** Generates small throwaway clips so the test suite stays fast and needs no committed binary assets. Never reaches a screen. |
+
+The existing card already serves every technical purpose the procedural one was invented for, and
+serves them better:
+
+- **Frame counter** — `00:00`, `00:15`, … already burned in. (Human-readable only; it needs OCR,
+  which is why the machine-readable barcode is still added on top.)
+- **Human-visible seam detection** — three rotating sweep hands. A hand that hesitates for one frame
+  is far more visible to the eye than a shifting plane wave. This is the *eyeball* instrument, and
+  it is a legitimate one alongside the analyzer.
+- **Honest decoder load** — resolution wedges, checkerboard border, colour bars. Genuinely hard to
+  compress, so the decoder works at a realistic bitrate rather than idling on a smooth gradient.
+- **Matched wrap** — verified from the render: the hand is at 12 o'clock on frame 0 and 3 o'clock on
+  frame 15, i.e. 90° in 15 of 60 frames = 6°/frame = exactly one revolution. Frame 59 sits at 354°,
+  so the 59→0 step is +6° — identical to every other step.
+
+Because `add-barcode.sh` is content-agnostic, combining the two is free: it burns the strip onto any
+input. Verified — all 60 frames of `test-card-2s-1080p.mov` decode exactly after burning.
+
+**Two consequences to know before the bench:**
+
+1. The barcode strip (`height/24`, so 45 px at 1080p, 90 px at 4K) **covers the top checkerboard
+   border** and clips the top-centre arrow marker. Acceptable: that border is duplicated on all four
+   edges.
+2. **The card's own counter resets at exactly the wrap point** — a deliberate, large, visible
+   discontinuity precisely where an accidental one is being hunted. For the eyeball A/B, watch the
+   **rotating hands**, not the counter. The counter says *which* frame; the hands say whether the
+   motion *hesitated*.
 
 ### 3.3 The frame barcode
 
