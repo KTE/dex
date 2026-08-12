@@ -17,16 +17,15 @@ const get = (flag) => {
 };
 
 const source = get('--source');
-const height = Number(get('--height'));
 const out = get('--out');
 const framesArg = get('--frames');
 const maxFrames = framesArg ? Number(framesArg) : Infinity;
 const fps = get('--fps');
 
-if (!source || !out || !Number.isFinite(height)) {
-  console.error('usage: capture.mjs --source <path|avfoundation:N> --height H --out <log> [--frames N] [--fps F]');
-  console.error('  --height is the CAPTURE height, not the source height — they differ');
-  console.error('  when capturing 4K60 through a 1080p60 path.');
+if (!source || !out) {
+  console.error('usage: capture.mjs --source <path|avfoundation:N> --out <log> [--frames N] [--fps F]');
+  console.error('  No resolution is needed: the barcode rectangle is expressed as fractions');
+  console.error('  of the frame, so the decode filter works at any capture resolution.');
   process.exit(2);
 }
 
@@ -38,7 +37,7 @@ const inputArgs = source.startsWith('avfoundation:')
 const ff = spawn('ffmpeg', [
   '-hide_banner', '-loglevel', 'error',
   ...inputArgs,
-  '-vf', decodeFilter(height),
+  '-vf', decodeFilter(),
   '-f', 'rawvideo', '-pix_fmt', 'gray', '-',
 ], { stdio: ['ignore', 'pipe', 'inherit'] });
 

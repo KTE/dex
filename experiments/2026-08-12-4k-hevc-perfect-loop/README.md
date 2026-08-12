@@ -11,8 +11,8 @@ Measurement harness for the dex seamless-loop experiment.
 Whether a player loops a video **without a seam** — no black frame, no held frame,
 no dropped frame at the wrap point.
 
-The test card carries its own frame index as a binary barcode burned into the top of
-every frame. Capture decodes that barcode into a stream of integers; analysis compares
+The test card carries its own frame index as a binary barcode burned into every frame —
+centred, and exactly on the card's grid. Capture decodes that barcode into a stream of integers; analysis compares
 the anomaly rate **at wrap transitions** against the anomaly rate **mid-loop**. The
 mid-loop rate is the capture noise floor, measured on the same run by the same
 instrument — so the verdict is a comparison, never an absolute.
@@ -91,21 +91,22 @@ Override the decode/output path with `--vo` and `--hwdec`.
 ## Measure (on the Mac, capture device attached)
 
 ```bash
-bin/capture.mjs --source avfoundation:0 --height 2160 --out out/idx.txt --frames 18000
+bin/capture.mjs --source avfoundation:0 --out out/idx.txt --frames 18000
 bin/analyze.mjs --log out/idx.txt --loop-length 30
 ```
 
 `--source` also takes a file path, which gives replay: any recorded clip can be
 re-run through a revised decoder without re-capturing.
 
-> **`--height` is the CAPTURE height, not the source height.** They differ when
-> capturing 4K60 through a 1080p60 path. Getting this wrong silently produces
-> garbage indices.
+> **No resolution flag is needed.** The barcode rectangle is expressed as fractions
+> of the frame, so the same decode filter works whether you capture at 4K30 or at
+> 1080p60 — which matters because the 4K60 stretch check is captured through the
+> 1080p60 path.
 
 ## Soak
 
 ```bash
-scripts/soak.sh --source avfoundation:0 --height 2160 --loop-length 30 --outdir out/soak
+scripts/soak.sh --source avfoundation:0 --loop-length 30 --outdir out/soak
 ```
 
 Writes one row per chunk to `out/soak/summary.tsv` and keeps raw logs **only** for

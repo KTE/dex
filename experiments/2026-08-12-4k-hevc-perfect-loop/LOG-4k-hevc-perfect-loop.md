@@ -349,6 +349,60 @@ The `.h264` files are the **Control 3 positive-control assets** — the same con
 `hello_video` loop can play. Note this removes the last reason to touch the untracked `.h264` files
 in the `example-content` submodule: these are generated, barcoded, and reproducible.
 
+### 2026-08-12 17:45 — 4K export received; decimation added for the Cam Link's 4K30 ceiling
+
+Max's 4K export: `test-card-3s-4K.mov`, qtrle rgb24, **3840x2160 @ 60fps**, 180 frames, 436 MB.
+
+The 60 fps creates a problem that would have been ugly to diagnose at the bench: **the Cam Link
+records 4K at 30 fps.** Pointed at 4K60 content it captures every *other* frame, so the analyzer
+sees indices stepping by 2 throughout — every transition reads anomalous and wrap detection breaks.
+That is an instrument limit, and letting it masquerade as a player property would have wasted an
+evening.
+
+So the two 4K assets take different capture paths, and `build-bench-assets.sh --target-fps` was
+added to produce the first:
+
+| Asset | Capture path | Role |
+|---|---|---|
+| 4K30, decimated 60->30 | Cam Link at 4K30 — one captured frame per displayed frame | **Primary** |
+| 4K60, native | Cam Link at 1080p60 — full rate, reduced resolution | Stretch check |
+
+Decimation is legitimate *for this content*: synthetic graphics, no motion blur, so every other
+frame is an exact 30 Hz sampling of the same motion and the rotations still complete over the loop.
+Non-integer factors are refused rather than rounded.
+
+### 2026-08-12 18:00 — Barcode moved: centred, and exactly on the card's grid
+
+Max, seeing the first build: *"can we put the barcode centered and exactly on the grid?"* — with the
+lower third marked.
+
+Right call, and it fixed the two placement complaints from the 17:25 entry at the same time: the
+top-edge strip had been covering the checkerboard border and clipping the top-centre arrow.
+
+**The grid was measured, not eyeballed.** Extracted a clean frame, scored every column and row
+against the field median, and read off the line positions: **50 px cells at 1080p, lines at
+x = 10 + 50k and y = 40 + 50k.**
+
+That gives an exact fit — 18 cells of one grid square each:
+
+| | rect | centred? | on grid? |
+|---|---|---|---|
+| 1080p | `900x50+510+940` | 510 + 450 = 960 ✓ | 510 = 10+10·50, 940 = 40+18·50 ✓ |
+| 2160p | `1800x100+1020+1880` | 1020 + 900 = 1920 ✓ | 1020 = 20+10·100, 1880 = 80+18·100 ✓ |
+
+**Unexpected payoff.** Expressing the rectangle as *fractions of the frame* lets both filters be
+built from ffmpeg `iw`/`ih` expressions, so neither the burner nor the decoder needs to know the
+resolution. `capture.mjs --height` and `add-barcode.sh`'s ffprobe call are both **gone** — one fewer
+flag to get wrong at 23:00, and it matters specifically because the 4K60 stretch check is captured
+through the 1080p60 path, where source and capture resolutions differ. The old `--height` warning in
+the README is deleted rather than reworded.
+
+Verified visually on frame 15: sync-white, sync-black, then four lit cells = bits 0-3 = 15, matching
+the card's own `00:15`. 44 tests pass; the geometry now has its own tests asserting centring, grid
+alignment, and that no resolution is hardcoded in either filter.
+
+All assets rebuilt. The three 1080p variants verify clean; the 4K pair is rebuilding.
+
 ---
 
 ## Failed Attempts

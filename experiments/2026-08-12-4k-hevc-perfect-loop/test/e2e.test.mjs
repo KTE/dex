@@ -22,7 +22,7 @@ function buildLoopedCapture(dir) {
   execFileSync('bash', ['scripts/make-test-card.sh', '--width', '320', '--height', '192',
     '--fps', '30', '--frames', String(LOOP), '--output', testCard]);
   execFileSync('bash', ['scripts/add-barcode.sh', '--input', testCard, '--output', burned]);
-  execFileSync('node', ['bin/capture.mjs', '--source', burned, '--height', '192', '--out', log]);
+  execFileSync('node', ['bin/capture.mjs', '--source', burned, '--out', log]);
   return readFileSync(log, 'utf8').trim().split('\n');
 }
 

@@ -1,20 +1,37 @@
 // @ts-check
 
 /**
- * Binary frame-index barcode burned into the top strip of every test-card frame.
+ * Binary frame-index barcode burned into the dex test card.
  *
- * A strip across the top of the frame, `barHeight(height)` pixels tall, divided
- * into 18 equal-width cells:
+ * PLACEMENT — centred, and exactly on the test card's grid.
+ *
+ * The card's grid was measured from a real frame: 50 px cells at 1080p, with
+ * lines at x = 10 + 50k and y = 40 + 50k. The barcode is 18 cells of one grid
+ * square each:
+ *
+ *     1080p:  900 x 50  at (510, 940)      510 + 450 = 960 -> centred
+ *                                          510 = 10 + 10*50, 940 = 40 + 18*50 -> on grid
+ *     2160p: 1800 x 100 at (1020, 1880)    same, scaled 2x
+ *
+ * It sits in the lower third, clear of the centre circle, the greyscale ramp,
+ * the colour wheels and the bottom arrow — and, unlike the earlier top-edge
+ * placement, it no longer covers the checkerboard border or the top marker.
+ *
+ * LAYOUT — 18 cells:
  *
  *   cell 0      sync WHITE - supplies the white reference level
  *   cell 1      sync BLACK - supplies the black reference level
  *   cell 2 + k  data bit k of the frame index, LSB at cell 2 (k = 0..15)
  *
- * Thresholding against the two sync cells rather than against fixed levels is
- * what lets the same decoder read a file, an HDMI capture card, and a camera
- * pointed at a screen: all three shift and compress the level range differently.
+ * Thresholding against the two sync cells rather than fixed levels is what lets
+ * one decoder read a file, an HDMI capture card, and a camera pointed at a
+ * screen: all three shift and compress the level range differently.
  *
  * 16 data bits = 65,536 frames, about 36 minutes at 30 fps.
+ *
+ * GEOMETRY IS EXPRESSED AS FRACTIONS OF THE FRAME, so both filters are built
+ * from ffmpeg `iw`/`ih` expressions and neither the burner nor the decoder needs
+ * to be told the resolution. That is why `capture.mjs` takes no --width/--height.
  */
 
 /** Total cells across the strip: 2 sync + 16 data. */
@@ -29,40 +46,65 @@ export const DECODE_W = CELLS * CELL_PX;
 export const DECODE_H = 8;
 /** Bytes per decode-stage gray frame. Independent of source resolution. */
 export const FRAME_BYTES = DECODE_W * DECODE_H;
-/** Minimum separation between the sync levels for a frame to be considered readable. */
+/** Minimum separation between the sync levels for a frame to be readable. */
 export const SYNC_MIN_DELTA = 40;
 
+/** Barcode width as a fraction of frame width (900/1920 = 18 grid cells). */
+export const BAR_W_FRAC = 900 / 1920;
+/** Barcode height as a fraction of frame height (50/1080 = 1 grid cell). */
+export const BAR_H_FRAC = 50 / 1080;
+/** Barcode top edge as a fraction of frame height (940/1080, a grid line). */
+export const BAR_Y_FRAC = 940 / 1080;
+
+/** ffmpeg expressions for the barcode rectangle. Resolution-independent. */
+const EXPR = {
+  w: `iw*${BAR_W_FRAC}`,
+  h: `ih*${BAR_H_FRAC}`,
+  x: `(iw-iw*${BAR_W_FRAC})/2`,
+  y: `ih*${BAR_Y_FRAC}`,
+  cellW: `iw*${BAR_W_FRAC}/${CELLS}`,
+};
+
 /**
- * Height of the barcode strip for a given frame height.
- * Floored at 8 px so tiny test frames stay decodable after the area downscale.
- * @param {number} frameHeight
- * @returns {number}
+ * Pixel rectangle of the barcode for a given frame size.
+ * Provided for tests and diagnostics; the filters use expressions instead.
+ *
+ * @param {number} width
+ * @param {number} height
+ * @returns {{x: number, y: number, w: number, h: number, cellW: number}}
  */
-export function barHeight(frameHeight) {
-  return Math.max(8, Math.round(frameHeight / 24));
+export function barcodeRect(width, height) {
+  const w = Math.round(width * BAR_W_FRAC);
+  const h = Math.round(height * BAR_H_FRAC);
+  return {
+    x: Math.round((width - w) / 2),
+    y: Math.round(height * BAR_Y_FRAC),
+    w,
+    h,
+    cellW: w / CELLS,
+  };
 }
 
 /**
- * ffmpeg filter chain that burns the frame index into the top strip.
+ * ffmpeg filter chain that burns the frame index into the barcode rectangle.
  *
  * Data cell 2+k is lit when bit k of the frame counter `n` is set; the
  * expression `bitand(floor(n/2^k),1)` is evaluated per frame by drawbox's
  * `enable` option.
  *
- * @param {number} frameHeight
  * @returns {string}
  */
-export function burnFilter(frameHeight) {
-  const h = barHeight(frameHeight);
+export function burnFilter() {
   const parts = [
-    `drawbox=x=0:y=0:w=iw:h=${h}:color=black@1:t=fill`,
-    `drawbox=x=0:y=0:w=iw/${CELLS}:h=${h}:color=white@1:t=fill`,
+    `drawbox=x=${EXPR.x}:y=${EXPR.y}:w=${EXPR.w}:h=${EXPR.h}:color=black@1:t=fill`,
+    `drawbox=x=${EXPR.x}:y=${EXPR.y}:w=${EXPR.cellW}:h=${EXPR.h}:color=white@1:t=fill`,
   ];
   for (let k = 0; k < DATA_BITS; k++) {
     const cell = 2 + k;
     const pow = 2 ** k;
     parts.push(
-      `drawbox=x=${cell}*iw/${CELLS}:y=0:w=iw/${CELLS}:h=${h}:color=white@1:t=fill:` +
+      `drawbox=x=${EXPR.x}+${cell}*${EXPR.cellW}:y=${EXPR.y}:` +
+      `w=${EXPR.cellW}:h=${EXPR.h}:color=white@1:t=fill:` +
       `enable='eq(bitand(floor(n/${pow})\\,1)\\,1)'`
     );
   }
@@ -70,18 +112,18 @@ export function burnFilter(frameHeight) {
 }
 
 /**
- * ffmpeg filter chain that reduces each frame to just the barcode strip,
+ * ffmpeg filter chain that reduces each frame to just the barcode rectangle,
  * downscaled so one decode frame is FRAME_BYTES regardless of source resolution.
  *
  * This is why decoding is cheap at 4K: the JavaScript side never sees a full
  * frame. `flags=area` averages each cell, which raises noise immunity rather
  * than lowering it — the cells are large uniform blocks.
  *
- * @param {number} frameHeight
  * @returns {string}
  */
-export function decodeFilter(frameHeight) {
-  return `crop=iw:${barHeight(frameHeight)}:0:0,scale=${DECODE_W}:${DECODE_H}:flags=area,format=gray`;
+export function decodeFilter() {
+  return `crop=${EXPR.w}:${EXPR.h}:${EXPR.x}:${EXPR.y},` +
+    `scale=${DECODE_W}:${DECODE_H}:flags=area,format=gray`;
 }
 
 /**

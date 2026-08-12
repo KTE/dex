@@ -25,7 +25,7 @@ test('capture from a file yields the exact frame-index sequence', () => {
   try {
     const burned = buildBurned(dir, 45);
     const log = join(dir, 'idx.txt');
-    execFileSync('node', ['bin/capture.mjs', '--source', burned, '--height', '192', '--out', log]);
+    execFileSync('node', ['bin/capture.mjs', '--source', burned, '--out', log]);
     const lines = readFileSync(log, 'utf8').trim().split('\n').map(Number);
     assert.equal(lines.length, 45);
     assert.deepEqual(lines, Array.from({ length: 45 }, (_, i) => i));

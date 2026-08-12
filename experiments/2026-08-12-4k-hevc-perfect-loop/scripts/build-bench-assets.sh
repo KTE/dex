@@ -106,7 +106,7 @@ bash "$HERE/encode-variants.sh" --input "$BARCODED" --outdir "$OUTDIR" \
 TMPLOG="$(mktemp)"
 trap 'rm -f "$TMPLOG"' EXIT
 node "$HERE/../bin/capture.mjs" --source "$OUTDIR/dex-${NAME}.mp4" \
-  --height "$HEIGHT" --out "$TMPLOG" >/dev/null 2>&1
+  --out "$TMPLOG" >/dev/null 2>&1
 
 # shellcheck disable=SC2016  # the $ are JS template literals, not shell expansions;
 # single quotes are exactly right here and double quotes would break the script.

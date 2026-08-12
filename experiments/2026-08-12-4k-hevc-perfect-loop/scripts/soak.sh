@@ -9,16 +9,15 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --source <path|avfoundation:N> --height H --loop-length N --outdir <dir> [--chunk-frames 18000] [--chunks 0]" >&2
+  echo "usage: $0 --source <path|avfoundation:N> --loop-length N --outdir <dir> [--chunk-frames 18000] [--chunks 0]" >&2
   echo "  --chunks 0 runs until interrupted" >&2
   exit 2
 }
 
-SOURCE=""; HEIGHT=""; LOOP_LENGTH=""; OUTDIR=""; CHUNK_FRAMES=18000; CHUNKS=0
+SOURCE=""; LOOP_LENGTH=""; OUTDIR=""; CHUNK_FRAMES=18000; CHUNKS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --source)       SOURCE="$2";       shift 2 ;;
-    --height)       HEIGHT="$2";       shift 2 ;;
     --loop-length)  LOOP_LENGTH="$2";  shift 2 ;;
     --outdir)       OUTDIR="$2";       shift 2 ;;
     --chunk-frames) CHUNK_FRAMES="$2"; shift 2 ;;
@@ -26,7 +25,7 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$SOURCE" ] && [ -n "$HEIGHT" ] && [ -n "$LOOP_LENGTH" ] && [ -n "$OUTDIR" ] || usage
+[ -n "$SOURCE" ] && [ -n "$LOOP_LENGTH" ] && [ -n "$OUTDIR" ] || usage
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUTDIR"
@@ -40,7 +39,7 @@ FAILED=0
 i=0
 while [ "$CHUNKS" -eq 0 ] || [ "$i" -lt "$CHUNKS" ]; do
   LOG="$OUTDIR/chunk-$(printf '%05d' "$i").txt"
-  node "$HERE/../bin/capture.mjs" --source "$SOURCE" --height "$HEIGHT" \
+  node "$HERE/../bin/capture.mjs" --source "$SOURCE" \
     --out "$LOG" --frames "$CHUNK_FRAMES"
 
   # analyze exits non-zero on anything but PASS, and still prints its JSON, so
