@@ -52,6 +52,26 @@ HEVC ceiling) and then **decodes the barcode back out of the finished encode**, 
 loudly if any frame mismatches. A silent barcode failure would poison every measurement
 taken with that asset.
 
+### `--target-fps` — and why the 4K primary asset is 30 fps
+
+The Cam Link 4K **records** 4K at 30 fps. Pointed at 4K60 content it captures every *other*
+frame, so the analyzer sees indices stepping by 2 throughout, flags the whole run anomalous,
+and wrap detection breaks. So the primary 4K measurement needs a 30 fps asset:
+
+```bash
+# primary: 4K30, decimated from a 60fps export
+scripts/build-bench-assets.sh --input test-card-3s-4K.mov --target-fps 30 --bitrate 40M
+
+# stretch check: 4K60 native — capture this one through the 1080p60 path,
+# where the Cam Link keeps full frame rate
+scripts/build-bench-assets.sh --input test-card-3s-4K.mov --bitrate 60M
+```
+
+Decimation is legitimate for this content specifically: it is synthetic graphics with no
+motion blur, so every Nth frame is an exact lower-rate sampling of the same motion. The
+rotations still complete over the loop, so the wrap stays matched. The source frame rate
+must be an exact integer multiple of the target, or the script refuses.
+
 The test card itself comes from `packages/example-content/test-cards/animation/test-cards.aep`.
 `scripts/make-test-card.sh` generates a *procedural* card instead — that one exists only as a
 unit-test fixture and should not be used on a bench (see SPEC.md §3.2).

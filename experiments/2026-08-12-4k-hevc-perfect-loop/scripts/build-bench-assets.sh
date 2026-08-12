@@ -20,17 +20,21 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --input <lossless-master> [--outdir out] [--bitrate auto] [--h264]" >&2
+  echo "usage: $0 --input <lossless-master> [--outdir out] [--bitrate auto] [--target-fps F] [--h264]" >&2
+  echo "  --target-fps decimates by an integer factor (source fps must be an exact multiple)." >&2
+  echo "     Needed because the Cam Link records 4K at 30fps: pointed at 4K60 content it" >&2
+  echo "     captures every other frame, and the analyzer sees indices stepping by 2." >&2
   exit 2
 }
 
-INPUT=""; OUTDIR="out"; BITRATE="auto"; WANT_H264=0
+INPUT=""; OUTDIR="out"; BITRATE="auto"; WANT_H264=0; TARGET_FPS=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --input)   INPUT="$2";   shift 2 ;;
-    --outdir)  OUTDIR="$2";  shift 2 ;;
-    --bitrate) BITRATE="$2"; shift 2 ;;
-    --h264)    WANT_H264=1;  shift ;;
+    --input)      INPUT="$2";      shift 2 ;;
+    --outdir)     OUTDIR="$2";     shift 2 ;;
+    --bitrate)    BITRATE="$2";    shift 2 ;;
+    --target-fps) TARGET_FPS="$2"; shift 2 ;;
+    --h264)       WANT_H264=1;     shift ;;
     *) usage ;;
   esac
 done
@@ -56,6 +60,28 @@ DUR="$(awk -v f="$FRAMES" -v r="$FPS" 'BEGIN { printf "%g", f / r }')"
 [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ -n "$FRAMES" ] && [ "$FPS" != "0" ] \
   || { echo "could not probe $INPUT (got w=$WIDTH h=$HEIGHT frames=$FRAMES fps=$FPS)" >&2; exit 1; }
 
+mkdir -p "$OUTDIR/lossless"
+
+# Optional integer decimation. Legitimate for this content because it is
+# synthetic graphics with no motion blur, so every Nth frame is an exact
+# lower-rate sampling of the same motion — the rotations still complete over the
+# loop, so the wrap stays matched.
+if [ -n "$TARGET_FPS" ] && [ "$TARGET_FPS" != "$FPS" ]; then
+  FACTOR="$(awk -v s="$FPS" -v t="$TARGET_FPS" 'BEGIN { printf "%g", s / t }')"
+  case "$FACTOR" in
+    *.*) echo "source ${FPS}fps is not an integer multiple of ${TARGET_FPS}fps (factor $FACTOR)" >&2; exit 1 ;;
+  esac
+  DECIMATED="$OUTDIR/lossless/decimated-${TARGET_FPS}fps.mkv"
+  echo "==> decimating ${FPS}fps -> ${TARGET_FPS}fps (every ${FACTOR}th frame)" >&2
+  ffmpeg -hide_banner -loglevel error -i "$INPUT" \
+    -vf "select='not(mod(n\,${FACTOR}))',setpts=N/(${TARGET_FPS}*TB)" \
+    -r "$TARGET_FPS" -c:v ffv1 -level 3 -an -y "$DECIMATED"
+  INPUT="$DECIMATED"
+  FRAMES="$(awk -v f="$FRAMES" -v x="$FACTOR" 'BEGIN { printf "%g", f / x }')"
+  FPS="$TARGET_FPS"
+  DUR="$(awk -v f="$FRAMES" -v r="$FPS" 'BEGIN { printf "%g", f / r }')"
+fi
+
 NAME="test-card-${DUR}s-${HEIGHT}p${FPS}"
 
 # Bitrates chosen to load the decoder honestly while staying under the Pi 4's
@@ -64,7 +90,6 @@ if [ "$BITRATE" = "auto" ]; then
   if [ "$HEIGHT" -ge 2000 ]; then BITRATE="40M"; else BITRATE="20M"; fi
 fi
 
-mkdir -p "$OUTDIR/lossless"
 BARCODED="$OUTDIR/lossless/${NAME}-barcoded.mkv"
 
 echo "==> ${WIDTH}x${HEIGHT} @ ${FPS}fps, ${FRAMES} frames (${DUR}s) -> ${NAME} @ ${BITRATE}" >&2

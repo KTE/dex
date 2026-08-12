@@ -129,6 +129,27 @@ Read by sampling block centres — **no OCR**. A burned-in numeral would need ch
 which is fragile under rescaling and compression; large high-contrast blocks survive both, and the
 decision is a luma threshold, so chroma subsampling is irrelevant.
 
+### 3.3.1 Frame rate: why the primary 4K asset is 30 fps
+
+*(Added 2026-08-12 on receiving the 4K export, which is 60 fps.)*
+
+The Cam Link 4K **records** 4K at 30 fps. Pointed at 4K60 content it captures every other frame,
+so the analyzer sees indices stepping by 2 throughout — the entire run reads as anomalous and wrap
+detection breaks. This is an instrument limit, not a player property, and it must not be allowed to
+masquerade as one.
+
+So the two 4K assets are captured through different paths:
+
+| Asset | Capture path | Role |
+|---|---|---|
+| **4K30** (decimated from the 60 fps export) | Cam Link at 4K30 — one captured frame per displayed frame | **Primary measurement** |
+| **4K60** (native) | Cam Link at 1080p60 — full frame rate, reduced resolution | Stretch check, explicitly weaker |
+
+Decimating 60 → 30 is legitimate *for this content*: it is synthetic graphics with no motion blur,
+so every other frame is an exact 30 Hz sampling of the same motion, and the rotations still complete
+over the loop, so the wrap stays matched. `build-bench-assets.sh --target-fps` does it and refuses
+any non-integer factor.
+
 ### 3.4 Variants
 
 | Variant | Purpose |
