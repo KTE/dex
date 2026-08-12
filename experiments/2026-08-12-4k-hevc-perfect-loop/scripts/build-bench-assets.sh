@@ -20,20 +20,21 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --input <lossless-master> [--outdir out] [--bitrate auto] [--target-fps F] [--h264]" >&2
+  echo "usage: $0 --input <lossless-master> [--outdir out] [--bitrate auto] [--target-fps F] [--grain N] [--h264]" >&2
   echo "  --target-fps decimates by an integer factor (source fps must be an exact multiple)." >&2
   echo "     Needed because the Cam Link records 4K at 30fps: pointed at 4K60 content it" >&2
   echo "     captures every other frame, and the analyzer sees indices stepping by 2." >&2
   exit 2
 }
 
-INPUT=""; OUTDIR="out"; BITRATE="auto"; WANT_H264=0; TARGET_FPS=""
+INPUT=""; OUTDIR="out"; BITRATE="auto"; WANT_H264=0; TARGET_FPS=""; GRAIN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --input)      INPUT="$2";      shift 2 ;;
     --outdir)     OUTDIR="$2";     shift 2 ;;
     --bitrate)    BITRATE="$2";    shift 2 ;;
     --target-fps) TARGET_FPS="$2"; shift 2 ;;
+    --grain)      GRAIN="$2";      shift 2 ;;
     --h264)       WANT_H264=1;     shift ;;
     *) usage ;;
   esac
@@ -96,10 +97,11 @@ echo "==> ${WIDTH}x${HEIGHT} @ ${FPS}fps, ${FRAMES} frames (${DUR}s) -> ${NAME} 
 
 bash "$HERE/add-barcode.sh" --input "$INPUT" --output "$BARCODED"
 
-H264_ARG=()
-[ "$WANT_H264" -eq 1 ] && H264_ARG=(--h264)
+EXTRA=()
+[ "$WANT_H264" -eq 1 ] && EXTRA+=(--h264)
+[ "$GRAIN" -gt 0 ] && EXTRA+=(--grain "$GRAIN")
 bash "$HERE/encode-variants.sh" --input "$BARCODED" --outdir "$OUTDIR" \
-  --name "dex-${NAME}" --fps "$FPS" --bitrate "$BITRATE" "${H264_ARG[@]}"
+  --name "dex-${NAME}" --fps "$FPS" --bitrate "$BITRATE" "${EXTRA[@]}"
 
 # Verify the barcode survived the encode. A silent failure here would poison
 # every measurement taken with this asset, so it is checked, not assumed.
