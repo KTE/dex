@@ -165,6 +165,16 @@ void.
 With the 1-second asset that is under 10 minutes of capture — which is the whole payoff of making
 the 1 s variant first-class rather than a follow-up.
 
+**Sensitivity scales with the measured floor, which is the intended behaviour** *(corrected
+2026-08-12 after implementation; an earlier draft of this spec claimed the opposite)*. It is
+tempting to assume a single defect in 500 wraps always vanishes into noise. It does not. Against a
+**perfectly clean** mid-loop sample, one wrap anomaly in 600 gives z=5.4, p~7e-8 — decisively
+significant, and correctly so: at a 1 s loop that is a visible stutter every ten minutes, for six
+weeks, in a gallery. The same single defect *does* pass once a realistic ~1% noise floor is present.
+Both cases are paired tests in `test/analyze.test.mjs`, so this property is demonstrated rather than
+assumed. The practical consequence: **a very clean capture path makes the test stricter, not more
+lenient** — so do not "improve" the rig mid-experiment and then compare verdicts across runs.
+
 **Control 2 — synthetic defect injection (is the analyzer blind?).** `analyze.mjs` is validated
 against generated logs with known defects planted: a held frame at wrap, a dropped frame at wrap, a
 black frame. If it cannot catch a defect you planted, "no anomalies detected" is not evidence of

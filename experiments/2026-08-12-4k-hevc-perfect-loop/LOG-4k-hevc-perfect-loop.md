@@ -1,5 +1,5 @@
 ---
-phase: FRAME
+phase: SETUP
 mode: rigorous
 started: 2026-08-12
 timebox: open-ended
@@ -91,11 +91,35 @@ early-stop exists to prevent.
 
 ## Environment
 
-<!-- REQUIRED before advancing to RUN. Fill at SETUP: OS image + version, mpv version, ffmpeg
-     version and whether it is the +rpt2 build, kernel, board revisions, display EDID/mode,
-     Cam Link firmware, cable. -->
+### Mac side — measurement host (recorded 2026-08-12, complete)
 
-_To be filled during SETUP._
+| Component | Version |
+|---|---|
+| Host | `katoz.178.is`, macOS 26.5.1, arm64 |
+| Node | v25.9.0 |
+| pnpm | 10.28.1 |
+| ffmpeg / ffprobe | 8.1 (libx265, libx264, geq, drawbox, avfoundation) |
+| shellcheck | 0.11.0 |
+| TypeScript (dev only) | 5.9.3 · `@types/node` 22.20.1 |
+
+### Pi side — playback host (to be filled at the bench)
+
+- [ ] Pi OS image name + release date, `uname -a`
+- [ ] `mpv --version`
+- [ ] `ffmpeg -version` — **confirm it is the `+rpt2` distro build** (this is what carries the
+      Pi 5 HEVC patches; if it is not, hardware decode findings are not comparable)
+- [ ] Board revisions for both the Pi 5 and the Pi 4 (`cat /proc/cpuinfo | grep Revision`)
+- [ ] Display: model, negotiated mode, whether `hdmi_enable_4kp60` was needed
+- [ ] HDMI cable (Premium High Speed certified?)
+- [ ] `vc4.force_hotplug` setting, if used
+
+### Capture side (to be filled at the bench)
+
+- [ ] Cam Link 4K firmware version; the `avfoundation` device index it enumerates as
+- [ ] Confirm the 4K capture ceiling is 30 fps on this unit
+- [ ] Confirm no HDMI passthrough (capture and projector A/B run sequentially)
+- [ ] Optional: Insta360 X4 webcam-mode resolution/fps, and whether the barcode survives
+      its dewarping (see 2026-08-12 17:05 entry)
 
 ## Baseline
 
@@ -198,6 +222,67 @@ frame rate now distinguishes variants where at 1080p it did not.
 Worth recording as a lesson, not just a rename: the instinct to coin a term is a signal to go and
 look for the one that already exists. The 2024 example-content kit had answered this question and I
 did not check before proposing four alternatives.
+
+### 2026-08-12 17:05 — Insta360 X4 raised as an alternative capture instrument
+
+Max has a Cam Link 4K **and** an Insta360 X4. Assessment, not yet tested:
+
+**In its favour.** The harness is source-agnostic — `capture.mjs --source` takes any ffmpeg
+input — so a webcam-mode X4 costs nothing to try. Oversampling genuinely helps: capturing 30 fps
+content at >60 fps means each source frame appears several times, so a held frame at the wrap
+becomes *more* visible, not less. And it would let **4K60 be measured properly** rather than taken
+on trust, which the Cam Link's 4K30 recording ceiling otherwise prevents.
+
+**Against.** It reintroduces exactly what the Cam Link removes — rolling shutter, no frame lock,
+moiré against the panel, exposure drift. The mid-loop control still absorbs that statistically, but
+the noise floor rises, so more wraps are needed for the same confidence.
+
+**Possible disqualifier.** It is a 360 camera. Dewarping a fisheye projection could distort the
+barcode cell spacing enough that centre-sampling lands on the wrong cell — and the sync cells
+detect *contrast*, not *misalignment*, so a distorted read would produce confidently wrong indices
+rather than `null`. That is the worst failure mode available: silent, plausible, wrong.
+
+**Test, ~10 minutes at the bench:** point it at a screen playing a barcoded test card, run
+`capture.mjs` against it, check the decoded sequence is monotonic. If it is garbage, dewarping
+killed it and the Cam Link stands. Deliberately *not* blocking anything.
+
+### 2026-08-12 17:40 — Harness built and validated offline; advancing to SETUP
+
+All eight implementation tasks complete. **42 tests pass, 5 shell scripts shellcheck-clean,
+`tsc --noEmit` clean.** Nothing here has touched a Pi or a capture device — which was the point:
+the instrument is validated before the bench session, so a surprise at the bench is attributable to
+the player rather than to the measurement.
+
+The end-to-end dress rehearsal (`test/e2e.test.mjs`) runs the real pipeline — generate, burn,
+encode, capture-from-file, analyze — and confirms `PASS` on a genuinely seamless source, `FAIL` on
+a planted held-frame seam, and `FAIL` with a non-zero `decodeFailures` count on a planted black
+frame.
+
+Four findings during implementation that changed the design or corrected the spec:
+
+1. **`sin(2*PI)` is not zero, and it broke the bit-exact wrap.** The generator's rotation angle
+   `2*PI*N/PERIOD` made frame `PERIOD` only *mathematically* equal to frame 0; in IEEE754,
+   `sin(2*PI) = -2.45e-16`, which flipped **95 of 61,440 pixels** by one luma level. Fixed by
+   wrapping the counter — `mod(N,PERIOD)` — before the trig, so both frames evaluate the identical
+   expression. Exact by construction rather than by luck. Without this the experiment would have
+   been measuring its own asset.
+2. **The spec's fail-condition prose was wrong.** It asserted that "a defect present at one wrap in
+   500 is indistinguishable from capture noise." Against a *perfectly clean* mid-loop sample that is
+   false: one wrap anomaly in 600 gives z=5.4, p~7e-8. And the strict behaviour is correct — at a
+   1 s loop that is a visible stutter every ten minutes for six weeks. The claim is only true once a
+   real noise floor exists. Both cases are now paired tests, so the control is demonstrated rather
+   than asserted. SPEC.md §4.3 corrected accordingly.
+3. **ffmpeg 8.1's csv writer rejects an explicit space separator** (`Failed to parse option string
+   'p=0:s= '`) and — worse — emits nothing rather than failing, so the test card's dimensions
+   vanished silently into the pivid sidecar as `"mode": [, , 30]`. Now uses the default comma
+   separator with `IFS`, and asserts the dimensions are non-empty.
+4. **Node 25 rejects a bare directory for `--test`.** `node --test test/` throws MODULE_NOT_FOUND.
+   Every individual test file passed, so this would have shipped as a permanently-broken
+   `pnpm test` had the aggregate script never been run. Now `node --test test/*.test.mjs`.
+
+**Not done, and blocking nothing:** the three untracked `.h264` files in the `example-content`
+submodule working tree. The harness now generates its own barcoded H.264 positive-control asset via
+`encode-variants.sh --h264`, so Control 3 no longer depends on them.
 
 ---
 
