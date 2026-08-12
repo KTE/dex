@@ -1,8 +1,82 @@
 # After Effects — automation and output findings
 
-**Date:** 2026-08-12 · **Status:** ⚠️ **PARTIAL — the cumulus recipe was lost**
+**Date:** 2026-08-12 · **Status:** ✅ **Recipe rebuilt and verified** (the agent's was lost; see below)
 
-## What happened
+## The recipe — verified working
+
+Built live through the After Effects MCP server against **AE 26.3**, empty project. The saved
+project is `looping-cumulus.aep` beside this file.
+
+### Comp
+
+1920x1080, **60 fps**, duration **3.0166667 s = 181 frames**. The extra frame is deliberate:
+frame 180 exists only so the wrap can be bit-compared against frame 0, and is discarded.
+**Set the layer's outPoint to match the comp duration** — extending the comp alone leaves the
+layer ending at 3.0 s, so frame 180 renders blank (this cost a false "AE cannot loop" reading).
+
+### One black solid, one effect: `ADBE Fractal Noise`
+
+| Property | matchName | Value |
+|---|---|---|
+| Fractal Type | `-0001` | **1** (Basic) |
+| Noise Type | `-0002` | **4** (Spline) |
+| Contrast | `-0004` | **550** |
+| Brightness | `-0005` | **-70** |
+| Scale | `-0010` | **700** |
+| Complexity | `-0015` | **7** |
+| Sub Influence (%) | `-0017` | **65** |
+| **Cycle Evolution** | `-0025` | **1 (on)** |
+| **Cycle (in Revolutions)** | `-0026` | **2** |
+| **Evolution** | `-0023` | keyframed 0° -> 720° |
+
+**Contrast + negative Brightness together are the coverage remap** — the same job the coverage
+threshold does in the OpenSimplex and Blender recipes. High contrast separates masses; negative
+brightness sinks the gaps to black sky. Fractal Type 1 with Spline noise supplies the cauliflower
+edges; Complexity and Sub Influence control how lumpy they are.
+
+Empirically, several Fractal Type values render identically (1 == 2, 9 == 10), so the enum has
+fewer distinct types than positions.
+
+### What makes the loop exact
+
+`Cycle Evolution` **on**, `Cycle (in Revolutions)` = C, and `Evolution` keyframed from 0° to
+**C x 360°** across the loop. The noise pattern then repeats every C revolutions, so the frame at
+the end is the frame at the start. Here C = 2, so Evolution runs 0° -> 720° over 3 s.
+
+**Both keyframes must be LINEAR.** AE's default easing would decelerate into the wrap — the loop
+would still be bit-exact but not C1-smooth, i.e. it would visibly slow down and jerk at the loop
+point. This is the property a bit-compare alone does not catch.
+
+Do **not** animate `Offset Turbulence` or the layer Transform for drift: a translation only loops
+if it moves exactly one spatial period, which over 3 s is far too fast to read as weather. The
+Evolution morph gives motion without translation.
+
+### Verified
+
+| Test | Result |
+|---|---|
+| frame 180 vs frame 0, **pixel** comparison of the rendered RGB | **BIT-IDENTICAL** |
+| wrap step (179 -> 0) vs interior steps, on the 180-frame render | **3.6605** vs interior range 0.9227 - 4.0713 — **C1-smooth** |
+| render time, 180 frames at 1920x1080, "Best Settings" + TIFF Sequence | **5.7 seconds** |
+
+That render time is the headline: Blender EEVEE took 168 s for the same job, and the Python
+pipeline 202 s. AE is roughly **30x faster** — because this is a flat 2D effect on one solid, which
+is exactly what AE's raster engine is built for.
+
+> **Compare file *pixels*, never file *bytes*.** PNG/TIFF carry metadata that differs between
+> otherwise identical renders. Hashing the files reported a mismatch where the pixels were
+> identical.
+
+## Automation
+
+`render.add_to_queue` + `render.set_output` + `render.start`. Two traps hit live:
+
+- The **`Lossless` output template silently rewrites the output path to `.mov`**, discarding a
+  sequence path. Set `outputTemplate` to `TIFF Sequence with Alpha` for a still sequence.
+- **The output directory must exist** — AE errors with "Directory does not exist" rather than
+  creating it.
+
+## What happened to the original research
 
 A research agent investigated AE-native cumulus generation and delivered an **addendum** to a
 main report that never arrived; its transcript was gone before it could be re-queried. So this
