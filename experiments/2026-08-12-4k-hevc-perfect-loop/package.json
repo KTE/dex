@@ -1,0 +1,15 @@
+{
+  "name": "dex-4k-loop-probe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Measurement harness for the dex 4K HEVC seamless-loop experiment",
+  "scripts": {
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  }
+}
