@@ -39,9 +39,9 @@ Lives in this directory. Seven units with hard boundaries:
 
 | Unit | Runs on | Does | Depends on |
 |---|---|---|---|
-| `make-master.sh` | Mac | Generates the procedural lossless master at any res/fps/duration | ffmpeg |
-| `add-barcode.sh` | Mac | Burns the binary frame-index row onto any master | ffmpeg |
-| `encode-variants.sh` | Mac | Master -> encode matrix + player sidecars | ffmpeg |
+| `make-test-card.sh` | Mac | Generates the procedural lossless test card at any res/fps/duration | ffmpeg |
+| `add-barcode.sh` | Mac | Burns the binary frame-index row onto any lossless test card | ffmpeg |
+| `encode-variants.sh` | Mac | Lossless test card -> encode matrix + player sidecars | ffmpeg |
 | `probe.sh` | Pi | Runs one named mpv config, captures mpv's in-band stats | mpv |
 | `capture.mjs` | Mac | Cam Link -> ffmpeg -> decode barcode -> frame-index log | Node, ffmpeg |
 | `analyze.mjs` | Mac | Frame-index log -> wrap-by-wrap anomaly report + verdict | Node |
@@ -72,17 +72,26 @@ emits the encode plus player-specific sidecars — `.mp4.h264` elementary stream
 `.json` pivid timeline, an `.html` `<video loop>` for Cog/WPE — at 1s / 2s / 3s durations. The A/B
 rig for this comparison already exists. This experiment **extends it rather than replacing it**.
 
-### 3.1 Two masters, one on the critical path
+### 3.1 Naming
 
-| Master | Produced by | Purpose | Critical path? |
+The vocabulary is inherited from `packages/example-content`, not invented here: these are **test
+cards**. Lossless originals live under `lossless/` — `test-card-1s-2160p30.mkv`, matching the
+existing `test-card-1s-1080p.mov`. Player-facing encodes carry the `dex-` prefix —
+`dex-test-card-1s-2160p30-h265.mp4`, matching `dex-test-card-2s-1080p-h265.mp4`. The existing
+`{duration}-{resolution}-{codec}` pattern extends to 4K as `2160p30` / `2160p60`, because frame rate
+now distinguishes variants where at 1080p it did not.
+
+### 3.2 Two lossless test cards, one on the critical path
+
+| Test card | Produced by | Purpose | Critical path? |
 |---|---|---|---|
-| **Procedural 4K** | `make-master.sh` (this repo) | **The automated experiment's input.** Smooth motion, matched wrap frames, high-frequency detail so the decoder is honestly loaded. Regenerable at any res/fps/duration by changing an argument. | **Yes** |
+| **Procedural 4K** | `make-test-card.sh` (this repo) | **The automated experiment's input.** Smooth motion, matched wrap frames, high-frequency detail so the decoder is honestly loaded. Regenerable at any res/fps/duration by changing an argument. | **Yes** |
 | **AE 4K render** | Max, from `test-cards.aep` + `AltekaKard-4K.png` | Eyeball checks and demos. Its rotating elements are tuned for *human* perception of loop quality — which is a different instrument than the analyzer, and a legitimate one. | **No** |
 
 The automated pipeline never waits on the AE render. They cannot drift, because **the analyzer
 depends only on the barcode, never on the content** — `add-barcode.sh` applies identically to both.
 
-### 3.2 The frame barcode
+### 3.3 The frame barcode
 
 A row of 16 high-contrast blocks across the top of the frame encoding the frame index in binary,
 plus a fixed 2-block sync pattern so the decoder can locate the row and set its threshold after any
@@ -92,14 +101,14 @@ Read by sampling block centres — **no OCR**. A burned-in numeral would need ch
 which is fragile under rescaling and compression; large high-contrast blocks survive both, and the
 decision is a luma threshold, so chroma subsampling is irrelevant.
 
-### 3.3 Variants
+### 3.4 Variants
 
 | Variant | Purpose |
 |---|---|
-| `4k30-1s` | **Primary.** The case dex exists for, and the fastest to statistical confidence — 3,600 wraps/hour |
-| `4k30-10s` | Longer-GOP behaviour; guards against a result that only holds for tiny files |
-| `4k60-10s` | Stretch check on Pi 5, measured via the weaker 1080p60 capture path |
-| `1080p30-h264.h264` | **Positive control** (§4.3) — same source content as a raw H.264 elementary stream for `hello_video` on the dexOS card |
+| `dex-test-card-1s-2160p30-h265.mp4` | **Primary.** The case dex exists for, and the fastest to statistical confidence — 3,600 wraps/hour |
+| `dex-test-card-10s-2160p30-h265.mp4` | Longer-GOP behaviour; guards against a result that only holds for tiny files |
+| `dex-test-card-10s-2160p60-h265.mp4` | Stretch check on Pi 5, measured via the weaker 1080p60 capture path |
+| `dex-test-card-1s-1080p30-h264.h264` | **Positive control** (§4.3) — same test card as a raw H.264 elementary stream for `hello_video` on the dexOS card |
 
 Encoding: HEVC, closed GOP, IDR at frame 0, keyint = 1 s, silent, ~40 Mbps at 4K30 — comfortably
 under the Pi 4 ~80 Mbps HEVC ceiling.
@@ -162,7 +171,7 @@ black frame. If it cannot catch a defect you planted, "no anomalies detected" is
 anything.
 
 **Control 3 — `hello_video` as positive control (does the analyzer invent defects?).** The barcode
-is burned into the 1080p H.264 master too, so the **dexOS card runs through the identical rig**. It
+is burned into the 1080p H.264 test card too, so the **dexOS card runs through the identical rig**. It
 is the only *proven* seamless loop in existence here. If the analyzer reports it at baseline, the
 end-to-end method is validated in hardware. If the analyzer reports a seam on a known-good loop,
 the rig is wrong and every other number it produced is void.

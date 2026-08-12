@@ -11,8 +11,9 @@ confidence: null
 
 # Lab Notes: 4K HEVC Perfect Loop — does mpv on Pi OS Trixie wrap without a seam?
 
-**Full design:** [PLAN.md](PLAN.md) — harness architecture, asset spec, measurement method,
+**Spec:** [SPEC.md](SPEC.md) — harness architecture, asset spec, measurement method,
 test matrix, escalation ladder.
+**Implementation plan:** [archive/IMPLEMENTATION-PLAN.md](archive/IMPLEMENTATION-PLAN.md)
 
 ## Motivation
 
@@ -71,7 +72,7 @@ patience, the other bounds sunk cost.
 
 ## Pre-Committed Decisions
 
-**If confirmed:** freeze the argv verbatim into `PLAN.md` findings. Proceed to milestone 2 — fork
+**If confirmed:** freeze the argv verbatim into `SPEC.md` findings. Proceed to milestone 2 — fork
 `adafruit/pi_video_looper` (fork, not quilt: a new backend file patches nothing upstream), write
 `Adafruit_Video_Looper/mpv.py`, re-run `analyze.mjs` against the integrated backend as a regression
 test. GRADUATE the harness into the dex project proper.
@@ -143,7 +144,7 @@ Existing material found that materially reduced scope: `packages/example-content
 player-specific sidecars — `.mp4.h264` elementary stream for `hello_video`, `.json` pivid timeline,
 `.html` `<video loop>` for Cog/WPE — at 1s/2s/3s durations. The A/B rig for this exact comparison
 was built in 2024. So the planned `make-asset.sh` shrank to two small scripts operating on existing
-masters (see PLAN.md §3).
+masters (see SPEC.md §3).
 
 Gap found: **no 4K master exists** (`lossless/` is 1080p only), though
 `test-cards/resources/AltekaKard-4K.png` is sitting there for it and `test-cards.aep` is the
@@ -172,7 +173,31 @@ master as well makes the dexOS card a **positive control**. Synthetic defect inj
 analyzer is *sensitive* (it catches planted defects); `hello_video` — the only proven seamless loop
 in existence here — proves it is *specific* (it does not invent defects on a known-good loop). A
 method with only one of those controls can be confidently wrong in one direction. Both are now in
-PLAN.md §4.3 as Controls 2 and 3.
+SPEC.md §4.3 as Controls 2 and 3.
+
+### 2026-08-12 16:20 — Document rename and asset vocabulary corrected
+
+Three corrections from Max after the implementation plan was drafted:
+
+1. `PLAN.md` -> **`SPEC.md`**. It is a spec in the superpowers sense — what is being built and why —
+   not a plan. Earlier entries in this log referred to `PLAN.md`; those links were repaired in
+   place, which is a mechanical link fix, not a revision of any observation.
+2. The implementation plan moved to **`archive/IMPLEMENTATION-PLAN.md`** — kept with the experiment
+   data, deliberately less prominent than the spec and this log.
+3. **"master" was the wrong word for the lossless generated original.** I had reached for outside
+   vocabulary (considered `plate`, `mezzanine`, `raw source`) when the project already had its own:
+   `packages/example-content` calls them **test cards** — `### dex-test-card` under `## animations`,
+   lossless originals at `export/lossless/test-card-1s-1080p.mov`, encodes as
+   `dex-test-card-2s-1080p-h265.mp4`.
+
+Adopted the existing convention rather than a new one: `make-test-card.sh`, lossless output at
+`out/lossless/test-card-1s-2160p30.mkv`, encodes as `dex-test-card-1s-2160p30-h265.mp4`. The
+existing `{duration}-{resolution}-{codec}` pattern extends to 4K as `2160p30` / `2160p60`, because
+frame rate now distinguishes variants where at 1080p it did not.
+
+Worth recording as a lesson, not just a rename: the instinct to coin a term is a signal to go and
+look for the one that already exists. The 2024 example-content kit had answered this question and I
+did not check before proposing four alternatives.
 
 ---
 
