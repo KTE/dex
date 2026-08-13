@@ -497,6 +497,60 @@ verified end to end — Pi 4 trixie → micro-HDMI → Cam Link → USB 3 SuperS
 **Next:** `hello_video` positive control, then the mpv config matrix against
 `dex-test-card-3s-2160p30-clouds.mp4` with `--loop-length 90`.
 
+### 2026-08-13 21:40 — mpv does not reach realtime on Pi 4; no seam measured yet
+
+**Still no seam measurement.** The run was blocked upstream by something the pass bar never
+thought to require: *the player must actually play at realtime*. It does not.
+
+**Headline (preliminary, see caveats):** the best mpv configuration found reaches **14.3 fps**
+against a 30 fps requirement — `ratio 0.476`. Every other configuration is worse.
+
+| Path | Decode | Rate |
+|---|---|---|
+| `ffmpeg -hwaccel drm` (no player) | hardware, zero-copy | **41 fps (1.36x)** ✅ |
+| mpv `--vo=drm --hwdec=drm-copy` | hardware **+ 4K copy to RAM** | 14.3 fps (0.476x) |
+| mpv `--vo=drm --hwdec=no` | software | 5.9 fps |
+| mpv `--vo=gpu --hwdec=drm` | software (hwdec silently declined) | 5.2 fps |
+| mpv `--vo=null --hwdec=drm` | software (null VO cannot take DRM frames) | 12.1 fps |
+| mpv software, ffmpeg CLI | software | 11 fps (0.363x) |
+
+**Mechanism.** The HEVC block is not the limit — bare ffmpeg decodes this exact file at 41 fps
+through `rpi-hevc-dec`. What mpv cannot do on this stack is engage the **zero-copy DRM_PRIME**
+path: `--hwdec=drm` with `--vo=drm` reports `Selected decoder: hevc` (software) rather than a
+hardware surface. Hardware decode is only reachable via `drm-copy`, which copies every 4K frame
+back to system memory, and that copy becomes the new bottleneck. Attempts with
+`--drm-draw-plane=overlay --drm-drmprime-video-plane=primary` did not engage it either.
+
+**Two instruments agree**, which is why this is worth recording despite the caveats below:
+
+- `measure-rate.sh` via mpv's IPC: `ratio=0.476`, effective 14.3 fps
+- The **barcode capture itself**: indices advanced 50→71 in ~1.5 s = ~14 index-steps/s
+
+That agreement matters because they share no code path — one reads mpv's own clock, the other
+reads pixels off an HDMI capture card.
+
+**mpv's drop counters are useless for this.** Throughout, `frame-drop-count`,
+`decoder-frame-drop-count` and `vo-delayed-frame-count` all read **0**. mpv is not dropping
+frames; it is presenting every one of them, far too slowly. Max saw exactly this on the
+capture preview and described it as "all frames, but in slow motion". Only playback-time
+against wall-clock detects it — hence `scripts/measure-rate.sh` as a gate.
+
+**Caveats — this is not a verdict:**
+
+1. The 1080p run was **not a clean control**. The display is forced to 3840x2160, so a 1080p
+   file is software-upscaled 4x, which is why it came out *slower* (6.8 fps) rather than
+   faster. A real 1080p control needs the output mode set to 1080p, and has not been run.
+2. The sink is the **Cam Link, not a monitor**. Whether that affects page-flip timing is
+   untested, and it is a difference from any real dex installation.
+3. The asset is deliberately heavy (39.7 Mbps, grain 7). The clean 4K card has not been tried.
+4. mpv's option space is not exhausted.
+
+**Consequence if it holds.** This is upstream of the seam question: a player at 0.48x has no
+meaningful wrap, so M1 cannot be answered against mpv in this configuration. The escalation
+ladder's step 1 is **pivid**, which does zero-copy KMS plane scanout — precisely the thing mpv
+failed to do here — and the bench asset already ships a pivid `.json` sidecar. That is the
+next thing to try, not more mpv flags.
+
 ---
 
 ## Failed Attempts

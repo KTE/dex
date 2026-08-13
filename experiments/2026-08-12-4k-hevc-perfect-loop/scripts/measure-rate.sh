@@ -27,12 +27,14 @@ usage() {
   exit 2
 }
 
+EXTRA=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --asset)  ASSET="$2";            shift 2 ;;
     --vo)     VO="$2";               shift 2 ;;
     --hwdec)  HWDEC="$2";            shift 2 ;;
     --sample) SECONDS_TO_SAMPLE="$2"; shift 2 ;;
+    --extra)  read -r -a EXTRA <<<"$2"; shift 2 ;;
     -h | --help) usage ;;
     *) usage ;;
   esac
@@ -48,7 +50,7 @@ trap cleanup EXIT
 rm -f "$SOCK"
 mpv --vo="$VO" --hwdec="$HWDEC" --fullscreen --no-osc \
   --no-input-default-bindings --no-terminal --loop-file=inf \
-  --input-ipc-server="$SOCK" "$ASSET" >/tmp/mpv-rate.log 2>&1 &
+  --input-ipc-server="$SOCK" "${EXTRA[@]+"${EXTRA[@]}"}" "$ASSET" >/tmp/mpv-rate.log 2>&1 &
 MPV_PID=$!
 
 # Wait for the socket rather than sleeping a guessed interval.
