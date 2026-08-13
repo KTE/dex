@@ -31,7 +31,7 @@ function synthFrame(value, { white = 235, black = 16 } = {}) {
 }
 
 test('geometry constants are self-consistent', () => {
-  assert.equal(CELLS, 18);
+  assert.equal(CELLS, 14);
   assert.equal(CELLS, 2 + DATA_BITS);
   assert.equal(DECODE_W, CELLS * 4);
   assert.equal(FRAME_BYTES, DECODE_W * DECODE_H);
@@ -45,14 +45,16 @@ test('the barcode fits inside the card label bar, left of the label text', () =>
   const TEXT_X0 = 2075;
 
   const uhd = barcodeRect(3840, 2160);
-  assert.deepEqual(uhd, { x: 941, y: 1884, w: 1098, h: 92, cellW: 61 });
+  assert.deepEqual(uhd, { x: 941, y: 1884, w: 1092, h: 92, cellW: 78 });
   assert.ok(uhd.x > BAR.x0, 'left edge inside the bar');
   assert.ok(uhd.x + uhd.w < TEXT_X0, 'must end before the label text starts');
   assert.ok(uhd.y > BAR.y0 && uhd.y + uhd.h < BAR.y1, 'vertically inset in the bar');
+  assert.equal(uhd.cellW % 1, 0, 'cells must be whole pixels at 4K');
 
   // 1080p is the same card at half scale, so the fractions carry over.
   const hd = barcodeRect(1920, 1080);
-  assert.deepEqual(hd, { x: 471, y: 942, w: 549, h: 46, cellW: 30.5 });
+  assert.deepEqual(hd, { x: 471, y: 942, w: 546, h: 46, cellW: 39 });
+  assert.equal(hd.cellW % 1, 0, 'cells must be whole pixels at 1080p too');
   assert.ok(hd.x > BAR.x0 / 2, 'left edge inside the half-scale bar');
   assert.ok(hd.x + hd.w < TEXT_X0 / 2, 'must end before the half-scale label text');
 });
@@ -67,7 +69,8 @@ test('the barcode clears the frame edges', () => {
 });
 
 test('decodeFrame round-trips synthetic values', () => {
-  for (const v of [0, 1, 2, 255, 256, 4095, 65535]) {
+  // 12 data bits: 0..4095. 4095 is the maximum representable index.
+  for (const v of [0, 1, 2, 255, 256, 2048, 4095]) {
     assert.equal(decodeFrame(synthFrame(v)), v, `failed for ${v}`);
   }
 });

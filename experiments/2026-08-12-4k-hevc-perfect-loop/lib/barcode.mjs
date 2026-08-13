@@ -34,10 +34,19 @@
  * to be told the resolution. That is why `capture.mjs` takes no --width/--height.
  */
 
-/** Total cells across the strip: 2 sync + 16 data. */
-export const CELLS = 18;
-/** Frame-index width in bits. */
-export const DATA_BITS = 16;
+/** Total cells across the strip: 2 sync + 12 data. */
+export const CELLS = 14;
+/**
+ * Frame-index width in bits.
+ *
+ * 12 bits covers 4096 frames — 68 s at 60 fps, far beyond any dex loop, which
+ * runs 1-3 s. An earlier version used 16 bits (65,536 frames): the extra range
+ * was never reachable, so bits 12-15 were permanently zero and the right of the
+ * strip was always black. Dropping four bits widens every remaining cell by 28%
+ * in the same space, which is margin that matters if the capture path is ever a
+ * camera rather than an HDMI grabber.
+ */
+export const DATA_BITS = 12;
 /** Pixels per cell after the decode downscale. */
 export const CELL_PX = 4;
 /** Decode-stage frame width in pixels. */
@@ -66,8 +75,11 @@ export const SYNC_MIN_DELTA = 40;
  */
 /** Barcode left edge as a fraction of frame width (941/3840). */
 export const BAR_X_FRAC = 941 / 3840;
-/** Barcode width as a fraction of frame width (1098/3840 — 18 cells of 61px at 4K). */
-export const BAR_W_FRAC = 1098 / 3840;
+/**
+ * Barcode width as a fraction of frame width (1092/3840).
+ * Chosen so 14 cells divide evenly: 78px at 4K, 39px at 1080p.
+ */
+export const BAR_W_FRAC = 1092 / 3840;
 /** Barcode top edge as a fraction of frame height (1884/2160, inset into the bar). */
 export const BAR_Y_FRAC = 1884 / 2160;
 /** Barcode height as a fraction of frame height (92/2160, inset into the bar). */
