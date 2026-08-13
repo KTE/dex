@@ -6,6 +6,11 @@ packages:
 * [example content](./packages/example-content/README.md)
 * [branding](./packages/branding/README.md)
 
+docs:
+
+* [Building dex test cards and bench assets](./docs/test-card-pipeline.md) — how a test
+  card becomes a measurable video file, and how to add a new format
+
 ## getting started
 
 Build a dex player by flashing the image to an SD card,

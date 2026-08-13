@@ -5,8 +5,9 @@ Measurement harness for the dex seamless-loop experiment.
 - **Spec:** [SPEC.md](SPEC.md) — what is being built and why
 - **Running record:** [LOG-4k-hevc-perfect-loop.md](LOG-4k-hevc-perfect-loop.md)
 - **Implementation plan:** [archive/IMPLEMENTATION-PLAN.md](archive/IMPLEMENTATION-PLAN.md)
-- **Building assets:** [BUILDING-ASSETS.md](BUILDING-ASSETS.md) — the full card → bench-asset
-  pipeline, repeatable for new formats
+- **Building assets:** [docs/test-card-pipeline.md](../../docs/test-card-pipeline.md) — the
+  full card → bench-asset pipeline, repeatable for new formats. It lives in the project's
+  `docs/` rather than here because the pipeline outlived this experiment.
 
 ## What this measures
 
