@@ -37,6 +37,15 @@ const inputArgs = source.startsWith('avfoundation:')
 const ff = spawn('ffmpeg', [
   '-hide_banner', '-loglevel', 'error',
   ...inputArgs,
+  // Without this, ffmpeg produces a CONSTANT-frame-rate stream and duplicates
+  // frames to fill it. Against a live capture device, with nothing pacing the
+  // pipeline, it duplicates as fast as the consumer can read. Measured
+  // 2026-08-13: 300 "frames" arrived in 0.887 s (~340 fps from a 27 fps device),
+  // every one of them the same frame, decoding to a single constant index.
+  // That is a silently frozen capture -- it looks like a successful run, and
+  // every measurement taken from it is worthless. passthrough emits exactly the
+  // frames the device delivers, at the device's own pace.
+  '-fps_mode', 'passthrough',
   '-vf', decodeFilter(),
   '-f', 'rawvideo', '-pix_fmt', 'gray', '-',
 ], { stdio: ['ignore', 'pipe', 'inherit'] });
