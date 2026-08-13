@@ -739,6 +739,44 @@ does **not** have.
 **Required before any seam run:** rebuild the bench asset with current `lib/barcode.mjs`, then
 re-verify `capture.mjs --source <file>` returns 0..89. No seam number is meaningful until then.
 
+### 2026-08-13 23:20 — The 4K frame-rate ceiling on Pi 4, measured. **4K30 is the target.**
+
+Prompted by a goal that named 4K40 (later confirmed a typo). Worth answering anyway, because it
+bounds dex's spec rather than leaving the frame rate an assumption.
+
+**Decode ceiling — measured without any display, so it is the silicon's limit:**
+
+| Asset | `ffmpeg -hwaccel drm` speed | Implied 4K HEVC decode rate |
+|---|---|---|
+| 4K**30** clouds (39.3 Mbps) | 1.36x | ~41 fps |
+| 4K**60** card | 0.753x | ~45 fps |
+
+So the Pi 4 decodes roughly **41–45 fps of 4K HEVC**. That is the hard bound, before any
+display path cost.
+
+**Consequences:**
+
+- **4K30 — comfortable.** 0.969x with zero drops through mpv's overlay path, ~35 % decode
+  headroom. This is the right target.
+- **4K40 — marginal at best, and untestable here.** It would need essentially all the decode
+  budget with nothing left for presentation, *and* a >=40 Hz 4K mode, which no sink on this
+  bench provides.
+- **4K60 — out of reach.** Decode alone runs at 0.753x. Confirmed end to end: playing the 4K60
+  asset through the working mpv path reports `ratio=0.976` but **83 dropped frames** — it holds
+  the clock by discarding frames, which is exactly the failure the "correct playback" bar (§4.4
+  A2) exists to catch. A drop-free reading of the ratio alone would have called this a pass.
+
+**Display-side limit, independent of decode.** With the Cam Link attached, no 4K mode above
+30 Hz exists at all: its EDID is HDMI **1.4** and caps at 2160p30 (297 MHz). Forcing
+`video=HDMI-A-1:3840x2160@60` *and* `hdmi_enable_4kp60=1` did **not** take — TMDS stayed at
+297 MHz, because the driver will not synthesise a mode the sink does not advertise. 4K60 needs
+594 MHz and an HDMI 2.0 sink. The `--untimed` runs both converging on ~30 fps are therefore
+measuring the 30 Hz vsync, not the pipeline.
+
+**Decision (Max, 2026-08-13): dex targets 4K30.** Recorded so the frame rate stops being an open
+assumption in M3 (transcode-on-ingest) and M4 (exhibition format) — ingest can normalise to 30 fps
+knowing 60 was ruled out by measurement, not by guesswork.
+
 ---
 
 ## Failed Attempts
