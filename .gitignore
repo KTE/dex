@@ -3,3 +3,7 @@
 
 /dist/
 /tmp/
+
+# After Effects rotates these every few minutes, so tracking even one of them
+# guarantees a permanently dirty tree. The .aep projects themselves ARE tracked.
+Adobe After Effects Auto-Save/
