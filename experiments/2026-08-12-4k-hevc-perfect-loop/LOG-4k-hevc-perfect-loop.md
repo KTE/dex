@@ -102,24 +102,59 @@ early-stop exists to prevent.
 | shellcheck | 0.11.0 |
 | TypeScript (dev only) | 5.9.3 · `@types/node` 22.20.1 |
 
-### Pi side — playback host (to be filled at the bench)
+### Pi side — playback host (recorded 2026-08-13 at the bench)
 
-- [ ] Pi OS image name + release date, `uname -a`
-- [ ] `mpv --version`
-- [ ] `ffmpeg -version` — **confirm it is the `+rpt2` distro build** (this is what carries the
-      Pi 5 HEVC patches; if it is not, hardware decode findings are not comparable)
-- [ ] Board revisions for both the Pi 5 and the Pi 4 (`cat /proc/cpuinfo | grep Revision`)
-- [ ] Display: model, negotiated mode, whether `hdmi_enable_4kp60` was needed
-- [ ] HDMI cable (Premium High Speed certified?)
-- [ ] `vc4.force_hotplug` setting, if used
+| Component | Value |
+|---|---|
+| Host | `dexpi4.local` / `192.168.1.74`, SD card `d05` |
+| Board | Raspberry Pi 4 Model B Rev 1.1, revision `c03111` |
+| OS | Debian GNU/Linux 13 (trixie) — Raspberry Pi OS **64-bit Lite** |
+| Kernel | `6.18.34+rpt-rpi-v8` aarch64 |
+| mpv | v0.40.0 |
+| ffmpeg | `7.1.5-0+deb13u1+rpt1` — ⚠️ **`+rpt1`, not `+rpt2`** (see below) |
+| HEVC decoder | `rpivid` present at `/dev/video19` (HEVC listed as an output format) |
+| Thermal | `throttled=0x0`, 42.3 °C idle at 4K30 — no active cooling yet |
 
-### Capture side (to be filled at the bench)
+- **The `+rpt2` check did not pass as written.** The pre-committed criterion above expects the
+  `+rpt2` distro build. Trixie ships `+rpt1`. The criterion was written about the **Pi 5**
+  HEVC patches, and this is a Pi 4 decoding through `rpivid`, so it plausibly does not apply —
+  but it is recorded as *unresolved* rather than waved through, and must be settled before any
+  Pi 5 leg.
+- **Display / sink:** the Cam Link 4K itself (not a monitor) — see Capture side.
+- **Negotiated mode:** `3840x2160`, RGB 4:4:4, 8 bpc, limited range, `tmds_char_rate` 297 MHz.
+- **`hdmi_enable_4kp60` not needed** — 4K30 is 297 MHz, the HDMI 1.4 ceiling. It would only be
+  required for a 4K60 leg, which this sink cannot accept anyway.
+- **HDMI cable:** micro-HDMI to HDMI, not certification-marked, but empirically proven at
+  297 MHz — the same cable drives a real 4K display. It was wrongly suspected during
+  diagnosis; see the 2026-08-13 entry.
+- **`vc4.force_hotplug` not used.** Instead `video=HDMI-A-1:3840x2160@30` is forced in
+  `/boot/firmware/cmdline.txt` (original kept as `cmdline.txt.orig`), which fixes a real
+  boot-order fragility rather than just a bench annoyance — see the 2026-08-13 entry.
 
-- [ ] Cam Link 4K firmware version; the `avfoundation` device index it enumerates as
-- [ ] Confirm the 4K capture ceiling is 30 fps on this unit
-- [ ] Confirm no HDMI passthrough (capture and projector A/B run sequentially)
-- [ ] Optional: Insta360 X4 webcam-mode resolution/fps, and whether the barcode survives
-      its dewarping (see 2026-08-12 17:05 entry)
+### Capture side (recorded 2026-08-13 at the bench)
+
+| Property | Value |
+|---|---|
+| Device | Elgato Cam Link 4K — `avfoundation` **device index 0** ("Cam Link 4K") |
+| EDID | mfg `EGA`, product `0x0066`, name `Cam Link 4K`, EDID 1.3 + one CEA-861 rev 3 block |
+| Advertised 4K | VIC 95 / 94 / 93 → 2160p **30 / 25 / 24 only**; no 2160p50/60 |
+| Colour | RGB 4:4:4, YCbCr 4:4:4, YCbCr 4:2:2 — **no 4:2:0** (no HDMI Forum block; HDMI 1.4) |
+| Pixel formats to host | `uyvy422`, `yuyv422`, `nv12`, `0rgb`, `bgr0` |
+| **Measured 4K rate** | **~27 fps, not 30** — uniform pacing, not dropped frames |
+| USB requirement | **SuperSpeed (5 Gb/s) mandatory** — gated by `scripts/check-capture-link.sh` |
+
+- **The "4K ceiling is 30 fps" assumption is wrong as stated.** It is ~27 fps in practice.
+  Measured over 600 frames (22.43 s, scaling linearly from 300 frames / 11.04 s). Inter-frame
+  timestamp deltas cluster at 0.0358–0.0373 s with **no bimodal distribution and no doubled
+  intervals**, which is pacing rather than frame loss. Requesting `nv12` instead of `uyvy422`
+  changed nothing (byte-identical 11.04 s), consistent with the card transmitting 4:2:2 over
+  USB regardless of the host-requested format. 4:2:2 at 4K30 needs ~497 MB/s against USB 3.0
+  Gen 1's ~450 MB/s practical ceiling; **450/497 = 0.905** against a measured **27/30 = 0.90**.
+  Recorded as the best-fitting inference, not as proof.
+- **No HDMI passthrough** on this unit — capture and projector A/B necessarily run sequentially.
+- **Firmware version:** not read (Elgato exposes it only via their own utility). Not blocking.
+- Optional Insta360 X4 check: still not done. Now more interesting than before, since the Cam
+  Link cannot deliver a full-rate 4K30 capture.
 
 ## Baseline
 
@@ -403,14 +438,74 @@ alignment, and that no resolution is hardcoded in either filter.
 
 All assets rebuilt. The three 1080p variants verify clean; the 4K pair is rebuilding.
 
+### 2026-08-13 20:50 — First bench session: rig stood up, capture chain proven at 4K30
+
+No loop measured yet. This session was entirely about making the instrument trustworthy, and
+it found two instrument faults before a single frame of the bench asset was played.
+
+**Standing up the Pi.** Raspberry Pi OS trixie 64-bit Lite on card `d05`, SSH-only. Lite
+deliberately: the desktop image ships the labwc Wayland compositor, which would sit between
+the decoder and HDMI scanout and become an instrument-side variable. Lite gives direct
+KMS/DRM — the barest stack, and what a real dex player would boot. Full environment table
+above. `rpivid` confirmed present at `/dev/video19`, so mpv cannot silently fall back to
+software decode, which was the precondition most likely to poison a run.
+
+**Fault 1 — 4K capture produced a flat green image.** Diagnosis in order:
+
+1. ConsoleLink showed green at 4K, and a working preview at 1080p. Ambiguous across four
+   candidate causes (app, driver, card, source).
+2. Bypassing ConsoleLink and reading the raw UYVY bytes collapsed it to one: **all zeros**
+   (`Y=0, Cb=0, Cr=0` converts to exactly that green). Not a misinterpreted image — an absent
+   one. `avfoundation` also reported an **empty supported-mode list**, i.e. no input lock.
+3. I then built a confident and **wrong** diagnosis on the HDMI side — see Failed Attempts.
+4. Actual cause: the Cam Link had enumerated at **USB 2.0** (`Device Speed = 2`,
+   `UsbLinkSpeed = 480000000`) behind an `Anker USB2.0 Hub`. The card advertises its available
+   *input* modes according to USB bandwidth, so without SuperSpeed it stops offering 4K
+   entirely. Max found it by changing ports, then fixed it properly with a USB 3 dongle.
+
+The failure is **intermittent** — the same port renegotiated between SuperSpeed and USB 2.0
+twice within one session, minutes apart. An undetected mid-run drop would zero every captured
+frame, which `analyze.mjs` would report as total decode failure: indistinguishable from a
+catastrophic player fault. So it is now a gate, `scripts/check-capture-link.sh`, run **before
+and after** every capture — a pre-flight check alone cannot see a mid-run drop.
+
+**Fault 2 — the "30 fps 4K ceiling" is really ~27 fps.** Measured, uniform, and a property of
+the card over USB 3.0 Gen 1 rather than dropped frames. Numbers and reasoning in the Capture
+side table. Consequence for the experiment: a systematic ~10 % frame deficit that belongs to
+the instrument. Barcode-index analysis tolerates gaps by construction, so this is a design
+input, not a blocker — but by the noise-floor reasoning in Success Criteria, a higher floor
+makes the test **less** sensitive, so runs must be sized accordingly, and a ~10 % shortfall at
+4K must never be read as a player defect.
+
+**Fault 3 — boot-order fragility, and it is a dex production bug, not a bench annoyance.**
+After an accidental reboot and a re-flash, the Pi came up at **1024×768** (`tmds` 78.75 MHz) —
+the DRM fallback used when no EDID is read at boot. The connector later read the Cam Link's
+EDID correctly (byte-identical to the earlier dump), but the console had already set its mode
+and does not re-modeset on its own. Forcing a re-probe restored the 4K mode list without
+fixing the active mode.
+
+This matters beyond the bench: **dex players are switched off at the mains.** If the display
+or projector is not awake when the Pi boots, the player lands on a 1024×768 fallback and stays
+there. Fixed deterministically with `video=HDMI-A-1:3840x2160@30` in
+`/boot/firmware/cmdline.txt` (original kept as `cmdline.txt.orig`), which is the
+production-correct answer rather than `vc4.force_hotplug`.
+
+**End state:** Pi boots straight to 3840×2160 at 297 MHz, `throttled=0x0`, 42.3 °C. Full chain
+verified end to end — Pi 4 trixie → micro-HDMI → Cam Link → USB 3 SuperSpeed → `avfoundation`
+→ `ffmpeg` — with the USB gate passing before and after. mpv v0.40.0 and ffmpeg installed.
+
+**Next:** `hello_video` positive control, then the mpv config matrix against
+`dex-test-card-3s-2160p30-clouds.mp4` with `--loop-length 90`.
+
 ---
 
 ## Failed Attempts
 
 | # | What Was Tried | Why It Failed | Lesson |
 |---|---------------|---------------|--------|
-
-_(empty — nothing run yet)_
+| 1 | Diagnosed the all-zero 4K capture as an **HDMI physical-layer failure at 297 MHz** — cable, micro-HDMI adapter, or the Cam Link's receiver | Wrong layer entirely. The real fault was USB 2.0 enumeration. Every measurement in the diagnosis was *correct* — the Pi did send exactly what the EDID advertised, 1080p at 148.5 MHz did work, and all three CEA 4K modes genuinely do run at 297 MHz — and none of it was *relevant* | Measuring the rawest layer first (raw bytes over ConsoleLink) was right and worked. The error was concluding from one link in the chain without enumerating the others. **The USB link speed was one `ioreg` call away the entire time.** Check every hop before committing to a hypothesis about any hop |
+| 2 | Tried to lower the HDMI bandwidth by forcing 2160p24 / 2160p25 | Not a syntax failure — the modes applied correctly (`type: userdef` in `modetest`). CEA-861 gives 2160p24/25/30 a **common 297 MHz clock**, varying only horizontal blanking (htotal 4400 / 5280 / 5500) | "Drop the frame rate to fit the link" is a reflex that does **nothing** at 4K. Read the actual mode table before assuming a knob exists |
+| 3 | Reported a mangled `cfg80211.ieee80211_regdom=CHdtparam=audio=on` in `cmdline.txt` | Artifact of reading `cmdline.txt` (no trailing newline) and `config.txt` in one batched command | Do not diagnose from concatenated command output. Retracted before anyone "fixed" a file that was always correct |
 
 ## Findings
 
