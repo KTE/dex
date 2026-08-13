@@ -849,6 +849,79 @@ This is the inverse and subtler case: the instrument was working exactly as desi
 documented, and I asked it a question it was explicitly never built to answer. The spec had the
 answer written down before the bench session started.
 
+### 2026-08-14 01:10 — **SEAM FOUND.** mpv `--loop-file=inf` holds the last frame, every loop.
+
+Oversampling did it. At **1080p60 output the Cam Link captures 100 % of frames** (1800 in 30.00 s
+= 60.00 fps, zero undecodable) — no deficit, because 1080p60 uyvy is 248 MB/s and fits USB 3.0
+comfortably where 4K30 does not. Against 30 fps content on a 60 Hz display that is **2x
+oversampling**: every content frame must occupy exactly 2 captures, and a held frame shows up
+directly as 4 or more. No statistics required.
+
+**Dwell histogram, 30 s / 10 loops:**
+
+| captures per displayed frame | count | meaning |
+|---|---|---|
+| 2 | 873 | correct — 30 fps on a 60 Hz display |
+| **5** | **10** | **held frame** |
+| 1, 3 | 1 each | recording edges |
+
+**Every one of the ten held frames is index 89 — the last frame of the loop. Ten out of ten
+loops. And nothing is skipped: there are no index steps greater than 1.**
+
+```
+HELD:    index 89, held 5 captures   x10
+SKIPPED: none
+```
+
+**Magnitude.** 5 captures at 60 Hz = 83.3 ms, against 33.3 ms for every other frame. So frame 89
+is displayed for **an extra 50 ms — 1.5 extra frame times — at every wrap**, making the real loop
+period `(89 x 2 + 5) / 60 = 3.050 s` rather than 3.000 s. That is a visible hitch, not a
+statistical whisper: 50 ms is well above the threshold at which a hesitation in smooth motion
+reads as a stutter, which is exactly what the card's rotating sweep hands were designed to expose.
+
+**This is the artifact the experiment exists to find**, and it is unambiguous rather than
+inferred: 100 % reproducible, perfectly localised to the wrap, with a clean mechanism (a held
+frame, not a dropped one, which is why every drop counter reported zero all evening).
+
+**Scope of the claim.** Measured at **1080p60 output** with `mpv --loop-file=inf`. It is a
+property of mpv's *looping mechanism*, not of 4K: the file, decode path and output path are all
+the same ones that play cleanly mid-loop. Whether the 4K30 config shows the identical 50 ms hold
+is not yet proven — the Cam Link cannot oversample at 4K (it delivers ~27 of 30 fps), so 4K
+cannot produce this evidence directly. Same loop code, so it is very likely; treat as strongly
+indicated, not measured.
+
+**CAUSE ISOLATED — it is the seek, and the control is clean.** Ran the config matrix plus a
+concatenated file that reaches the same wrap with no seek at all:
+
+| Configuration | dwell histogram | held frames |
+|---|---|---|
+| `--loop-file=inf` (seeks at EOF) | `{2: 582, 5: 7}` | **89 x7** |
+| `--ab-loop-a=0 --ab-loop-b=2.99` (seeks before EOF) | `{2: 582, 5: 7}` | **89 x7** |
+| **12x concatenated file (no seek)** | **`{2: 597}`** | **none** |
+
+`ab-loop` does **not** help, which rules out mpv's EOF/restart path specifically — both configs
+seek, and both hold. The concatenated control is spotless: 597 frames, every one occupying
+exactly 2 captures, zero anomalies across 7 wraps.
+
+**So the mechanism is the seek itself**: at the wrap mpv seeks and must decode a fresh IDR, and
+the previously displayed frame stays on screen for that ~50 ms. Nothing is dropped, which is why
+every drop counter read zero all evening.
+
+Two conclusions follow, and they point in opposite directions:
+
+- **The platform is exonerated.** The Pi 4 presents 30 fps content with flawless frame timing —
+  the concatenated run is the proof, and it used the same file, decoder, and output path.
+- **Seek-based looping is the defect.** Any solution must avoid a seek at the wrap: pre-decode
+  the loop start before reaching the end, or keep the next iteration already in flight. That is
+  exactly what `hello_video` did, and exactly what pivid means by "gapless". It also means a
+  `pi_video_looper` mpv backend inherits this seam unless M2 addresses it explicitly.
+
+**Method note — the instrument finally matched the question.** The 4K path measures the right
+*load* but samples below the display rate, so it can only support statistical comparisons. The
+1080p path measures the wrong load but **oversamples**, so it supports direct observation. Tonight
+the second answered in 30 seconds what the first could not settle in three hours. Both are worth
+keeping, for different questions.
+
 ---
 
 ## Failed Attempts
