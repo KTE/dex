@@ -648,6 +648,97 @@ Cam Link to **1**. The documented `--source avfoundation:0` therefore silently r
 a camera is attached. `scripts/check-capture-link.sh` is unaffected (it matches by name), but the
 capture invocation is not.
 
+### 2026-08-13 23:00 — REVERSED: mpv **does** reach realtime at 4K. It was the wrong interop.
+
+**The 21:40 conclusion was wrong.** mpv is not incapable of 4K30 on a Pi 4; I had never tried
+the interop that works. Correcting it in full, because it inverts the milestone verdict.
+
+**Root cause, and it explains every earlier number.** `rpi-hevc-dec` can *only* output NV12 in
+Broadcom's 128-byte-column **SAND** tiling (`NV12_128C8`, `DRM_FORMAT_MOD_BROADCOM_SAND128`) —
+verified directly: forcing `video/x-raw,format=NV12` on the decoder fails with `not-negotiated`.
+The Pi 4's HVS **scans SAND out natively**, confirmed on this machine:
+
+```
+NV12:  BROADCOM_SAND128(0x700000000000004) BROADCOM_SAND64 BROADCOM_SAND256 LINEAR
+```
+
+So zero-copy needs **no conversion at all** — but *only* on the direct-to-KMS-plane path. Every
+other path pays a detile cost: `drm-copy` detiles on the CPU (14.3 fps), and GL import makes v3d
+sample SAND at 4K (5 fps). That is the entire story of tonight's earlier numbers.
+
+**The fix is one flag.** mpv has *two* DRM_PRIME interops. `drmprime` imports into GL; the
+`drmprime-overlay` interop puts the frame on a KMS plane and skips GL for video entirely.
+
+| mpv configuration | ratio | fps | drops |
+|---|---|---|---|
+| `--vo=drm --hwdec=drm` (probe.sh's old default) | — | ~5 | **software decode, silently** |
+| `--vo=drm --hwdec=drm-copy` | 0.476 | 14.3 | 0 |
+| `--gpu-hwdec-interop=drmprime-overlay` | 0.947 | 28.4 | 0 |
+| **+ `--video-sync=display-resample`** | **0.969** | **29.1** | **0** |
+
+Verified out-of-band, not just by mpv's own clock — 317 captured frames, **317 decoded, 0
+nulls, 89 of 90 distinct indices**, steps `+1`x265 / `+2`x40 / `0`x11. The `+2` and `0` steps are
+the Cam Link's ~27 fps sampling of a 30 fps display, already characterised. The residual 3 % on
+the ratio is most likely `measure-rate.sh`'s own 0.2 s polling overhead.
+
+**Candidate M1 deliverable — the argv** (now `probe.sh`'s default; `--no-overlay` restores the
+old behaviour for A/B):
+
+```
+mpv --vo=gpu --hwdec=drm --gpu-context=drm --gpu-api=opengl \
+    --gpu-hwdec-interop=drmprime-overlay \
+    --drm-draw-plane=overlay --drm-drmprime-video-plane=primary \
+    --video-sync=display-resample \
+    --fullscreen --no-osc --no-input-default-bindings --no-terminal \
+    --loop-file=inf <asset>
+```
+
+**Other players measured on the same asset and rig:**
+
+| Player | Rate | Notes |
+|---|---|---|
+| `ffmpeg -hwaccel drm -f vout_drm` | **1.92x** | Fastest by far. jc-kynesim's drmu plane path. Verified on screen: 318/318 decoded, 87/90 distinct. But its author calls it "a development test device, not production-grade" |
+| mpv + `drmprime-overlay` | 0.969x | **Best for dex** — M2's target player, and `--loop-file=inf` is a real looping mode |
+| GStreamer `v4l2slh265dec ! glupload ! glimagesink` | 0.97x | Works, but GL import — not zero-copy, no headroom |
+| VLC `--vout drm_vout` | 0.91x | Logged `Failed to set atomic cap` and fell off the atomic path |
+| GStreamer `... ! kmssink` | **fails** | See below |
+| GStreamer decode only (`fakesink`) | 1.90x | The stateless decoder alone beats ffmpeg's 1.36x |
+
+**GStreamer `kmssink` is a known upstream gap, not a misconfiguration.** It fails with
+`gst_kms_allocator_add_fb: Failed to bind to framebuffer: Numerical result out of range` —
+`drmModeAddFB2` rejecting the SAND modifier — then falls back to dumb-buffer allocation and OOMs
+at 4K. A Raspberry Pi engineer (6by9) states this directly on the Pi forums about this exact
+trixie output format: *"kmssink needs further work to support it when using DMABuf."*
+`v4l2convert` cannot help either: it only accepts `video/x-raw(memory:DMABuf), format=DMA_DRM`
+and rejects the decoder's caps outright.
+
+**Escalation ladder outcome:** step 1 (pivid) turned out to be unnecessary — its build was still
+running when mpv was fixed, and is now moot for M1. Step 2 (GStreamer) is blocked upstream. Step
+3 (custom C player) is not needed. Ladder can be stood down.
+
+### 2026-08-13 23:05 — Blocker for the seam measurement: the barcode moved under the experiment
+
+`KTE/dex@835d724` ("move the barcode into the card's label bar"), committed by the parallel
+asset-polishing session **while this bench session was running**, changes the barcode geometry:
+
+| | asset on the Pi | `lib/barcode.mjs` now |
+|---|---|---|
+| x | 1020 | 941 |
+| width | 1800 | 1098 |
+
+So the decoder and the bench asset have drifted apart, and **every `capture.mjs` run against the
+old asset returns `null`**. All the index streams above were decoded with the *old* geometry,
+supplied manually, to keep tonight's playback results valid.
+
+**It failed loudly, which is the design working.** `decodeFrame` checks its white/black sync
+cells (`white - black < SYNC_MIN_DELTA`) before trusting anything; with the crop off by roughly
+one cell it read `white=150, black=255` and refused. The README's warning — *"a burner and
+decoder that drifted apart would fail silently"* — is now the one hazard this harness provably
+does **not** have.
+
+**Required before any seam run:** rebuild the bench asset with current `lib/barcode.mjs`, then
+re-verify `capture.mjs --source <file>` returns 0..89. No seam number is meaningful until then.
+
 ---
 
 ## Failed Attempts
@@ -657,6 +748,8 @@ capture invocation is not.
 | 1 | Diagnosed the all-zero 4K capture as an **HDMI physical-layer failure at 297 MHz** — cable, micro-HDMI adapter, or the Cam Link's receiver | Wrong layer entirely. The real fault was USB 2.0 enumeration. Every measurement in the diagnosis was *correct* — the Pi did send exactly what the EDID advertised, 1080p at 148.5 MHz did work, and all three CEA 4K modes genuinely do run at 297 MHz — and none of it was *relevant* | Measuring the rawest layer first (raw bytes over ConsoleLink) was right and worked. The error was concluding from one link in the chain without enumerating the others. **The USB link speed was one `ioreg` call away the entire time.** Check every hop before committing to a hypothesis about any hop |
 | 2 | Tried to lower the HDMI bandwidth by forcing 2160p24 / 2160p25 | Not a syntax failure — the modes applied correctly (`type: userdef` in `modetest`). CEA-861 gives 2160p24/25/30 a **common 297 MHz clock**, varying only horizontal blanking (htotal 4400 / 5280 / 5500) | "Drop the frame rate to fit the link" is a reflex that does **nothing** at 4K. Read the actual mode table before assuming a knob exists |
 | 3 | Reported a mangled `cfg80211.ieee80211_regdom=CHdtparam=audio=on` in `cmdline.txt` | Artifact of reading `cmdline.txt` (no trailing newline) and `config.txt` in one batched command | Do not diagnose from concatenated command output. Retracted before anyone "fixed" a file that was always correct |
+| 4 | Concluded at 21:40 that **mpv cannot reach realtime at 4K** on Pi 4, after sweeping `--vo` x `--hwdec` | The sweep covered the wrong axis. mpv has *two* DRM_PRIME interops and every configuration tried used the GL one (`drmprime`); the KMS-plane one (`drmprime-overlay`) doubles the rate to 0.969x. Every measurement was right; the option space was mis-mapped | Sweeping many values of the parameters you *know about* feels exhaustive and is not. Before declaring a tool incapable, enumerate its extension points (`--gpu-hwdec-interop=help` would have shown this in one command) rather than its settings |
+| 5 | Chased the all-null capture as a *display* fault under `vout_drm` — suspected modeset, scaling, offset | The display was perfect; `lib/barcode.mjs` had been changed by a concurrent session mid-run, so the decoder was looking 79 px left of a bar that had also narrowed by 702 px | When a measurement breaks after being correct, check whether the *instrument* changed before re-examining the subject. `git log` on the harness is a diagnostic step |
 
 ## Findings
 

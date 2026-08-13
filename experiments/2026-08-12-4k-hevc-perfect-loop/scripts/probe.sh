@@ -15,7 +15,20 @@ usage() {
   exit 2
 }
 
-CONFIG=""; ASSET=""; DURATION=""; VO="drm"; HWDEC="drm"; STATS=""; DRY=0
+# Defaults measured 2026-08-13 on Pi 4 / trixie. Do not "simplify" these.
+#
+# `--vo=drm --hwdec=drm` (the old default) SILENTLY DECODES IN SOFTWARE: mpv logs
+# "Selected decoder: hevc" and runs 4K30 at ~5 fps. `--hwdec=drm-copy` does use the
+# hardware but copies every 4K frame back to system RAM, capping at 14.3 fps.
+#
+# The path that works is the OVERLAY interop: it puts the DRM_PRIME frame on a KMS
+# plane instead of importing it into GL, so the decoder's native SAND (NV12_128C8)
+# buffer is scanned out untouched. 0.97x realtime, 29.1 fps, zero drops.
+CONFIG=""; ASSET=""; DURATION=""; VO="gpu"; HWDEC="drm"; STATS=""; DRY=0
+# Flags that make the overlay interop engage. Overridable with --no-overlay.
+OVERLAY=(--gpu-context=drm --gpu-api=opengl --gpu-hwdec-interop=drmprime-overlay
+  --drm-draw-plane=overlay --drm-drmprime-video-plane=primary
+  --video-sync=display-resample)
 while [ $# -gt 0 ]; do
   case "$1" in
     --config)   CONFIG="$2";   shift 2 ;;
@@ -25,6 +38,7 @@ while [ $# -gt 0 ]; do
     --hwdec)    HWDEC="$2";    shift 2 ;;
     --stats)    STATS="$2";    shift 2 ;;
     --dry-run)  DRY=1;         shift ;;
+    --no-overlay) OVERLAY=();  shift ;;
     *) usage ;;
   esac
 done
@@ -35,6 +49,7 @@ done
 ARGS=(mpv
   "--vo=${VO}"
   "--hwdec=${HWDEC}"
+  ${OVERLAY[@]+"${OVERLAY[@]}"}
   --fullscreen
   --no-osc
   --no-input-default-bindings
