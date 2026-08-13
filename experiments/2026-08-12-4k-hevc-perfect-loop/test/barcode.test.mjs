@@ -37,29 +37,31 @@ test('geometry constants are self-consistent', () => {
   assert.equal(FRAME_BYTES, DECODE_W * DECODE_H);
 });
 
-test('the barcode lands centred and exactly on the test card grid', () => {
-  // The card's grid was measured from a real frame: 50px cells at 1080p,
-  // lines at x = 10 + 50k and y = 40 + 50k.
-  const hd = barcodeRect(1920, 1080);
-  assert.deepEqual(hd, { x: 510, y: 940, w: 900, h: 50, cellW: 50 });
-  assert.equal(hd.x + hd.w / 2, 960, 'must be horizontally centred');
-  assert.equal((hd.x - 10) % 50, 0, 'left edge must sit on a grid line');
-  assert.equal((hd.y - 40) % 50, 0, 'top edge must sit on a grid line');
-  assert.equal(hd.w / hd.cellW, CELLS, 'must be a whole number of grid cells wide');
+test('the barcode fits inside the card label bar, left of the label text', () => {
+  // Measured from the rendered 4K card, 2026-08-13:
+  //   black bar   x 921..2918   y 1880..1980
+  //   label text  x 2075..2758
+  const BAR = { x0: 921, x1: 2918, y0: 1880, y1: 1980 };
+  const TEXT_X0 = 2075;
 
-  // At 4K the card is scaled 2x, so the grid is 100px and the same holds.
   const uhd = barcodeRect(3840, 2160);
-  assert.deepEqual(uhd, { x: 1020, y: 1880, w: 1800, h: 100, cellW: 100 });
-  assert.equal(uhd.x + uhd.w / 2, 1920, 'must be horizontally centred');
-  assert.equal((uhd.x - 20) % 100, 0, 'left edge must sit on the 4K grid');
-  assert.equal((uhd.y - 80) % 100, 0, 'top edge must sit on the 4K grid');
+  assert.deepEqual(uhd, { x: 941, y: 1884, w: 1098, h: 92, cellW: 61 });
+  assert.ok(uhd.x > BAR.x0, 'left edge inside the bar');
+  assert.ok(uhd.x + uhd.w < TEXT_X0, 'must end before the label text starts');
+  assert.ok(uhd.y > BAR.y0 && uhd.y + uhd.h < BAR.y1, 'vertically inset in the bar');
+
+  // 1080p is the same card at half scale, so the fractions carry over.
+  const hd = barcodeRect(1920, 1080);
+  assert.deepEqual(hd, { x: 471, y: 942, w: 549, h: 46, cellW: 30.5 });
+  assert.ok(hd.x > BAR.x0 / 2, 'left edge inside the half-scale bar');
+  assert.ok(hd.x + hd.w < TEXT_X0 / 2, 'must end before the half-scale label text');
 });
 
-test('the barcode clears the frame edges — no longer covering the checkerboard border', () => {
+test('the barcode clears the frame edges', () => {
   for (const [w, h] of [[1920, 1080], [3840, 2160]]) {
     const r = barcodeRect(w, h);
     assert.ok(r.x > 0 && r.x + r.w < w, 'must not touch the left or right edge');
-    assert.ok(r.y > h * 0.75, 'must sit in the lower quarter, where it was marked');
+    assert.ok(r.y > h * 0.75, 'must sit in the lower quarter, in the label bar');
     assert.ok(r.y + r.h < h, 'must not touch the bottom edge');
   }
 });

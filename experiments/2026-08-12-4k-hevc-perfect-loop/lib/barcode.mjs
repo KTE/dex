@@ -49,18 +49,35 @@ export const FRAME_BYTES = DECODE_W * DECODE_H;
 /** Minimum separation between the sync levels for a frame to be readable. */
 export const SYNC_MIN_DELTA = 40;
 
-/** Barcode width as a fraction of frame width (900/1920 = 18 grid cells). */
-export const BAR_W_FRAC = 900 / 1920;
-/** Barcode height as a fraction of frame height (50/1080 = 1 grid cell). */
-export const BAR_H_FRAC = 50 / 1080;
-/** Barcode top edge as a fraction of frame height (940/1080, a grid line). */
-export const BAR_Y_FRAC = 940 / 1080;
+/**
+ * PLACEMENT — inside the card's own black label bar.
+ *
+ * The card carries a black bar in the lower third whose LEFT half is reserved
+ * for this barcode and whose right half holds the human-readable label
+ * ("4K 3840x2160@30fps"). Measured from the rendered 4K card, 2026-08-13:
+ *
+ *     black bar   x 921..2918   y 1880..1980
+ *     label text  x 2075..2758
+ *     free left   x 921..2074
+ *
+ * The barcode is inset into that free space with a margin, so the bar frames it
+ * on all sides and it can never collide with the label. An earlier version was
+ * centred on the frame and would have run straight through the text.
+ */
+/** Barcode left edge as a fraction of frame width (941/3840). */
+export const BAR_X_FRAC = 941 / 3840;
+/** Barcode width as a fraction of frame width (1098/3840 — 18 cells of 61px at 4K). */
+export const BAR_W_FRAC = 1098 / 3840;
+/** Barcode top edge as a fraction of frame height (1884/2160, inset into the bar). */
+export const BAR_Y_FRAC = 1884 / 2160;
+/** Barcode height as a fraction of frame height (92/2160, inset into the bar). */
+export const BAR_H_FRAC = 92 / 2160;
 
 /** ffmpeg expressions for the barcode rectangle. Resolution-independent. */
 const EXPR = {
   w: `iw*${BAR_W_FRAC}`,
   h: `ih*${BAR_H_FRAC}`,
-  x: `(iw-iw*${BAR_W_FRAC})/2`,
+  x: `iw*${BAR_X_FRAC}`,
   y: `ih*${BAR_Y_FRAC}`,
   cellW: `iw*${BAR_W_FRAC}/${CELLS}`,
 };
@@ -77,7 +94,7 @@ export function barcodeRect(width, height) {
   const w = Math.round(width * BAR_W_FRAC);
   const h = Math.round(height * BAR_H_FRAC);
   return {
-    x: Math.round((width - w) / 2),
+    x: Math.round(width * BAR_X_FRAC),
     y: Math.round(height * BAR_Y_FRAC),
     w,
     h,
