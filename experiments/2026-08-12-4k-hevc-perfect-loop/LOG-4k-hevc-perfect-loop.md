@@ -758,9 +758,11 @@ display path cost.
 
 - **4K30 — comfortable.** 0.969x with zero drops through mpv's overlay path, ~35 % decode
   headroom. This is the right target.
-- **4K40 — marginal at best, and untestable here.** It would need essentially all the decode
-  budget with nothing left for presentation, *and* a >=40 Hz 4K mode, which no sink on this
-  bench provides.
+- **4K40 — comfortable on decode and on the display path. Corrected 23:35.** The claim above
+  ("would need essentially all the decode budget") was reasoning from the 4K60 figure, and
+  measurement contradicts it. Encoded a real 4K40 asset: it decodes at **1.08x** and runs
+  through `vout_drm` at **1.70x**. Only the *output mode* blocks it here — see below. Recorded
+  because a wrong bound in a spec is worse than no bound.
 - **4K60 — out of reach.** Decode alone runs at 0.753x. Confirmed end to end: playing the 4K60
   asset through the working mpv path reports `ratio=0.976` but **83 dropped frames** — it holds
   the clock by discarding frames, which is exactly the failure the "correct playback" bar (§4.4
@@ -773,9 +775,17 @@ display path cost.
 594 MHz and an HDMI 2.0 sink. The `--untimed` runs both converging on ~30 fps are therefore
 measuring the 30 Hz vsync, not the pipeline.
 
-**Decision (Max, 2026-08-13): dex targets 4K30.** Recorded so the frame rate stops being an open
-assumption in M3 (transcode-on-ingest) and M4 (exhibition format) — ingest can normalise to 30 fps
-knowing 60 was ruled out by measurement, not by guesswork.
+Forcing a *synthesised* CVT mode does not help either: `video=HDMI-A-1:3840x2160M@40` left TMDS
+at 297 MHz and produced no new mode. The `M` suffix asks for CVT generation, but vc4 still
+validates against the sink, so an HDMI 1.4 capture card ends the matter.
+
+**Decision (Max, 2026-08-13): dex targets 4K30, and higher frame rates are OUT OF SCOPE FOR NOW
+— explicitly not ruled out.** 4K30 is what dex ships against, so M3 (transcode-on-ingest) and M4
+(exhibition format) can normalise to 30 fps today. The high-frame-rate question gets retested at
+home against a real 4K display that handles it; nothing measured on this bench can settle it,
+because the sink caps at 30 Hz. What the bench *does* establish, sink-independently: 4K40
+decodes at 1.08x and displays at 1.70x, while 4K60 decodes at 0.753x. The ceiling is between
+them.
 
 ---
 
