@@ -9,8 +9,18 @@
 
 ## 1. The question, the deliverable, the scope
 
-**Question.** Is there an `mpv` invocation on Raspberry Pi OS Trixie that loops a 4K HEVC file with
-no seam, on Pi 5 and Pi 4, sustained over 24 hours?
+**Question.** Is there an `mpv` invocation on Raspberry Pi OS Trixie that **plays a 4K HEVC file
+correctly and loops it with no seam**, on Pi 5 and Pi 4, sustained over 24 hours?
+
+> **Amended 2026-08-13, at the bench.** The original question asked only about the *seam*. That
+> was wrong, and the first playback session proved it within the hour: mpv ran at 14.3 fps against
+> a 30 fps requirement while reporting **zero** dropped frames. A player in slow motion has no wrap
+> a viewer would ever see, so the seam question was unanswerable — and nothing in the pass bar said
+> so.
+>
+> **Correct playback is the bar.** Seamlessness is *one property* of correct playback, alongside
+> realtime rate, colour and geometry. A player that wraps invisibly but shifts the colours, crops
+> the frame or runs at half speed has not passed. See §4.4.
 
 **Deliverable, in priority order:**
 
@@ -201,8 +211,11 @@ random*; a real seam lands *at the wrap, every time*. So the **mid-loop anomaly 
 floor**, measured simultaneously, on the same run, by the same instrument. The verdict is therefore
 a comparison, never an absolute:
 
-> **Pass = wrap-point anomaly rate statistically indistinguishable from the mid-loop baseline,
-> over >=500 wraps.**
+> **Seam pass = wrap-point anomaly rate statistically indistinguishable from the mid-loop
+> baseline, over >=500 wraps.**
+>
+> **Overall pass = §4.4 correct-playback checks all pass AND the seam pass above.** The seam
+> criterion alone is not a verdict; it is one conjunct. Amended 2026-08-13 — see §1.
 
 Made explicit so "indistinguishable" is not left to judgement: a **two-proportion test** comparing
 `anomalies at wrap transitions / total wrap transitions` against
@@ -240,11 +253,37 @@ A method with only one of them can be confidently wrong in one direction.
 
 ### 4.4 Full pass bar
 
+**Amended 2026-08-13.** The bar below originally contained only the seam and soak clauses. The
+first bench session showed that a player can satisfy a seam bar while playing *incorrectly* —
+mpv ran at 14.3 fps of a required 30 while reporting zero dropped frames. **Correct playback is
+the bar; seamlessness is one clause of it.**
+
+**A. Correct playback** — every clause must hold, and each is checked *before* any seam
+measurement, because a failure here makes the seam number meaningless rather than merely worse:
+
+| # | Clause | How it is checked | Status |
+|---|---|---|---|
+| A1 | **Realtime rate** — playback-time advances 1:1 with wall-clock, `ratio >= 0.98` | `scripts/measure-rate.sh` (mpv IPC). **Not** mpv's drop counters: they read 0 at 0.147x | ✅ automated |
+| A2 | **Full frame rate at the display** — no systematically held or dropped frames outside the wrap | The captured barcode index stream: steady +1 steps. Independent of A1, and it agreed with A1 at the bench | ✅ automated |
+| A3 | **Colour** — correct range (limited vs full) and matrix; no crushed blacks, clipped whites, or shifted hues | The card's **grey ramp** and **colour wheels**, captured and compared against the same regions decoded from the source file | ⏸️ not yet automated |
+| A4 | **Geometry** — full frame, no crop, overscan, letterbox or unintended rescale | The card's **resolution wedges** and **checkerboard border**: the border must be complete on all four edges | ⏸️ not yet automated |
+| A5 | **Native resolution** — actually scanning out 3840x2160, not an upscale | `tmds_char_rate` + framebuffer size on the Pi; wedge legibility in the capture | ✅ manual, cheap |
+
+Worth naming: the test card **already carries** a grey ramp, colour wheels, resolution wedges and
+a checkerboard border. It was designed to verify correct playback all along — the pass bar simply
+never used any of it, and read only the barcode. The instrument was ahead of the specification.
+
+**B. Seamlessness** — the original bar, unchanged:
+
 - Wrap rate at baseline over >=500 wraps, 4K30, Pi 5 — **and** the same config on Pi 4
 - 24 h soak with no drift in in-band counters
 - All three controls satisfied
 - A/B against the dexOS card on the same display shows no difference to the eye
 - The argv is written down verbatim
+
+**Pass = all of A and all of B.** A run that fails any A clause is **VOID for seam purposes**,
+not a seam failure — the distinction matters, because a void run says nothing about the player's
+wrap and must not be recorded as evidence about it.
 
 ## 5. Test matrix, order, and the stop condition
 

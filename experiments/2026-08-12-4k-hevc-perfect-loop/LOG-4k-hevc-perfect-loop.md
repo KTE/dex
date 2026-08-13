@@ -33,12 +33,21 @@ player that loops cleanly. If no such player exists, those milestones are built 
 
 ## Hypothesis
 
-There exists an `mpv` invocation on Raspberry Pi OS Trixie that loops a 4K30 HEVC file with **no
-seam** — defined as a wrap-point anomaly rate statistically indistinguishable from the same run's
-mid-loop capture noise floor — on **both Pi 5 and Pi 4**, sustained without drift over 24 hours.
+There exists an `mpv` invocation on Raspberry Pi OS Trixie that **plays a 4K30 HEVC file correctly
+and loops it with no seam** — correct playback meaning realtime rate, full frame rate, correct
+colour and correct geometry; no seam meaning a wrap-point anomaly rate statistically
+indistinguishable from the same run's mid-loop capture noise floor — on **both Pi 5 and Pi 4**,
+sustained without drift over 24 hours.
+
+> **Amended 2026-08-13** (SPEC §1, §4.4). The original hypothesis named only the seam. mpv then ran
+> at 14.3 fps of a required 30 while reporting zero dropped frames — correct by the old bar,
+> useless in fact. **Correct playback is the bar; seamlessness is one clause of it.**
 
 ## Success Criteria
 
+- [ ] MUST: **correct playback** — SPEC §4.4 clauses A1–A5 (realtime rate, full frame rate at the
+      display, colour, geometry, native resolution). Checked **before** any seam measurement: a
+      failure here makes a run **VOID for seam purposes**, not a seam failure
 - [ ] MUST: wrap-point anomaly rate indistinguishable from the mid-loop baseline over **>=500
       consecutive wraps** at 4K30 on Pi 5
 - [ ] MUST: the *same* config passes on **Pi 4** (SCOPE R4 — a Pi-5-only result does not qualify)
@@ -53,8 +62,13 @@ mid-loop capture noise floor — on **both Pi 5 and Pi 4**, sustained without dr
 
 ## Fail Condition
 
-For **every** config in the matrix, on **both** boards: wrap-point anomaly rate exceeds the
-mid-loop baseline by a statistically significant margin (p < 0.01 over >=500 wraps).
+For **every** config in the matrix, on **both** boards: either **correct playback (§4.4 A) cannot
+be achieved at all**, or the wrap-point anomaly rate exceeds the mid-loop baseline by a
+statistically significant margin (p < 0.01 over >=500 wraps).
+
+The first disjunct was added 2026-08-13 and is the live one: if no configuration reaches realtime,
+mpv has failed regardless of what its wraps look like. That is a fail, not a void — a void run is
+one where the *instrument* was compromised; this is the player itself failing a bar clause.
 
 That is the disproof. Note what it is *not*: "it looked stuttery" is not a fail condition, and
 neither is "one wrap out of 500 was bad" — a defect present at one wrap in 500 is indistinguishable
@@ -550,6 +564,30 @@ meaningful wrap, so M1 cannot be answered against mpv in this configuration. The
 ladder's step 1 is **pivid**, which does zero-copy KMS plane scanout — precisely the thing mpv
 failed to do here — and the bench asset already ships a pivid `.json` sidecar. That is the
 next thing to try, not more mpv flags.
+
+### 2026-08-13 22:00 — Optimising the asset would not help: measured, not reasoned
+
+Max asked whether the playback file should be optimised next. Settled empirically rather than by
+argument, by re-encoding the bench asset at a **12.5x lower bitrate** with everything else held
+constant (same 3840x2160, same 30 fps, same closed GOP, barcode re-verified 0..89 after encode):
+
+| Asset | Bitrate | mpv `vo=drm hwdec=drm-copy` | ffmpeg decode only |
+|---|---|---|---|
+| `dex-test-card-3s-2160p30-clouds.mp4` | 39.3 Mbps | 14.3 fps (0.476x) | 1.36x |
+| `lowbitrate-2160p30.mp4` | **3.1 Mbps** | **15.2 fps (0.507x)** | 1.43x |
+
+**12.5x less bitrate bought 6% more speed.** So the bottleneck is bitrate-independent, which is
+exactly what the `drm-copy` diagnosis predicts: the per-frame copy back to system memory costs
+*pixels x frame rate*, and is untouched by how many bits the pixels arrived in. Decode was never
+the constraint — it already ran above realtime in both cases.
+
+**Consequence:** encoder settings cannot fix this. What would move it is reducing pixels/second
+(lower resolution or frame rate — both off the table, 4K is the requirement) or **eliminating the
+copy**, which means a player that scans out DRM_PRIME frames directly. That is pivid, escalation
+step 1.
+
+Kept as a fixture rather than deleted: `out/lowbitrate-2160p30.mp4` is the control that makes this
+claim reproducible.
 
 ---
 
