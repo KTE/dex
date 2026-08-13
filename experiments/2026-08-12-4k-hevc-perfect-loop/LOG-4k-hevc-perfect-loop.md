@@ -589,6 +589,65 @@ step 1.
 Kept as a fixture rather than deleted: `out/lowbitrate-2160p30.mp4` is the control that makes this
 claim reproducible.
 
+### 2026-08-13 22:10 — Real monitor closes both caveats; the wall is 4K itself
+
+Swapped the Pi from the Cam Link to a real display (`AW32A`, 2560x1440@60, TMDS 241.5 MHz).
+This was meant to test one caveat and closed two.
+
+| Source | Sink | ratio | effective fps | drops |
+|---|---|---|---|---|
+| 4K clouds | Cam Link @ 4K | 0.476 | 14.3 | 10 |
+| 4K clouds | **1440p monitor** | 0.463–0.486 | **13.9–14.6** | 14–17 |
+| 1080p card | 1440p monitor | **0.952** | **28.5** | **0/0/0** |
+
+**Caveat 2 closed — the sink is not the variable.** 14.6 fps into a 1440p monitor against 14.3 fps
+into a 4K capture card. Two different sinks, two different output resolutions, same result. The
+Cam Link was not distorting anything, and the earlier numbers stand.
+
+**Caveat 1 closed — and the earlier 1080p anomaly is explained.** 1080p source now runs at 0.952
+with **zero** reported drops. The earlier "1080p is slower than 4K" result was exactly the
+suspected artefact: the display was forced to 3840x2160, so a 1080p file was being software-
+upscaled 4x. Given a sane output mode it plays essentially at realtime.
+
+**What this localises.** Output resolution changed (4K -> 1440p) and nothing moved. *Source*
+resolution changed (4K -> 1080p) and the rate doubled. So the cost is in handling the decoded
+**source** frame — decode plus the `drm-copy` transfer — not in scanout. Together with the
+bitrate control (12.5x fewer bits, 6% faster), the constraint is now pinned to *source pixels per
+second*, which is the one quantity 4K30 fixes and no encoder setting can change.
+
+**Status of the mpv verdict.** Much firmer than at 21:40. Not the sink, not the capture card, not
+the bitrate, not the output mode. mpv reaches realtime at 1080p and roughly half realtime at 4K,
+on every configuration tried. Still open: **Pi 5 is untested** (different silicon, and the
+zero-copy path may simply work there), and mpv's option space is not exhausted.
+
+### 2026-08-13 22:15 — Insta360 X4 rejected as a capture instrument
+
+Settles a SETUP-phase open question (2026-08-12 17:05 entry) — negatively, on three independent
+grounds, any one of which is sufficient.
+
+1. **No frame-rate advantage, which was the entire motivation.** In UVC webcam mode the X4 offers
+   only `1920x1080@30` and `2880x1440@30`. Its high-frame-rate modes are internal-recording only.
+   The premise that it beats the Cam Link's 30 fps ceiling is simply false.
+2. **360 equirectangular projection.** The card occupies about a fifth of the frame and is visibly
+   barrel-warped, so barcode cells are not linearly spaced across the bar.
+3. **The harness's geometry assumes the frame *is* the card.** `BAR_*_FRAC` are fractions of the
+   frame, which holds for direct HDMI capture and fails for *any* camera pointed at *any* screen,
+   independent of optics. The fixed crop lands on the wrong region entirely.
+
+**The predicted failure mode did not occur, and that is a design win.** The 17:05 entry feared
+dewarping would yield "*confidently wrong* indices rather than errors". It did not:
+`capture.mjs` returned **`null` on all 60 frames**, because `decodeFrame` checks its white/black
+sync cells (`white - black < SYNC_MIN_DELTA`) before trusting anything. That guard is exactly what
+stands between a camera experiment and a silently corrupt dataset.
+
+Using any camera would require corner detection plus perspective rectification ahead of the
+decoder. Not worth building while the Cam Link path works.
+
+**Hazard found in passing:** plugging the X4 in made it `avfoundation` device **0**, displacing the
+Cam Link to **1**. The documented `--source avfoundation:0` therefore silently re-targets whenever
+a camera is attached. `scripts/check-capture-link.sh` is unaffected (it matches by name), but the
+capture invocation is not.
+
 ---
 
 ## Failed Attempts
