@@ -787,6 +787,68 @@ because the sink caps at 30 Hz. What the bench *does* establish, sink-independen
 decodes at 1.08x and displays at 1.70x, while 4K60 decodes at 0.753x. The ceiling is between
 them.
 
+### 2026-08-14 00:40 — The hardware does exact 30 fps. The "5% deficit" was the noise floor, used as signal.
+
+Max asked the right question: can this hardware do exact 30 fps at all? **Yes — verified three
+ways, none of which involve the capture card:**
+
+| Instrument | Reading |
+|---|---|
+| Kernel vblank counter (`DRM_IOCTL_WAIT_VBLANK`, 10 s) | **29.9993 Hz** |
+| mpv `estimated-display-fps` | **30.000002** |
+| mpv `vsync-jitter` | 0.000183 |
+| `hvs_underrun` (dmesg string + debugfs counter) | **0** |
+| `vcgencmd get_throttled` / core clock | `0x0` / 550 MHz |
+| Asset PTS spacing | exactly 1/30; duration 3.000000 |
+
+So the display scans at 30.000 Hz, mpv flips cleanly onto it, the HVS never underruns, and the
+file's timestamps are honest. Every Pi-side instrument says 30.
+
+**The capture said 28.6, and the capture was wrong to be trusted for this.** The tell was in my
+own data and I walked past it: measured loop periods had **min 3.0510 s**. If true wraps were
+3.000 s apart, detection delay is bounded by one capture interval (0.038 s), so no period could
+exceed ~3.038 s. A minimum of 3.051 s is outside the achievable range — that is an instrument
+signature, not a player one.
+
+**What was actually happening.** The Cam Link samples a 30 fps display at ~27 fps and is **not
+frame-locked to the Pi**. The step histogram is exactly what that must produce — `+1` x1377,
+`+2` x171 (11.0%, matching 30/27) — plus **72 zero-steps**, i.e. the same index captured twice.
+At a 37 ms capture interval against a 33.3 ms frame period that should be impossible unless the
+display held a frame *or the capture duplicated one*. SPEC §4.3 already says which: *"USB capture
+is not frame-locked to the Pi, so it drops and duplicates frames on its own."*
+
+**That is the noise floor the whole method is built around — and I used it as signal.** The
+experiment's design never asks for an absolute rate from this instrument, precisely because it
+cannot deliver one. It asks whether the *wrap* anomaly rate exceeds the *mid-loop* rate, on the
+same run, from the same instrument. Run that way, on the same recording:
+
+| | mean per content frame | implied |
+|---|---|---|
+| mid-loop steps (n=1529) | 34.99 ms | 28.58 fps |
+| wrap-crossing steps (n=19) | 33.89 ms | 29.50 fps |
+
+**The wrap is not slower than mid-loop** — excess is −1.09 ms, i.e. slightly *faster*, well
+inside noise. By the experiment's own valid methodology there is no seam signal here. The 5 %
+"deficit" applies equally to both, which is the definition of a floor rather than a defect.
+
+**Correction to earlier entries tonight.** The 23:00–00:20 entries treat 0.95x as a real
+playback deficit and attribute it to players. That framing is wrong: the loop-period numbers
+(3.1463 s etc.) are capture-noise-inflated and must not be read as absolute display rates.
+What survives, because it is a *comparison* within one run rather than an absolute:
+
+- The **relative** ordering of players is still informative (mpv looping was consistently worse
+  than mpv single-pass, which was worse than `vout_drm`), but the magnitudes are not display fps.
+- The realtime gate in `measure-rate.sh` reads mpv's own clock, not the capture, and is
+  unaffected — but its 0.98 threshold is now suspect, since mpv's clock reports 30.000002 while
+  the accumulate-and-divide method returns 0.968. That discrepancy is a bug in the gate's
+  arithmetic, not in the player, and is the next thing to fix.
+
+**Method lesson, third occurrence tonight.** Twice before, an instrument fault masqueraded as a
+player property (zeroed frames from a USB 2.0 link; frozen captures from CFR frame duplication).
+This is the inverse and subtler case: the instrument was working exactly as designed and
+documented, and I asked it a question it was explicitly never built to answer. The spec had the
+answer written down before the bench session started.
+
 ---
 
 ## Failed Attempts
