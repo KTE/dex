@@ -49,7 +49,12 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$(dirname "$OUT")"
-[ -s "$OUT" ] || printf 'iso_time\telapsed_s\tframes\tnulls\twraps\theld\tmax_dwell\tplayer\ttemp_c\tthrottled\n' >"$OUT"
+# held_at is load-bearing, not decoration: a held frame AT THE WRAP is a player
+# seam, while one at a random index is a capture-side duplicate, which SPEC 4.3
+# documents as this instrument's noise floor. Logging only a COUNT (as the first
+# version of this script did) makes the two indistinguishable after the fact --
+# which is exactly what happened to the single held frame in the 2026-08-14 soak.
+[ -s "$OUT" ] || printf 'iso_time\telapsed_s\tframes\tnulls\twraps\theld\tmax_dwell\theld_at\tplayer\ttemp_c\tthrottled\n' >"$OUT"
 
 start=$(date +%s)
 while :; do
@@ -68,11 +73,11 @@ while :; do
   node bin/capture.mjs --source "$SOURCE" --out "$tmp" --frames "$FRAMES" --fps "$FPS" >/dev/null 2>&1 || true
 
   # shellcheck disable=SC2016  # the $ are JS template literals, not shell expansions
-  read -r frames nulls wraps held maxd < <(node -e '
+  read -r frames nulls wraps held maxd heldat < <(node -e '
     import("node:fs").then(({readFileSync}) => {
       const v = readFileSync(process.argv[1], "utf8").trim().split("\n").filter(Boolean);
       const ok = v.filter(x => x !== "null").map(Number);
-      if (!ok.length) { console.log(`${v.length} ${v.length} 0 0 0`); return; }
+      if (!ok.length) { console.log(`${v.length} ${v.length} 0 0 0 -`); return; }
       const runs = []; let cur = ok[0], n = 1;
       for (const x of ok.slice(1)) { if (x === cur) n++; else { runs.push(n); cur = x; n = 1; } }
       runs.push(n);
@@ -80,8 +85,13 @@ while :; do
       const wraps = ok.reduce((a, x, i) => a + (i && x < ok[i-1] ? 1 : 0), 0);
       // At ~27fps sampling a 30fps display every index should appear ONCE.
       // Two or more consecutive identical indices means the display held it.
+      // Keep WHERE each hold happened. At the last frame of the loop it is a
+      // player seam; at a random index it is a capture duplicate, i.e. noise.
+      const idx = []; let c2 = ok[0], k = 1;
+      for (const x of ok.slice(1)) { if (x === c2) k++; else { if (k >= 2) idx.push(c2); c2 = x; k = 1; } }
+      if (k >= 2) idx.push(c2);
       const held = runs.filter(r => r >= 2).length;
-      console.log(`${v.length} ${v.length - ok.length} ${wraps} ${held} ${Math.max(...runs)}`);
+      console.log(`${v.length} ${v.length - ok.length} ${wraps} ${held} ${Math.max(...runs)} ${idx.length ? idx.join(",") : "-"}`);
     });
   ' "$tmp" "$LOOP_LENGTH")
   rm -f "$tmp"
@@ -89,9 +99,9 @@ while :; do
   read -r player temp thr < <(ssh -i "$KEY" -o ConnectTimeout=10 "$HOST" \
     'printf "%s %s %s\n" "$(pgrep -c -x mpv || echo 0)" "$(vcgencmd measure_temp | tr -dc "0-9.")" "$(vcgencmd get_throttled | cut -d= -f2)"' 2>/dev/null || echo "? ? ?")
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -Iseconds)" "$((now - start))" "$frames" "$nulls" "$wraps" \
-    "$held" "$maxd" "$player" "$temp" "$thr" >>"$OUT"
+    "$held" "$maxd" "$heldat" "$player" "$temp" "$thr" >>"$OUT"
 
   sleep "$INTERVAL"
 done
