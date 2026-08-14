@@ -120,7 +120,7 @@ with a single `Fractal Noise` effect.
 | Noise Type | 4 | Spline |
 | Contrast | 550 | with Brightness, this is the coverage remap |
 | Brightness | −70 | separates masses; sinks the gaps to black sky |
-| Scale | 700 | mass size |
+| Scale | 700 **at 1080p** | mass size — **scales with resolution**, see below |
 | Complexity | 7 | cauliflower edge detail |
 | Sub Influence | 65 | how lumpy those edges are |
 | Cycle Evolution | **on** | |
@@ -139,6 +139,33 @@ which remains bit-exact while visibly slowing and jerking at the loop point. A
 bit-compare cannot catch that; see [the seam that is exact and still
 visible](#a-loop-that-is-exact-and-still-jerks).
 
+### Retargeting to a different resolution
+
+Three things move together, and changing only the comp size gets all three wrong.
+The comp is the *only* one that is obvious, which is why this is worth a list:
+
+1. **The comp size** — `comp.set_props { width, height }`.
+2. **The solid's own size.** The layer's source is a solid, and resizing the comp
+   does not resize it. Left alone, a 1920×1080 solid covers a quarter of a 4K
+   frame. Resize the source itself
+   (`footage.replace_with_solid { width, height }`) rather than scaling the layer
+   to 200% — `Fractal Noise` renders at the source's resolution, so scaling up
+   would deliver half-resolution clouds, which defeats the point of a texture
+   whose job is to give the encoder detail.
+3. **`Scale`, and `Offset Turbulence`.** Both are denominated in **layer pixels**,
+   not fractions of the frame. Carry `Scale 700` from 1080p to 4K unchanged and
+   the masses come out *half* their intended relative size. Double it with the
+   linear dimension — **1400 at 4K** — and recentre `Offset Turbulence` on the new
+   centre (`[1920, 1080]` at 4K).
+
+Then set the layer's `Position` and `Anchor Point` to the new centre.
+
+| | 1080p | 4K |
+|---|---|---|
+| comp + solid | 1920×1080 | 3840×2160 |
+| `Scale` | 700 | **1400** |
+| `Offset Turbulence` | `[960, 540]` | `[1920, 1080]` |
+
 ### One render per duration
 
 The cloud loop must close over *its own* length, so it is rendered separately for
@@ -156,7 +183,23 @@ The extra frame exists so the wrap can be bit-compared against frame 0 — and i
 then **discarded**. Keeping it plants a duplicate frame at the loop point, which
 is the very defect being measured.
 
-Roughly 11 seconds for 90 frames at 4K.
+Roughly 11 seconds for 90 frames at 4K, and the whole 4K set (390 frames across
+four sequences) renders in about 40 seconds.
+
+**A sequence is defined by its frame count, not its frame rate.** Frame `i` sits at
+`Evolution = 720·i/N` whichever rate the comp runs at, and the card's rate is applied
+later at composite time. So one `N`-frame render serves *every* variant with `N`
+frames: the 60-frame sequence is used by both `2s @ 30fps` and `1s @ 60fps`. Naming
+the render directories by frame count (`clouds-4k-n60`) rather than by duration keeps
+that reuse obvious instead of accidental.
+
+| Sequence | Frames | Serves |
+|---|---|---|
+| `n30` | 30 | 1s @ 30 |
+| `n60` | 60 | 2s @ 30 **and** 1s @ 60 |
+| `n90` | 90 | 3s @ 30 |
+| `n120` | 120 | 2s @ 60 |
+| `n180` | 180 | 3s @ 60 |
 
 ---
 
@@ -245,8 +288,12 @@ single definition by construction.
 1. **Card** — duplicate the nearest comp in AE, set size/rate/duration, copy the
    label and bar across, update the label text, scale if not 4K.
 2. **Masters** — render to `.mov`, transcode with `libx264rgb -qp 0` to `.mkv`.
-3. **Clouds** — set the cumulus comp to the same size, rate and duration, move the
-   `Evolution` keyframe, render `D×F` frames plus one.
+3. **Clouds** — check whether a sequence with that frame count already exists; if so,
+   reuse it. Otherwise set the cumulus comp to the same size, rate and duration,
+   [retarget the resolution](#retargeting-to-a-different-resolution) if it changed,
+   move the `Evolution` keyframe, and render `D×F` frames plus one. The project keeps
+   one comp per frame count (`clouds-4K-n30`, `-n60`, `-n120`, `-n180`) — duplicate
+   the closest.
 4. **Assets** — `scripts/build-variant.sh --card … --clouds …`.
 5. **Verify** — see below.
 
@@ -311,6 +358,17 @@ point and then jumps back to full speed — bit-exact, visibly wrong.
 
 Test it by comparing the per-frame change **across the wrap** against the
 distribution of interior frame-to-frame changes. They should be indistinguishable.
+
+### Clouds at half the size they should be
+
+`Fractal Noise`'s `Scale` and `Offset Turbulence` are in **layer pixels**, so they do
+not survive a change of resolution. Carrying `Scale 700` from 1080p to 4K produces a
+perfectly good cloud field — just one whose masses are half the intended relative
+size, reading as small busy puffs instead of cumulus. Nothing errors, and it only
+shows up when set beside an asset built correctly.
+
+Double `Scale` with the linear dimension and recentre `Offset Turbulence`. See
+[Retargeting to a different resolution](#retargeting-to-a-different-resolution).
 
 ### A layer that stops before the comp does
 
