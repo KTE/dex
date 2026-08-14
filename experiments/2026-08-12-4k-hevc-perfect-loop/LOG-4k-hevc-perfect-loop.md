@@ -955,6 +955,30 @@ was written for is noisy. The 1080p oversampled instrument is *deterministic* �
 formal ">=500 wraps at 4K30" box remains unticked and should be run once the analyzer is fixed;
 it will confirm, not decide.
 
+### 2026-08-14 08:40 — `vout_drm` loops *worse* than mpv. Continuous decode is still the only clean path.
+
+Tested the fastest player's own loop mode (`-stream_loop -1`) on the oversampled 1080p60
+instrument, expecting its 1.92x throughput headroom to absorb the transition. It does not:
+
+| Player / mechanism | hold | per loop | where |
+|---|---|---|---|
+| mpv `--loop-file=inf` | 83 ms | 1 | index 89 (the wrap) |
+| mpv `--ab-loop` | 83 ms | 1 | index 89 |
+| mpv `--playlist --prefetch-playlist=yes` | 117–133 ms | 1 | index 89 |
+| **`ffmpeg -stream_loop -1 -f vout_drm`** | **217 ms** | **3** | 58 / 84 / 28 — **not** the wrap |
+| **concatenated file, single continuous decode** | **none** | — | — |
+
+`vout_drm` is the worst of the four despite having the most headroom, and it fails in a
+different shape: three stalls per loop at roughly 30-frame spacing — near the 1 s keyframe
+boundaries — rather than one at the wrap. Raw throughput does not buy transition smoothness;
+they are independent properties.
+
+**Standing conclusion after four mechanisms:** every player that *re-enters* the file stalls,
+and the stall lands wherever that player does its work (EOF seek, pre-seek, file open, or
+keyframe boundary). The only configuration with zero held frames remains a **single continuous
+decode** of concatenated content. That is now an empirical result across four independent
+implementations, not a hypothesis about one player.
+
 ---
 
 ## Failed Attempts
