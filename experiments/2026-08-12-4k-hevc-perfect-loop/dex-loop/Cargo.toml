@@ -1,0 +1,14 @@
+[package]
+name = "dex-loop"
+version = "0.1.0"
+edition = "2021"
+description = "Gapless HEVC looper: libmpv fed by an endless in-process byte stream"
+
+# No dependencies on purpose. The whole program is one libmpv stream callback,
+# and a dex player should not carry a dependency tree it does not need.
+[dependencies]
+
+[profile.release]
+opt-level = 2
+lto = true
+panic = "abort"
