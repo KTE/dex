@@ -922,6 +922,39 @@ Two conclusions follow, and they point in opposite directions:
 the second answered in 30 seconds what the first could not settle in three hours. Both are worth
 keeping, for different questions.
 
+### 2026-08-14 08:25 — 61/61 wraps confirm the seam. `analyze.mjs` cannot read oversampled captures.
+
+**Result on the rebuilt asset (barcode geometry now matching):** 11302 captured frames, **zero
+decode failures**, dwell `{2: 5497, 5: 60, 4: 1}`, and **every one of 61 wraps holds index 89**.
+Deterministic — no exceptions in 61 consecutive loops, on top of the earlier 10/10 and 7/7 runs.
+
+**mpv's third looping mechanism also fails.** `--playlist` with `--prefetch-playlist=yes` — the
+feature that exists specifically to make playlist transitions gapless — does not help and is
+*worse*: dwell `{2: 577, 5: 3, 7: 3, 8: 1}`, i.e. holds of 117–133 ms against the 83 ms baseline.
+So all three of mpv's mechanisms stall at the transition: `loop-file` (seeks at EOF), `ab-loop`
+(seeks before EOF), and `playlist+prefetch` (opens the next entry). Only a *single continuous
+decode* is clean.
+
+**Harness gap found: `analyze.mjs` assumes ~1:1 capture.** On this 2x-oversampled run it reports
+`INSUFFICIENT` with a **50 % mid-loop noise floor** — because every frame legitimately occupies
+two captures and it scores each expected duplicate as an anomaly. Its verdict is therefore not
+usable for 1080p60 captures of 30 fps content. The signal still shows through the wrong model
+(wrap 243/304 = 80 % vs floor 5497/10997 = 50 %), but the statistic is meaningless.
+
+Two ways to close this, both worth doing:
+
+1. Teach `analyze.mjs` the **expected repeat factor** (`display_fps / content_fps`), so a run of
+   exactly N identical captures is normal and only N+1 or more is an anomaly. That is the same
+   dwell-histogram logic used ad hoc tonight, promoted into the analyzer.
+2. Keep the >=500-wrap statistical criterion for the **4K** path, where sampling really is ~1:1
+   and the floor is genuine.
+
+**Note on the pre-committed criterion.** SPEC §4.3 demands >=500 wraps because the instrument it
+was written for is noisy. The 1080p oversampled instrument is *deterministic* — 61/61, 10/10, 7/7
+— which is stronger evidence than the statistical bar was designed to produce, not weaker. The
+formal ">=500 wraps at 4K30" box remains unticked and should be run once the analyzer is fixed;
+it will confirm, not decide.
+
 ---
 
 ## Failed Attempts
