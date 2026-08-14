@@ -979,6 +979,68 @@ keyframe boundary). The only configuration with zero held frames remains a **sin
 decode** of concatenated content. That is now an empirical result across four independent
 implementations, not a hypothesis about one player.
 
+### 2026-08-14 09:10 — **SOLVED.** Seamless 4K30 loop, zero custom code: never let the decoder reach EOF.
+
+**The argv, and the pipeline around it:**
+
+```bash
+ffmpeg -i card.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc loop.265   # once, at ingest
+
+while true; do cat loop.265; done | mpv \
+  --vo=gpu --hwdec=drm --gpu-context=drm --gpu-api=opengl \
+  --gpu-hwdec-interop=drmprime-overlay \
+  --drm-draw-plane=overlay --drm-drmprime-video-plane=primary \
+  --video-sync=display-resample --drm-mode=3840x2160@30 \
+  --fullscreen --no-osc --no-terminal \
+  --no-correct-pts --container-fps-override=30 -
+```
+
+**A/B at 4K30 — same rig, same asset, same player, same display mode, only the feed differs:**
+
+| Configuration | dwell histogram | held frames | wraps |
+|---|---|---|---|
+| `--loop-file=inf` (seeks at the wrap) | `{1: 1433, 3: 9, 4: 10}` | **89 x10** | 19 |
+| **endless bitstream (no EOF)** | **`{1: 1500}`** | **none** | 19 |
+
+Confirmed independently at 1080p60 where the instrument oversamples 2x and the result is
+deterministic rather than statistical: `dwell {2: 749, 1: 2}`, **zero held frames across 8
+wraps**, against `{2: 582, 5: 7}` with holds at index 89 for the seeking config.
+
+**Why it works.** Concatenation was never about file length — it worked because **the decoder
+never re-initialises**. The bench asset already has a *closed GOP with an IDR at frame 0*, so
+feeding byte 0 straight after the last byte requires no seek at all: the decoder simply receives
+another IDR, which is a normal mid-stream event. Annex-B HEVC concatenates at the bitstream
+level, so `while true; do cat` produces an infinite stream from a **1.3 MB** file (14.8 MB at
+4K). All the benefit of concatenation, none of the disk cost, and it never ends.
+
+**Why mpv specifically.** The two players fail in different places, and only this combination
+avoids both:
+
+| | IDR frames | loop re-entry |
+|---|---|---|
+| mpv | clean | 83 ms stall |
+| ffmpeg / `vout_drm` | **67–217 ms stall** | clean on an endless stream |
+
+Feeding ffmpeg the same endless bitstream removed the wrap stall but left three IDR stalls per
+loop at indices 28/58/88. mpv on the endless stream has neither.
+
+**Caveats, none yet blocking:**
+
+1. **Needs raw Annex-B**, not MP4 — a one-off `-c:v copy -bsf:v hevc_mp4toannexb` at ingest.
+   That is squarely M3's job and gives transcode-on-ingest a second reason to exist.
+2. **`--no-correct-pts --container-fps-override=N` is mandatory**: a raw stream carries no
+   timestamps, so mpv must be told the rate. The frame rate therefore becomes ingest metadata.
+3. **Long-run stability is unproven.** An infinite stdin stream could grow mpv's demuxer cache;
+   `--demuxer-max-bytes` may be needed. The 24 h soak now has a specific thing to watch.
+4. **Seek/scrub is gone by construction** — irrelevant for dex, which only ever loops, but it
+   rules this out as a general-purpose player config.
+
+**M1 status.** Every clause of the amended §4.4 bar that has been measured now passes at 4K30:
+realtime rate (0.969x, zero drops), native resolution, hardware zero-copy decode — and now
+**seamlessness, with zero held frames at the wrap across 19 wraps at 4K and 8 at 1080p**.
+Outstanding: colour (A3) and geometry (A4) are still not automated, and the 24 h soak and the
+>=500-wrap statistical confirmation have not been run.
+
 ---
 
 ## Failed Attempts
