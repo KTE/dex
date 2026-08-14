@@ -34,28 +34,45 @@ REQUIREMENTS
 * --no-correct-pts plus the real frame rate: a raw stream carries no
   timestamps, so mpv must be told the rate. Frame rate becomes ingest metadata.
 
-STATUS 2026-08-14: DECODES BUT DOES NOT SCAN OUT. NOT YET USABLE.
------------------------------------------------------------------
-libmpv reports a fully healthy pipeline -- current-vo=gpu, hwdec-current=drm,
-3840x2160, estimated-display-fps=29.9999, time-pos advancing, frame-drop-count
-0 -- while the HDMI capture shows the Linux console, unchanged. The identical
-option set passed to the mpv BINARY on the same machine displays perfectly, so
-this is a libmpv-vs-CLI difference, not a wrong-options problem.
+STATUS 2026-08-14: DISPLAYS CORRECTLY, BUT RUNS AT ~0.6x REALTIME.
+------------------------------------------------------------------
+CORRECTION to an earlier note in this file: the claim that libmpv "does not
+scan out" was WRONG, and was an artifact of how the process was launched.
+Backgrounding it over SSH killed it before every measurement, so the readings
+described a corpse. Two further traps found while establishing that:
 
-Untested hypotheses, cheapest first:
-  1. DRM master acquisition differs when libmpv is embedded (the CLI logs
-     "Can't open TTY for VT control" and works anyway; libmpv may fail to take
-     master silently and render to an unscanned framebuffer).
-  2. python-mpv creates the VO lazily or after some options are latched.
-  3. Something in mpv's config/profile handling that the CLI applies and the
-     library does not.
+  * `pgrep -f loop-player` also matches the `timeout` wrapper, so a liveness
+    check can report a running player that is really a shell.
+  * mpv exits immediately unless stdin is redirected: run with `</dev/null`,
+    or it sees EOF on stdin and quits.
 
-The proven-working equivalent, pending a fix, is the shell feed:
-    while true; do cat loop.265; done | mpv <same options> -
-That is measured seamless (zero held frames, 19 wraps at 4K30). This file is
-kept because the in-process generator is the right SHAPE for M2 -- it removes
-the per-loop process churn and the SIGPIPE hot-spin failure mode -- and only
-the display half is unresolved.
+Launched correctly (`nohup setsid ... </dev/null &`) libmpv works exactly as
+the CLI does: 14 threads, 4 card1 + 2 renderD128 fds, DRM master `y`, both
+planes bound (91 and 127 to pixelvalve-2), and real video on the HDMI capture
+with zero decode failures.
+
+THE REAL DEFECT is throughput. Measured over 900 captured frames (30 s):
+
+    shell pipe   : 19 wraps, dwell {1: 1500}          -- 1.0x, seamless
+    this script  :  6 wraps, dwell {1:309, 2:44, 3:21, 4:29, ... 12:2}
+
+Six loops where the pipe manages nineteen: **~0.6x realtime**, with ~57 held
+frames scattered across the WHOLE loop rather than concentrated at the wrap.
+Scattered holds are a feed-starvation signature, not a seam -- the decoder is
+being fed too slowly, so frames linger wherever the shortfall lands.
+
+The difference between the two is only who supplies the bytes: `cat` in C, or
+this generator in Python via a ctypes callback. That points at per-read
+callback overhead and GIL contention rather than anything in mpv.
+
+Worth trying before abandoning the approach: much larger CHUNK (a 1 MiB test
+was attempted but the edit did not apply, so it remains genuinely untested),
+feeding from a thread that pre-slices, or bypassing python-mpv's callback.
+
+But note this is precisely the case for the project's Rust decision (SPEC 6):
+a hot path that must sustain ~5 MB/s with hard per-frame deadlines is a poor
+fit for a Python callback, and libmpv's stream_cb API is C -- so a Rust
+implementation of this same design has none of this overhead.
 """
 
 import argparse
