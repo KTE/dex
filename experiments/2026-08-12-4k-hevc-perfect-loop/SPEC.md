@@ -318,8 +318,24 @@ feel like one more config might do it, and that feeling is exactly what turned t
    bitrot, Pi 4 only. Max authored its final commit (PR #15), so the build system is not foreign.
 2. **GStreamer segment-seek** (`v4l2slh265dec` + kmssink). Caveat: Trixie kmssink is not yet
    zero-copy for HEVC.
-3. **Custom C player** — ~2k lines against Trixie system libav, 10-15 person-days, DOSSIER-2 §5
-   Rank 1, with its own 5-day tracer stop condition (§6.4 there).
+3. **Custom player — Rust, not C** (amended 2026-08-14, Max). ~2k lines against Trixie system
+   libav, 10-15 person-days, DOSSIER-2 §5 Rank 1, with its own 5-day tracer stop condition
+   (§6.4 there).
+
+   **Language decision.** Any custom code we write for this is **Rust unless something makes it
+   impossible**. The reasoning is specific to the workload rather than general preference: a dex
+   player runs unattended for weeks in a gallery, at 4K30, with a hard per-frame budget. That
+   combination punishes exactly the two failure classes C invites — a slow leak that only
+   surfaces after days of uptime, and a use-after-free in buffer handling that manifests as
+   corrupt frames rather than a clean crash. Both are compile-time-preventable in Rust, and
+   both are the kind of bug that would be found by an artist mid-exhibition rather than by us
+   on a bench.
+
+   This does **not** apply to the `pi_video_looper` backend in M2, which must be Python because
+   upstream loads backends as Python modules (`video_looper.py:137`). The constraint is on code
+   we author standalone, not on integration surfaces we inherit. Note also that libmpv has
+   maintained Rust bindings, so the "embed a library rather than write a decoder" route — which
+   is currently the most likely shape this takes — survives the language choice intact.
 
 **Not permitted on refutation:** more mpv configurations.
 
