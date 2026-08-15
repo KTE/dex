@@ -426,6 +426,34 @@ exists to close. The pure-logic regression tests added for C1
 this closes; T7 is the real fix for "the recovery path is undertested" and
 should land as its own small, reviewed change.
 
+**2026-08-15, implemented.** `--force-recovery-after-secs N` (BENCH ONLY, requires
+`--bench-no-sidecar` or startup refuses exit 2 -- so it can never end up armed
+against a real, sidecar-bound deployment asset) arms a
+`dex_loop::health::ForceRecoveryTrigger` that calls the new
+`HealthMonitor::force_recovery` once, N seconds after the stream starts.
+`force_recovery` shares `tick`'s budget and position-baseline reset via a
+factored-out `issue_recovery_or_escalate`, and main.rs routes BOTH an organic
+tick's decision and a forced probe's decision through the same new
+`act_on_health_action` -- so a forced probe drives the identical mpv-facing
+mechanics (`mpv_command_async(loadfile ... replace)`, absorbing the resulting
+`END_FILE(reason=stop)`) a real stall would, not a look-alike. 11 pure-logic
+tests (`src/health.rs`) cover the trigger and the shared-budget/baseline-reset
+behaviour on the Mac. `tests/cli.rs` adds four automated tests proving the CLI
+gate, the missing/malformed-value refusals, and the loud arming warning --
+all within this file's mandatory `--opt vid=no --opt aid=no` rule, so none of
+them let the trigger actually fire (vid=no/aid=no makes mpv reach "nothing to
+play" well under a second in, before a fired trigger could ever be
+distinguished from one that never got the chance). The live-fire scenario this
+task exists for -- real decode, a real health-check tick observing "healthy",
+the forced recovery firing and being survived -- needs exactly the real,
+unbounded decode that rule keeps out of the automated suite, so it is a fifth
+test, `force_recovery_survives_against_real_mpv`, marked `#[ignore]` with the
+exact command and expected stderr sequence to run manually on a Pi with
+libmpv. **Not yet run** -- dexpi4.local is mid-thermal-soak (this task's hard
+constraint forbade touching it); the whole live-fire behaviour this task set
+out to prove is therefore still unverified against a real mpv until someone
+runs that ignored test on an idle device.
+
 ### T6 — `run_id` column, and a header guard
 **Observed 2026-08-15.** The soak was restarted against the same output file
 when its duration was changed from 12 h to 3 h. The monitor appends and only

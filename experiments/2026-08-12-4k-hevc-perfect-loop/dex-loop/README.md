@@ -215,6 +215,7 @@ subset refuses startup — fail closed.
 | `--fps F` | optional cross-check; must equal the sidecar fps exactly, or startup is refused |
 | `--mode WxH@R` | force a DRM mode, e.g. `3840x2160@30`. Default: connector preferred. Deliberately NOT in the sidecar: mode is venue config, not asset metadata |
 | `--bench-no-sidecar` | BENCH ONLY: skip the sidecar and take `--fps` as given (both flags required — the escape hatch is a deliberate two-flag act) |
+| `--force-recovery-after-secs N` | T7, BENCH ONLY: force a tier-0 in-place recovery N seconds into playback, whether or not anything has stalled — a live-fire probe for F1's recovery command. Requires `--bench-no-sidecar` (refused otherwise), so it can never end up armed against a real, sidecar-bound deployment asset |
 | `--opt K=V` | pass any extra mpv option (repeatable) |
 | `--no-defaults` | omit the built-in Pi 4 zero-copy option set |
 
@@ -288,6 +289,17 @@ the real binary — Pi only. They never touch the display: every playback-reachi
 invocation uses `--no-defaults --opt vo=null --opt vid=no --opt aid=no`, so they are
 safe to run while a soak owns the screen (`nice -n 19 cargo test` to keep builds off
 the soak's CPU). See IMPLEMENTATION-PLAN.md for the full hardening rationale.
+
+One deliberate exception: `force_recovery_survives_against_real_mpv` (T7's live-fire
+probe for F1's recovery command, PLAN.md) needs REAL decode — the whole point is
+observing a health-check tick against playback that is actually advancing — so it
+skips `vid=no` and is `#[ignore]`d rather than part of `cargo test`'s default run.
+Run it deliberately, by name, on a Pi with nothing else on the display and no soak
+using the CPU:
+
+```bash
+cargo test --test cli force_recovery_survives_against_real_mpv -- --ignored --nocapture
+```
 
 ## Reviewed 2026-08-15
 
