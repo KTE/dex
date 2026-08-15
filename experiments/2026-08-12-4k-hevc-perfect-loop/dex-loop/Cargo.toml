@@ -55,7 +55,22 @@ priority = "optional"
 # so Depends is DERIVED from the sonames it actually links -- libmpv2 and the
 # rest -- and cannot drift from reality the way a hand-written list would.
 # Never replace this with a literal list.
-depends = "$auto"
+#
+# The explicit libmpv2 floor is ADDED to it, not a substitute, because the two
+# state different things and only one of them is derivable:
+#
+#   $auto alone produced `libmpv2 (>= 0.19.0)`. That is dpkg-shlibdeps working
+#   correctly -- it reports the oldest version providing the SYMBOLS we call.
+#   But nothing we depend on is symbol-shaped: --gpu-hwdec-interop=drmprime-
+#   overlay is a runtime option, and the C1 recovery fix rests on mpv emitting
+#   END_FILE(reason=stop) for a `loadfile replace`. Both are BEHAVIOUR, both
+#   were verified against 0.40 (the version trixie ships and all three reviews
+#   probed), and a device with 0.19 would install cleanly and then misbehave --
+#   the silent-wrongness class this package was built to close.
+#
+# So: keep $auto for what can be derived, and state what cannot. Raise the
+# floor whenever a fix is verified against a newer mpv.
+depends = "$auto, libmpv2 (>= 0.40.0)"
 
 assets = [
     # /usr/bin, not /usr/local/bin: Debian policy reserves /usr/local for the

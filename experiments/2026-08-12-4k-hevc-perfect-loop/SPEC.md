@@ -546,9 +546,18 @@ smaller question.
 **Packaging.**
 
 - **Artifact:** `dex-loop_<version>_arm64.deb`.
-- **`Depends:` is computed, not hand-written.** `dpkg-shlibdeps` derives it from
+- **`Depends:` is computed, not hand-written** — `dpkg-shlibdeps` derives it from
   the binary's linked sonames, so the declaration cannot drift from what the
-  binary actually needs — which is the whole point of the change.
+  binary actually needs. Verified: `libc6 (>= 2.34), libmpv2 (>= 0.19.0)`.
+- **…but the derived floor is symbol-based, and ours is not.** 0.19.0 is the
+  oldest libmpv exporting the symbols we call. Nothing we actually depend on is
+  symbol-shaped: `--gpu-hwdec-interop=drmprime-overlay` is a runtime option, and
+  the C1 recovery fix rests on mpv emitting `END_FILE(reason=stop)` for a
+  `loadfile replace`. Both are **behaviour**, both were verified against 0.40, and
+  a device with 0.19 would install cleanly and then misbehave. So the package
+  declares `$auto, libmpv2 (>= 0.40.0)`: derive what can be derived, state what
+  cannot. CI asserts both halves, because deleting the explicit one still yields
+  a package that builds and installs.
 - **Contents:** the binary, the systemd unit, and `dex-wait-hdmi` — built with
   `cargo deb`, whose config lives in the crate's own `Cargo.toml`.
 - **The package ships NO asset.** The video and its sidecar are *content*: they

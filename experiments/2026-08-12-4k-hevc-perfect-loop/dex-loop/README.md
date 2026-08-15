@@ -340,7 +340,20 @@ sudo systemctl start dex-loop
 derived by `dpkg-shlibdeps` from the sonames the binary actually links, so a
 libmpv ABI mismatch is refused by apt at install time, on a bench. Before, it
 was checked nowhere — a black screen in a gallery was the first symptom. The
-declaration cannot drift from reality because nobody writes it.
+derived half cannot drift from reality because nobody writes it:
+
+```
+Depends: libc6 (>= 2.34), libmpv2 (>= 0.40.0)
+```
+
+The `0.40.0` is *not* derived, and that distinction is worth keeping straight.
+Left to itself `dpkg-shlibdeps` says `libmpv2 (>= 0.19.0)` — the oldest libmpv
+exporting the symbols we call. But we depend on mpv *behaviour*, not symbols:
+`--gpu-hwdec-interop=drmprime-overlay` is a runtime option, and F1's recovery
+rests on `END_FILE(reason=stop)` arriving for a `loadfile replace`. Both were
+verified against 0.40. So `Cargo.toml` declares `$auto, libmpv2 (>= 0.40.0)`:
+derive what can be derived, state what cannot, and raise the floor whenever a
+fix is verified against a newer mpv.
 
 Two consequences worth knowing:
 

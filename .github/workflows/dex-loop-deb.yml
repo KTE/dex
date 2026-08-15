@@ -122,6 +122,14 @@ jobs:
           dpkg-deb --contents "$deb"
           dpkg-deb --field "$deb" Depends | grep -q libmpv \
             || { echo "::error::Depends does not mention libmpv — dpkg-shlibdeps did not resolve it"; exit 1; }
+          # The BEHAVIOURAL floor, which dpkg-shlibdeps cannot derive: left to
+          # $auto alone the answer is `libmpv2 (>= 0.19.0)`, the oldest version
+          # exporting the symbols we call. What we actually require is 0.40
+          # behaviour (drmprime-overlay; END_FILE(reason=stop) on a loadfile
+          # replace). Asserted here because deleting the explicit constraint in
+          # Cargo.toml would still produce a package that builds and installs.
+          dpkg-deb --field "$deb" Depends | grep -qE 'libmpv2 \(>= 0\.(4[0-9]|[5-9][0-9])' \
+            || { echo "::error::Depends lost its explicit libmpv2 >= 0.40 floor"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
