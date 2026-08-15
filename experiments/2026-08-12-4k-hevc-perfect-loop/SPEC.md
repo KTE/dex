@@ -311,6 +311,62 @@ board -> stop, declare REFUTED, escalate. Pre-committing this is the point; in t
 feel like one more config might do it, and that feeling is exactly what turned this into a
 12-year-old open question.
 
+## 5b. Why mpv — settled 2026-08-15, do not re-litigate without new evidence
+
+Recorded because the reasoning is non-obvious, the first measurements pointed the
+other way, and the winning property is not the one anyone would benchmark first.
+
+**What mpv actually is.** mpv is a MPlayer/mplayer2 descendant whose entire
+demux and decode layer **is FFmpeg** (libavformat / libavcodec). We are using
+FFmpeg either way. What mpv adds on top is the *player*: frame timing and
+vsync synchronisation (`--video-sync=display-resample`), the DRM/KMS video
+output including DRM_PRIME plane import, and the option/property surface. On this
+hardware the decode path is FFmpeg's V4L2-request hwaccel driving
+`rpi-hevc-dec`; mpv contributes **presentation and timing**, not decoding.
+
+So the real question was never "mpv or FFmpeg" — it was **who owns presentation
+and timing**, given that FFmpeg owns decode regardless.
+
+**How it was chosen.** Deliberately, in advance, by the 2026-07-26 dossiers —
+not by being the first thing that worked. Two reasons: trixie's distro ffmpeg
+carries the Pi HEVC patches, so mpv gets hardware decode from system packages
+with no vendoring; and mpv is argv-drivable, which is exactly what milestone 2's
+`pi_video_looper` backend consumes (`video_looper.py:137` loads backends by name
+and shells out).
+
+**It nearly lost.** The first measurements put mpv at **0.476x realtime** and
+the escalation ladder was about to be climbed. The cause was using the GL
+DRM_PRIME interop; `--gpu-hwdec-interop=drmprime-overlay` (a KMS-plane interop,
+a different code path entirely) doubled it to 0.969x. Sweeping `--vo` x `--hwdec`
+values felt exhaustive and was not — the missing axis was an *extension point*,
+visible in one command (`--gpu-hwdec-interop=help`).
+
+**What decided it, measured on this hardware:**
+
+| Option | Throughput | Loop transition |
+|---|---|---|
+| **mpv + `drmprime-overlay`** | 0.969x | **clean across IDRs**; seamless with an endless stream |
+| `ffmpeg -f vout_drm` | **1.92x** — fastest by far | stalls 67-217 ms on IDR frames, 3x per loop |
+| GStreamer + `kmssink` | n/a | **fails outright** — cannot bind a SAND dmabuf (upstream gap, confirmed by a Pi engineer) |
+| GStreamer + `glimagesink` | 0.97x | GL import, no headroom |
+| VLC `--vout drm_vout` | 0.91x | fell off the atomic path |
+| pivid | untested | purpose-built gapless, dormant since 2024, Conan bitrot |
+
+**mpv lost on raw throughput by 2x and won anyway**, because the deciding
+property is transition behaviour, not speed. That property only became visible
+once the instrument could resolve individual held frames (2x-oversampled capture
+at 1080p60); at 4K the capture cannot see it. Any future re-litigation must
+measure *held frames at the wrap*, not fps.
+
+**What we would give up by leaving.** mpv's timing layer and its KMS plane
+management — the two hardest parts of the job, and the two that consumed nearly
+all the debugging effort even though they were already written. A custom player
+(`drmu` / `hello_drmprime` is the reference) reimplements exactly those.
+
+**When to revisit.** If mpv's presentation path regresses on a future trixie or
+mpv release; if the Pi 5 leg needs a different interop; or if a measured *seam*
+(not a throughput number) appears that mpv cannot fix. Not otherwise.
+
 ## 6. Escalation ladder (fixed, no re-litigation)
 
 1. **pivid on Pi 4** — cheapest, because `example-content` already ships pivid `.json` timelines.
