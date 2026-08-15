@@ -50,7 +50,7 @@ use dex_loop::ffi_consts::{
     MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW,
     MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64,
 };
-use dex_loop::health::{HealthAction, HealthMonitor};
+use dex_loop::health::{ForceRecoveryTrigger, HealthAction, HealthMonitor};
 use dex_loop::heartbeat::{HeartbeatSnapshot, ObservedCounter, PositionSample};
 use dex_loop::nal::validate_leading_nals;
 use dex_loop::sidecar::{resolve_fps, verify_payload, FpsSource, Sidecar};
@@ -424,6 +424,94 @@ fn is_expected_recovery_stop(recovery_stop_pending: bool, reason: c_int) -> bool
     recovery_stop_pending && reason == MPV_END_FILE_REASON_STOP
 }
 
+/// Act on a [`HealthAction`], whatever produced it. Shared by the organic
+/// health-check tick and T7's `--force-recovery-after-secs` bench probe
+/// (`HealthMonitor::force_recovery`) specifically so a forced probe drives
+/// the EXACT SAME mpv-facing mechanics -- `mpv_command_async(loadfile ...
+/// replace)`, then arming `recovery_stop_pending` so the resulting
+/// `END_FILE(reason=stop)` is absorbed rather than treated as fatal (see
+/// `is_expected_recovery_stop`) -- that a real stall would. That identity is
+/// the point of T7: it is what lets a bench probe stand in for a real
+/// stall's recovery path at all. `reason` is only the situational log
+/// prefix; the two callers differ in WHY a recovery is due, not in what
+/// happens once it is.
+fn act_on_health_action(
+    ctx: *mut MpvHandle,
+    action: HealthAction,
+    reason: &str,
+    last_position: &mut Option<(f64, Instant)>,
+    recovery_stop_pending: &mut bool,
+) {
+    match action {
+        HealthAction::Healthy => {}
+        HealthAction::AttemptRecovery { attempt, max } => {
+            eprintln!(
+                "dex-loop: health check: {reason} -- attempting in-place recovery \
+                 {attempt}/{max} (re-issuing loadfile: restarts demux+decode and forces \
+                 a VO reconfigure; does not tear down/re-init the DRM/GPU context itself \
+                 -- see PLAN.md's F1 addendum)"
+            );
+            // Mirror HealthMonitor's own baseline reset (health.rs:
+            // `self.last_position = None`, shared by tick's AttemptRecovery
+            // arm and force_recovery via issue_recovery_or_escalate).
+            // Without this, the driver would keep feeding the STALE
+            // pre-recovery position back into the next tick, which the
+            // monitor -- now comparing against its own `None` baseline --
+            // would misread as a fresh first sample (i.e. progress), buying
+            // a spurious "Healthy" tick that stretches the real escalation
+            // timeline. Since F9, `last_position` also carries the sample's
+            // `Instant` in the same tuple, so this one line clears
+            // `pos-age=`'s staleness clock too.
+            *last_position = None;
+            // mpv_command_async, not mpv_command: this call runs on the
+            // SAME event thread that also has to keep detecting every fatal
+            // event, and a synchronous command could block that thread
+            // against a wedged core -- see dex_loop::health's module doc.
+            let cmd_loadfile = CString::new("loadfile").unwrap();
+            let cmd_url = CString::new("loop://endless").unwrap();
+            let cmd_replace = CString::new("replace").unwrap();
+            let argv: [*const c_char; 4] = [
+                cmd_loadfile.as_ptr(),
+                cmd_url.as_ptr(),
+                cmd_replace.as_ptr(),
+                std::ptr::null(),
+            ];
+            let rc = unsafe { mpv_command_async(ctx, RECOVERY_COMMAND_USERDATA, argv.as_ptr()) };
+            if rc < 0 {
+                eprintln!("warning: {}", err(ctx, "mpv_command_async(loadfile)", rc));
+            } else {
+                // Only now: the command was actually queued, so mpv WILL
+                // deliver an END_FILE(reason=stop) for the file being
+                // replaced (see MPV_END_FILE_REASON_STOP's doc comment) --
+                // that event must be absorbed, not treated as the fatal
+                // failure it would otherwise look like. If mpv_command_async
+                // itself failed (above), no such event is coming, so the
+                // flag must NOT be set.
+                *recovery_stop_pending = true;
+            }
+        }
+        HealthAction::Escalate => {
+            eprintln!(
+                "dex-loop: FATAL: tier-0 self-healing exhausted its recovery budget \
+                 ({MAX_RECOVERY_ATTEMPTS} attempt(s)) with no progress ({reason}) -- \
+                 exiting so the supervisor restarts (tier 1)"
+            );
+            // std::process::exit, not `break` into the shared
+            // mpv_terminate_destroy() teardown at the end of main: Escalate
+            // fires precisely because the core looks wedged (or, for a
+            // forced probe, to prove the SAME exit path an organic
+            // escalation would take), and mpv_terminate_destroy
+            // synchronously joins mpv's own threads -- a core that cannot
+            // advance time-pos may not be able to complete that join
+            // either, which would block the one exit path whose entire job
+            // is to let the supervisor take over. Per design principle 4
+            // (the mains switch IS the shutdown path), exiting abruptly
+            // here is not a shortcut, it is correct.
+            std::process::exit(1);
+        }
+    }
+}
+
 fn usage() -> ! {
     eprintln!(
         "usage: dex-loop <stream.265> [--fps <F>] [--mode WxH@R] [--bench-no-sidecar] [--no-defaults] [--opt K=V ...]
@@ -434,6 +522,11 @@ fn usage() -> ! {
   --fps F             optional cross-check; must equal the sidecar fps exactly
   --mode WxH@R        force a DRM mode, e.g. 3840x2160@30 (default: connector preferred)
   --bench-no-sidecar  BENCH ONLY: skip the sidecar, take --fps as given
+  --force-recovery-after-secs N
+                      T7 BENCH ONLY: force a tier-0 in-place recovery N seconds into
+                      playback, whether or not anything has stalled. REQUIRES
+                      --bench-no-sidecar (refused otherwise) so it can never fire
+                      against a real, sidecar-bound deployment asset.
   --opt K=V           pass an extra mpv option (repeatable)
   --no-defaults       omit the built-in Pi 4 zero-copy option set
 
@@ -463,6 +556,7 @@ fn main() -> ExitCode {
     let mut extra: Vec<(String, String)> = Vec::new();
     let mut defaults = true;
     let mut bench_no_sidecar = false;
+    let mut force_recovery_after_secs: Option<u64> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -485,6 +579,17 @@ fn main() -> ExitCode {
             }
             "--no-defaults" => defaults = false,
             "--bench-no-sidecar" => bench_no_sidecar = true,
+            "--force-recovery-after-secs" => {
+                i += 1;
+                // Same "refuse loudly, never evaporate" discipline as
+                // --fps/--mode above: a dropped value here would silently
+                // leave T7 disarmed, which is harmless, but a MALFORMED
+                // value (e.g. a typo'd flag argument) must not be read as
+                // "flag absent" either -- usage() either way.
+                let Some(v) = args.get(i) else { usage() };
+                let Ok(n) = v.parse::<u64>() else { usage() };
+                force_recovery_after_secs = Some(n);
+            }
             "--opt" => {
                 i += 1;
                 let kv = args.get(i).cloned().unwrap_or_default();
@@ -501,6 +606,30 @@ fn main() -> ExitCode {
     }
 
     let Some(path) = path else { usage() };
+
+    // T7 (PLAN.md) -- the "impossible to enable accidentally in a
+    // deployment" requirement, enforced as a gate rather than left to
+    // operator discipline. `--force-recovery-after-secs` REQUIRES
+    // `--bench-no-sidecar`. This is not an arbitrary pairing: it ties the
+    // bench-only recovery probe to the SAME escape hatch that already keeps
+    // `--bench-no-sidecar` out of every real deployment (deploy/dex-loop.service
+    // never passes it -- a real asset is bound to its ingest sidecar, full
+    // stop), so a live-fire probe can never end up armed against a gallery
+    // show by an operator pasting a bench command line into the wrong
+    // place. Checked here, before the asset is even read, so the refusal is
+    // unconditional on CLI shape alone -- it does not depend on whether a
+    // sidecar happens to exist on disk.
+    if force_recovery_after_secs.is_some() && !bench_no_sidecar {
+        eprintln!(
+            "error: --force-recovery-after-secs requires --bench-no-sidecar -- it is a \
+             T7 BENCH-ONLY live-fire probe (PLAN.md) that forces a tier-0 in-place \
+             recovery on a timer, whether or not anything has actually stalled, and \
+             must never be armed against what could be a real, sidecar-bound \
+             deployment asset. Add --bench-no-sidecar --fps <F> to run it on a bench, \
+             or drop --force-recovery-after-secs to run normally."
+        );
+        return ExitCode::from(2);
+    }
 
     // Read the loop once. These are small (1.3 MB at 1080p, 14.8 MB at 4K for a
     // 3 s card) and holding it in memory removes the filesystem from the hot
@@ -585,6 +714,21 @@ fn main() -> ExitCode {
             FpsSource::BenchOverride => "BENCH OVERRIDE, unbound",
         }
     );
+
+    if let Some(n) = force_recovery_after_secs {
+        // Loud on purpose (principle 2): the gate above makes this
+        // impossible to reach without --bench-no-sidecar already having
+        // been accepted, but a run that silently, quietly forces its own
+        // recovery mid-show is exactly the kind of surprise that belongs in
+        // the journal in giant letters, not inferred later from a
+        // recovery log line with no explanation of why it fired.
+        eprintln!(
+            "warning: BENCH ONLY (T7): --force-recovery-after-secs={n} is ARMED -- this \
+             run will FORCE a tier-0 in-place recovery {n}s after the stream starts, \
+             whether or not anything has actually stalled. Never pass this flag on a \
+             real deployment asset (see PLAN.md's T7 entry)."
+        );
+    }
 
     let ctx = unsafe { mpv_create() };
     if ctx.is_null() {
@@ -794,6 +938,12 @@ fn main() -> ExitCode {
         None
     };
     let mut last_health_check = Instant::now();
+    // T7 (PLAN.md): armed only when the CLI gate above accepted
+    // --force-recovery-after-secs (which itself required --bench-no-sidecar).
+    // `None` here is the overwhelmingly common case -- every real deployment
+    // run -- and costs one `Option` check per loop iteration.
+    let mut force_recovery_trigger: Option<ForceRecoveryTrigger> =
+        force_recovery_after_secs.map(ForceRecoveryTrigger::new);
     // Set for exactly the span between issuing the in-place recovery's
     // `loadfile ... replace` and observing the END_FILE(reason=stop) that
     // command produces for the file it replaces (bench-confirmed live,
@@ -828,86 +978,55 @@ fn main() -> ExitCode {
         if let Some(h) = health.as_mut() {
             if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
                 last_health_check = Instant::now();
-                match h.tick(last_position.map(|(secs, _)| secs)) {
-                    HealthAction::Healthy => {}
-                    HealthAction::AttemptRecovery { attempt, max } => {
-                        eprintln!(
-                            "dex-loop: health check: no progress across 2 consecutive \
-                             checks ({HEALTH_CHECK_SECS}s apart) -- attempting in-place \
-                             recovery {attempt}/{max} (re-issuing loadfile: restarts \
-                             demux+decode and forces a VO reconfigure; does not tear \
-                             down/re-init the DRM/GPU context itself -- see PLAN.md's \
-                             F1 addendum)"
+                let action = h.tick(last_position.map(|(secs, _)| secs));
+                act_on_health_action(
+                    ctx,
+                    action,
+                    &format!(
+                        "no progress across 2 consecutive checks ({HEALTH_CHECK_SECS}s apart)"
+                    ),
+                    &mut last_position,
+                    &mut recovery_stop_pending,
+                );
+            }
+        }
+
+        // T7 (PLAN.md): the bench-only live-fire probe. Checked every
+        // iteration (two integer comparisons; `ForceRecoveryTrigger` is
+        // `None` and this whole block skipped on every real deployment run)
+        // rather than gated on the HEALTH_CHECK_SECS cadence above, so it
+        // does not additionally wait out however much of that ~10s window
+        // was already elapsed when `--force-recovery-after-secs` was
+        // reached. It can still be delayed up to HEALTH_CHECK_SECS in the
+        // worst case (mpv_wait_event's timeout bounds how often this loop
+        // body runs at all when nothing else is waking it) -- acceptable
+        // for a bench diagnostic whose job is to prove the mechanism works
+        // at all, not to fire at a precise instant.
+        if let Some(trigger) = force_recovery_trigger.as_mut() {
+            if trigger.should_fire(started.elapsed().as_secs()) {
+                match health.as_mut() {
+                    Some(h) => {
+                        let action = h.force_recovery();
+                        act_on_health_action(
+                            ctx,
+                            action,
+                            "T7 bench probe: --force-recovery-after-secs elapsed",
+                            &mut last_position,
+                            &mut recovery_stop_pending,
                         );
-                        // Mirror HealthMonitor's own baseline reset
-                        // (health.rs: `self.last_position = None` in the
-                        // AttemptRecovery arm of `tick`). Without this, the
-                        // driver would keep feeding the STALE pre-recovery
-                        // position back into the next tick, which the
-                        // monitor -- now comparing against its own `None`
-                        // baseline -- would misread as a fresh first sample
-                        // (i.e. progress), buying a spurious "Healthy" tick
-                        // that stretches the real escalation timeline. Since
-                        // F9, `last_position` also carries the sample's
-                        // `Instant` in the same tuple, so this one line
-                        // clears `pos-age=`'s staleness clock too -- before
-                        // F9 those were two separate locals that had to be
-                        // reset together by hand; now it is impossible to
-                        // reset one without the other.
-                        last_position = None;
-                        // mpv_command_async, not mpv_command: this call runs on
-                        // the SAME event thread that also has to keep detecting
-                        // every fatal event, and a synchronous command could
-                        // block that thread against a wedged core -- see
-                        // dex_loop::health's module doc.
-                        let cmd_loadfile = CString::new("loadfile").unwrap();
-                        let cmd_url = CString::new("loop://endless").unwrap();
-                        let cmd_replace = CString::new("replace").unwrap();
-                        let argv: [*const c_char; 4] = [
-                            cmd_loadfile.as_ptr(),
-                            cmd_url.as_ptr(),
-                            cmd_replace.as_ptr(),
-                            std::ptr::null(),
-                        ];
-                        let rc = unsafe {
-                            mpv_command_async(ctx, RECOVERY_COMMAND_USERDATA, argv.as_ptr())
-                        };
-                        if rc < 0 {
-                            eprintln!(
-                                "warning: {}",
-                                err(ctx, "mpv_command_async(loadfile)", rc)
-                            );
-                        } else {
-                            // Only now: the command was actually queued, so
-                            // mpv WILL deliver an END_FILE(reason=stop) for
-                            // the file being replaced (see
-                            // MPV_END_FILE_REASON_STOP's doc comment) --
-                            // that event must be absorbed, not treated as
-                            // the fatal failure it would otherwise look
-                            // like. If mpv_command_async itself failed
-                            // (above), no such event is coming, so the flag
-                            // must NOT be set.
-                            recovery_stop_pending = true;
-                        }
                     }
-                    HealthAction::Escalate => {
+                    None => {
+                        // health_check_registered was false (the time-pos
+                        // subscription itself failed at startup, already
+                        // warned loudly there) -- there is no HealthMonitor
+                        // to spend a recovery attempt from, so the probe is
+                        // inert. Loud, not silent: a bench operator staring
+                        // at a run that never fires needs to know why.
                         eprintln!(
-                            "dex-loop: FATAL: tier-0 self-healing exhausted its recovery \
-                             budget ({MAX_RECOVERY_ATTEMPTS} attempt(s)) with no progress \
-                             -- exiting so the supervisor restarts (tier 1)"
+                            "warning: --force-recovery-after-secs elapsed but cannot fire: \
+                             tier-0 health check is DISABLED for this run (time-pos \
+                             subscription failed above)"
                         );
-                        // std::process::exit, not `break` into the shared
-                        // mpv_terminate_destroy() teardown at the end of
-                        // main: Escalate fires precisely because the core
-                        // looks wedged, and mpv_terminate_destroy
-                        // synchronously joins mpv's own threads -- a core
-                        // that cannot advance time-pos may not be able to
-                        // complete that join either, which would block the
-                        // one exit path whose entire job is to let the
-                        // supervisor take over. Per design principle 4 (the
-                        // mains switch IS the shutdown path), exiting
-                        // abruptly here is not a shortcut, it is correct.
-                        std::process::exit(1);
                     }
                 }
             }

@@ -189,7 +189,40 @@ impl HealthMonitor {
         // re-triggering on the very next tick -- but do NOT reset the
         // budget itself; see the module doc.
         self.consecutive_stalls = 0;
+        self.issue_recovery_or_escalate()
+    }
 
+    /// T7 -- bench-only live-fire probe (PLAN.md): force EXACTLY the
+    /// `AttemptRecovery`/`Escalate` decision an organic stall would produce,
+    /// without waiting for one. Draws from the SAME cumulative budget and
+    /// performs the SAME position-baseline reset as `tick` -- see "why the
+    /// budget never resets" above -- so a forced probe exercises the
+    /// IDENTICAL mpv-facing code path (main.rs's `loadfile ... replace`,
+    /// absorbing the resulting `END_FILE(reason=stop)`) that a real stall
+    /// would, rather than a look-alike that could pass while the real path
+    /// stays broken. That identity is the whole point: C1 (every recovery
+    /// attempt killing the process on its own first step) shipped and
+    /// reached the bench without ever having been exercised against a live
+    /// mpv, because nothing -- test or otherwise -- had ever driven this
+    /// path for real. See main.rs's `--force-recovery-after-secs` for what
+    /// decides WHEN to call this.
+    ///
+    /// Not a stall: whatever jitter `consecutive_stalls` was accumulating
+    /// before this call is stale the moment a recovery actually issues (the
+    /// same reset `tick` performs on a qualifying stall), so it is cleared
+    /// here too rather than left to bleed into the next organic judgment.
+    pub fn force_recovery(&mut self) -> HealthAction {
+        self.consecutive_stalls = 0;
+        self.issue_recovery_or_escalate()
+    }
+
+    /// The budget check + attempt/escalate decision shared by `tick`'s
+    /// qualifying-stall arm and `force_recovery` -- the only two places
+    /// allowed to spend the recovery budget. Callers are responsible for
+    /// whatever precedes "a recovery decision is due now" (stall counting
+    /// for `tick`, nothing for `force_recovery`); this is only the part
+    /// that must stay identical between them.
+    fn issue_recovery_or_escalate(&mut self) -> HealthAction {
         if self.recovery_attempts_used >= self.max_recovery_attempts {
             return HealthAction::Escalate;
         }
@@ -207,6 +240,43 @@ impl HealthMonitor {
             attempt: self.recovery_attempts_used,
             max: self.max_recovery_attempts,
         }
+    }
+}
+
+/// T7 -- bench-only live-fire probe (PLAN.md): decides WHEN to fire a single
+/// forced tier-0 recovery, entirely independent of whether anything has
+/// actually stalled. Pure so the "fires exactly once, at or after N seconds
+/// of uptime, never before, never twice" contract is testable without mpv.
+///
+/// Fires ONCE, not repeatedly: T7 exists to prove the recovery mechanism
+/// survives contact with a live mpv at all (the C1 regression), not to run
+/// an ongoing chaos-monkey campaign against it -- a single forced episode,
+/// same as the reviewer's manual probe that caught C1, is the minimal thing
+/// that closes the gap PLAN.md describes. See `main.rs`'s
+/// `--force-recovery-after-secs` for how a run arms this, and
+/// `HealthMonitor::force_recovery` for what firing does once armed.
+pub struct ForceRecoveryTrigger {
+    after_secs: u64,
+    fired: bool,
+}
+
+impl ForceRecoveryTrigger {
+    pub fn new(after_secs: u64) -> Self {
+        Self {
+            after_secs,
+            fired: false,
+        }
+    }
+
+    /// Feed the current uptime. Returns `true` exactly once -- the first
+    /// call where `uptime_secs >= after_secs` -- and `false` on every call
+    /// before or after that.
+    pub fn should_fire(&mut self, uptime_secs: u64) -> bool {
+        if self.fired || uptime_secs < self.after_secs {
+            return false;
+        }
+        self.fired = true;
+        true
     }
 }
 
@@ -412,5 +482,123 @@ mod tests {
             m.tick(Some(4.0)), // stall #2
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
+    }
+
+    // ---- T7: force_recovery / ForceRecoveryTrigger --------------------
+
+    #[test]
+    fn force_recovery_attempts_immediately_with_no_stall_observed() {
+        // The whole point of T7: unlike `tick`, this needs no stall history
+        // at all -- perfectly healthy, freshly-advancing playback still
+        // gets forced into a recovery attempt.
+        let mut m = HealthMonitor::new(3);
+        m.tick(Some(1.0));
+        m.tick(Some(2.0));
+        m.tick(Some(3.0)); // steady progress, nowhere near a stall
+        assert_eq!(
+            m.force_recovery(),
+            HealthAction::AttemptRecovery { attempt: 1, max: 3 }
+        );
+    }
+
+    #[test]
+    fn force_recovery_shares_the_same_cumulative_budget_as_tick() {
+        // A forced probe must spend from the SAME budget an organic stall
+        // would -- two independent counters would let the total number of
+        // in-place retries exceed max_recovery_attempts, exactly the
+        // unbounded-worst-case hole the budget exists to close (see the
+        // module doc).
+        let mut m = HealthMonitor::new(2);
+        assert_eq!(
+            m.force_recovery(),
+            HealthAction::AttemptRecovery { attempt: 1, max: 2 }
+        );
+        m.tick(Some(10.0));
+        m.tick(Some(10.0)); // stall #1
+        assert_eq!(
+            m.tick(Some(10.0)), // stall #2 -- second and LAST budgeted attempt
+            HealthAction::AttemptRecovery { attempt: 2, max: 2 }
+        );
+        // Budget exhausted by one forced + one organic attempt: a third
+        // request of EITHER kind must escalate, not attempt again.
+        assert_eq!(m.force_recovery(), HealthAction::Escalate);
+    }
+
+    #[test]
+    fn force_recovery_escalates_once_the_budget_is_already_exhausted() {
+        let mut m = HealthMonitor::new(0);
+        assert_eq!(m.force_recovery(), HealthAction::Escalate);
+    }
+
+    #[test]
+    fn force_recovery_resets_the_position_baseline_like_a_real_recovery() {
+        // Same reasoning as tick's own reset test: the forced recovery's
+        // loadfile-replace restarts mpv's position counter near zero, so
+        // the monitor's baseline must drop too or the next real sample
+        // reads as "still less than the old high-water mark" -- a stall
+        // that never happened.
+        let mut m = HealthMonitor::new(3);
+        m.tick(Some(500.0));
+        assert_eq!(
+            m.force_recovery(),
+            HealthAction::AttemptRecovery { attempt: 1, max: 3 }
+        );
+        assert_eq!(m.tick(Some(0.1)), HealthAction::Healthy);
+    }
+
+    #[test]
+    fn force_recovery_clears_accumulated_jitter_so_the_next_stall_needs_its_own_two_ticks(
+    ) {
+        // One non-advancing tick (not yet qualifying) followed by a forced
+        // probe must not leave that lone stall "banked" -- the next
+        // organic judgment needs its own fresh two-tick window, same as
+        // after any other recovery.
+        let mut m = HealthMonitor::new(3);
+        m.tick(Some(1.0));
+        m.tick(Some(1.0)); // stall #1 -- does not yet qualify
+        assert_eq!(
+            m.force_recovery(),
+            HealthAction::AttemptRecovery { attempt: 1, max: 3 }
+        );
+        // If the pre-existing stall had survived, this single non-advancing
+        // tick would immediately qualify as "stall #2". It must not.
+        assert_eq!(m.tick(Some(0.1)), HealthAction::Healthy);
+    }
+
+    #[test]
+    fn force_recovery_trigger_does_not_fire_before_its_deadline() {
+        let mut t = ForceRecoveryTrigger::new(10);
+        assert!(!t.should_fire(0));
+        assert!(!t.should_fire(9));
+    }
+
+    #[test]
+    fn force_recovery_trigger_fires_exactly_once_at_the_deadline() {
+        let mut t = ForceRecoveryTrigger::new(10);
+        assert!(!t.should_fire(9));
+        assert!(t.should_fire(10));
+        // Same call again (a later tick at the same or a later uptime) must
+        // not re-fire -- T7 is a single live-fire probe, not a repeating one.
+        assert!(!t.should_fire(10));
+        assert!(!t.should_fire(11));
+        assert!(!t.should_fire(1_000_000));
+    }
+
+    #[test]
+    fn force_recovery_trigger_fires_late_if_polled_late_but_still_only_once() {
+        // The driver in main.rs polls this on a cadence, not continuously --
+        // a poll that lands after the deadline must still fire (once), not
+        // wait for an exact match.
+        let mut t = ForceRecoveryTrigger::new(10);
+        assert!(!t.should_fire(3));
+        assert!(t.should_fire(47));
+        assert!(!t.should_fire(48));
+    }
+
+    #[test]
+    fn force_recovery_trigger_zero_secs_fires_on_the_first_poll() {
+        let mut t = ForceRecoveryTrigger::new(0);
+        assert!(t.should_fire(0));
+        assert!(!t.should_fire(0));
     }
 }

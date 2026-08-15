@@ -616,3 +616,207 @@ fn heartbeat_zero_is_emitted_at_startup() {
         r.stderr
     );
 }
+
+// ---- T7: --force-recovery-after-secs, the live-fire bench probe ---------
+//
+// C1 (PLAN.md's F1 addendum) shipped and reached the bench without ever
+// having been exercised against a live mpv: every in-place recovery killed
+// the process on its own first step, and nothing in the suite would have
+// caught it. T7 closes that gap with a bench-only flag that forces the
+// SAME `AttemptRecovery` decision an organic stall would, on a timer,
+// during otherwise-healthy playback -- see dex_loop::health's
+// `HealthMonitor::force_recovery` / `ForceRecoveryTrigger` for the pure
+// logic and main.rs's `act_on_health_action` for why a forced probe drives
+// the identical mpv-facing mechanics a real stall would.
+//
+// The tests below stay INSIDE this file's mandatory `--opt vid=no --opt
+// aid=no` rule (see the module doc at the top of this file): they prove the
+// CLI plumbing -- the flag parses, the "impossible to enable accidentally
+// in a deployment" gate refuses it without --bench-no-sidecar, and the loud
+// arming warning prints -- without ever letting the forced trigger actually
+// fire, since firing needs a health check tick against playback that is
+// still alive, and vid=no/aid=no makes mpv reach "nothing to play" and end
+// in well under a second (see stub_annexb's doc comment). Actually
+// observing the forced recovery succeed against a live mpv needs REAL
+// decode, which this file's rule exists to keep out of the automated suite
+// -- that scenario is the #[ignore]d test below instead.
+
+/// The gate itself (main.rs, checked on CLI shape alone, before the asset
+/// is even read): `--force-recovery-after-secs` without `--bench-no-sidecar`
+/// is refused, regardless of what -- if anything -- exists on disk at the
+/// given path. This is the "impossible to enable accidentally in a
+/// deployment" requirement, made concrete: a real deployment's ExecStart
+/// never passes --bench-no-sidecar (deploy/dex-loop.service always binds a
+/// real sidecar), so this flag can never end up armed against a gallery
+/// show, however it got pasted into a command line.
+#[test]
+fn force_recovery_without_bench_no_sidecar_refused_exit_2() {
+    let r = run_with_deadline(
+        &["/nonexistent/x.265", "--force-recovery-after-secs", "5"],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("--bench-no-sidecar"),
+        "stderr must explain the required pairing: {}",
+        r.stderr
+    );
+}
+
+/// Same missing-value discipline as `--fps`/`--mode`
+/// (fps_flag_missing_value_refused_exit_2_with_usage): a flag at the end of
+/// argv with no following value must refuse loudly via usage(), not
+/// evaporate into "flag absent".
+#[test]
+fn force_recovery_flag_missing_value_refused_exit_2_with_usage() {
+    let r = run_with_deadline(
+        &["/nonexistent/x.265", "--force-recovery-after-secs"],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
+}
+
+/// A non-numeric value must also refuse via usage(), not silently parse as
+/// 0 or panic the process.
+#[test]
+fn force_recovery_flag_non_numeric_value_refused_exit_2_with_usage() {
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/x.265",
+            "--force-recovery-after-secs",
+            "soon",
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
+}
+
+/// Paired with --bench-no-sidecar (the only way the gate above ever
+/// accepts it), the flag is armed: startup must print the loud "BENCH ONLY
+/// (T7)... ARMED" warning, and playback must proceed exactly as it does
+/// without the flag (vid=no/aid=no's deterministic fast exit via "nothing
+/// to play"). `N` is large enough that the forced trigger provably never
+/// gets a chance to fire before that fast exit, so this test cannot
+/// flake on the race between the two -- it exists to prove the plumbing
+/// and the warning, not the live-fire behaviour itself.
+#[test]
+fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
+    let p = temp_path("forcerecovery.265");
+    std::fs::write(&p, stub_annexb()).unwrap(); // bench path: no sidecar needed
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--bench-no-sidecar",
+            "--fps",
+            "30",
+            "--force-recovery-after-secs",
+            "3600",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("BENCH ONLY (T7)") && r.stderr.contains("ARMED"),
+        "must print the loud arming warning: {}",
+        r.stderr
+    );
+    // The trigger must not have fired in this short a run -- if it had,
+    // that would mean it fired against a process already past "nothing to
+    // play", which is not the scenario this test is designed to prove.
+    assert!(
+        !r.stderr.contains("T7 bench probe"),
+        "the forced trigger must not have had a chance to fire here: {}",
+        r.stderr
+    );
+}
+
+/// T7 -- LIVE-FIRE test for F1's in-place recovery against a REAL mpv
+/// instance: forces a tier-0 recovery a few seconds into otherwise-healthy
+/// playback and asserts the process SURVIVES it (recovery absorbed, still
+/// running) -- the exact scenario C1 broke. `is_expected_recovery_stop`'s
+/// pure-logic tests in main.rs pin the boolean condition that fixes C1;
+/// this test is the live-fire check that a REAL mpv event stream actually
+/// produces the shape that condition expects.
+///
+/// Deliberately NOT part of the automated suite: unlike every other test in
+/// this file, it does NOT pass `--opt vid=no` -- it needs the real video
+/// track selected so time-pos actually advances and a health-check tick can
+/// observe "healthy" before the forced trigger fires. `--opt vo=null` keeps
+/// it headless (no DRM, no display touched) but does NOT bound the decode:
+/// only killing at run_with_deadline's deadline does, same as it would for
+/// any endless-stream real-decode run. This is exactly the deviation this
+/// file's module doc says the mandatory vid=no/aid=no rule exists to keep
+/// out of the AUTOMATED suite -- hence #[ignore], not a relaxation of that
+/// rule for anything else here.
+///
+/// DO NOT RUN THIS on dexpi4.local while its thermal soak is active (its
+/// tmux sessions "dexeye"/"thermal" own the display and the CPU is being
+/// measured -- see this task's hard constraint). Once the soak has
+/// concluded, or on any OTHER Pi 4 (or dev machine) with libmpv 0.40+
+/// installed and nothing else on the display, run:
+///
+///   cargo test --test cli force_recovery_survives_against_real_mpv -- --ignored --nocapture
+///
+/// Expected stderr, in order:
+///   1. "dex-loop 0.1.0 (...)"                                -- normal startup
+///   2. "warning: BENCH ONLY (T7): --force-recovery-after-secs=3 is ARMED"
+///   3. (a few seconds of nothing -- real decode, no per-frame logging)
+///   4. "dex-loop: health check: T7 bench probe: ... -- attempting in-place
+///      recovery 1/3 ..."
+///   5. "dex-loop: health check: in-place recovery's loadfile replaced the
+///      stream; absorbing the expected END_FILE(reason=stop) ..."
+///   6. process is STILL RUNNING when this test kills it at its deadline.
+///
+/// If C1 has regressed: step 5 never appears, and the process exits 1 right
+/// after step 4 instead (the recovery's own END_FILE(reason=stop) treated
+/// as fatal) -- well before the 15s deadline.
+#[test]
+#[ignore]
+fn force_recovery_survives_against_real_mpv() {
+    let p = temp_path("liverecovery.265");
+    std::fs::write(&p, stub_annexb()).unwrap();
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--bench-no-sidecar",
+            "--fps",
+            "30",
+            "--force-recovery-after-secs",
+            "3",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(15),
+    );
+    assert_eq!(
+        r.exit_code, None,
+        "process must SURVIVE the forced recovery (still running when killed \
+         at the deadline); an exit here means the recovery's own \
+         END_FILE(reason=stop) was NOT absorbed -- C1 has regressed. stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("attempting in-place recovery 1/"),
+        "forced recovery never fired: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr
+            .contains("absorbing the expected END_FILE(reason=stop)"),
+        "recovery's own END_FILE was not absorbed -- this is exactly C1: {}",
+        r.stderr
+    );
+}
