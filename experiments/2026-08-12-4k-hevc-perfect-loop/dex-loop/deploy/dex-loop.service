@@ -23,7 +23,11 @@ Type=simple
 # to present EDID while the Pi boots in ~15. Wait for the connector rather than
 # starting into a fallback mode that never corrects itself.
 ExecStartPre=/usr/local/bin/dex-wait-hdmi
-ExecStart=/usr/local/bin/dex-loop /opt/dex/loop.265 --fps 30 --mode 3840x2160@30
+# No --fps here: the frame rate comes from /opt/dex/loop.265.json, written at
+# ingest and hash-bound to the asset. Deploy BOTH files. A missing or stale
+# sidecar makes the player refuse (exit 2) rather than guess a rate -- a
+# wrong guess would play slow forever with every metric green.
+ExecStart=/usr/local/bin/dex-loop /opt/dex/loop.265 --mode 3840x2160@30
 
 Restart=always
 RestartSec=2

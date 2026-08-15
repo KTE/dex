@@ -3,11 +3,14 @@
 Gapless HEVC looper for the Raspberry Pi. One process, no dependencies, no shell.
 
 ```bash
-# once, at ingest -- mpv needs a raw elementary stream, not MP4
+# once, at ingest -- mpv needs a raw elementary stream, not MP4:
 ffmpeg -i card.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc loop.265
+# and the binding sidecar (fps + hash travel WITH the asset):
+printf '{"fps":"30","sha256":"%s","width":3840,"height":2160}\n' \
+  "$(shasum -a 256 loop.265 | cut -d' ' -f1)" > loop.265.json   # Linux: sha256sum
 
 # then
-dex-loop loop.265 --fps 30 --mode 3840x2160@30
+dex-loop loop.265 --mode 3840x2160@30
 ```
 
 ## What it does
@@ -184,14 +187,36 @@ The stream has to deliver ~5 MB/s against hard per-frame deadlines, and a ctypes
 callback under the GIL cannot promise that. libmpv's `stream_cb` is a C API, so
 in Rust the same callback is a `copy_nonoverlapping`.
 
-## Options
+## Options and the sidecar
+
+`dex-loop <asset>` requires `<asset>.json` next to the asset — written at ingest,
+binding the two facts that are undetectable when wrong: the frame rate (a raw stream
+has no timestamps; a wrong rate plays slow forever with every metric nominal) and the
+exact bytes (sha256 — a truncated copy glitches at every wrap).
+
+```json
+{"fps":"30","sha256":"<64 hex>","width":3840,"height":2160}
+```
+
+`fps` is a string (`"30"`, `"29.97"`, `"30000/1001"`), passed verbatim to mpv.
+Required: `fps`, `sha256`. Optional: `width`, `height`, `source`, `encoder_cmd`.
+Unknown keys are ignored. The parser is a strict JSON subset (flat object, strings +
+unsigned integers); anything else refuses startup — fail closed.
 
 | flag | meaning |
 |---|---|
-| `--fps F` | **required** -- a raw stream carries no timestamps, so mpv must be told the rate |
-| `--mode WxH@R` | force a DRM mode, e.g. `3840x2160@30`. Default: connector preferred |
+| `--fps F` | optional cross-check; must equal the sidecar fps exactly, or startup is refused |
+| `--mode WxH@R` | force a DRM mode, e.g. `3840x2160@30`. Default: connector preferred. Deliberately NOT in the sidecar: mode is venue config, not asset metadata |
+| `--bench-no-sidecar` | BENCH ONLY: skip the sidecar and take `--fps` as given (both flags required — the escape hatch is a deliberate two-flag act) |
 | `--opt K=V` | pass any extra mpv option (repeatable) |
 | `--no-defaults` | omit the built-in Pi 4 zero-copy option set |
+
+Startup gates, in order: asset readable and non-empty → sidecar parses → fps resolved →
+sha256 matches → leading NALs are VPS/SPS/PPS + IDR (open-GOP/CRA assets are refused —
+the wrap premise is "IDR at frame 0"). Exit codes: **2** = refused before playback
+(fix the asset/invocation; restarting cannot help), **1** = playback/runtime failure
+(the supervisor restarts). Every start logs `dex-loop <version> (<git hash>)` and a
+heartbeat line (`wraps=`, `temp=`, `frame-drops=`) at boot and every 10 minutes.
 
 The defaults encode the measured zero-copy path: the Pi's decoder emits
 Broadcom SAND-tiled NV12, and the display scans SAND out natively **only**
@@ -204,6 +229,22 @@ it there; plain `drmprime` imports into GL and is 2x slower (5 fps vs 29).
 sudo apt install rustc cargo libmpv-dev   # trixie: rustc 1.85
 cargo build --release                     # ~30 s on a Pi 4, no dependencies
 ```
+
+## Testing
+
+```bash
+# Mac (no libmpv): type-check everything, run the pure-logic tests
+cargo check --all-targets && cargo test --lib
+
+# Pi (dexpi@dexpi4.local, crate mirrored at ~/bench/dex-loop): full suite
+cargo test
+```
+
+The integration tests (`tests/cli.rs`, `tests/ffi_constants.rs`) link libmpv and spawn
+the real binary — Pi only. They never touch the display: every playback-reaching
+invocation uses `--no-defaults --opt vo=null --opt vid=no --opt aid=no`, so they are
+safe to run while a soak owns the screen (`nice -n 19 cargo test` to keep builds off
+the soak's CPU). See IMPLEMENTATION-PLAN.md for the full hardening rationale.
 
 ## Reviewed 2026-08-15
 
