@@ -12,6 +12,11 @@ on:
     paths:
       - packages/website/**
       - .github/workflows/pages.yml
+  # Pull requests build and type-check but do not publish.
+  pull_request:
+    paths:
+      - packages/website/**
+      - .github/workflows/pages.yml
   workflow_dispatch:
 
 permissions:
@@ -20,9 +25,10 @@ permissions:
   id-token: write  # OIDC token that proves the artifact came from this repo
 
 # One deployment at a time. Do not cancel a run that is mid-publish.
+# Pull requests get their own group so a PR build never queues behind a deploy.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -49,12 +55,16 @@ jobs:
       - run: pnpm check
       - run: pnpm build
 
+      # Publishing steps only. A pull request stops after check + build above.
       - uses: actions/configure-pages@v6  # v6.0.0
+        if: github.event_name != 'pull_request'
       - uses: actions/upload-pages-artifact@v5  # v5.0.0
+        if: github.event_name != 'pull_request'
         with:
           path: packages/website/dist
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:
