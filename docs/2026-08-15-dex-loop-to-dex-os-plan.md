@@ -44,9 +44,41 @@ that wins; the buster security caveat
 3. **Skip dex-os for 4K.** Plain Debian trixie + our `.deb`, which is exactly what
    was verified working on the bench today. Least work, least product.
 
-Recommendation: **(1)**, with **(3)** as the fallback that already works — the bench
-Pi is currently a (3) installation, so it is a fallback that has been *tested*
-rather than assumed.
+**DECIDED (Max, 2026-08-15): option (2), two images.** `buster` stays as the
+legacy/HD line for existing players; a `trixie` line carries modern/4K. The cost is
+real and accepted — two bases to maintain — and it buys not having to migrate
+working legacy installations to get 4K on new ones. The buster security caveat
+therefore persists for the legacy line and is retired only where the trixie line
+lands.
+
+### Does the trixie line run on a Pi 5?
+
+**Decode: almost certainly yes. Presentation: unknown, and that is the axis that
+cost this experiment the most.**
+
+The same driver covers both SoCs — `rpi-hevc-dec` is a stateless V4L2 decoder for
+**BCM2711 and BCM2712**, and BCM2712 does HEVC 4K60 in hardware. So the decode side
+of our stack (ffmpeg V4L2-request hwaccel → the same controls) should port directly,
+and a Pi 5 may well clear 4K60 where the Pi 4 measured only 0.753x realtime.
+
+What is genuinely untested is everything *after* decode:
+
+- **The zero-copy plane path.** Our whole performance result rests on the decoder
+  emitting SAND-tiled NV12 that the display scans out *natively* —
+  `--gpu-hwdec-interop=drmprime-overlay`, with `--drm-draw-plane=overlay` and
+  `--drm-drmprime-video-plane=primary` swapped from mpv's defaults. That was
+  measured against BCM2711's HVS. The Pi 5's display pipeline differs.
+- The crate already flags this. `main.rs` on the plane swap: *"Verified on this Pi 4
+  + kernel; re-verify after a kernel upgrade or on any other DRM driver."* A Pi 5 is
+  another DRM driver.
+- The `+rpt2` ffmpeg criterion (story open point) is explicitly about the Pi 5 and
+  remains unresolved; trixie ships `+rpt1`.
+
+**So: yes, it needs trying — but the test to run is the interop, not the decode.**
+`scripts/probe.sh` plus `measure-rate.sh` answer it in an afternoon, and the failure
+mode to expect is the one from 2026-08-13: realtime-looking throughput with the
+frame quietly taking a slower path. Budget a Pi 5 leg as its own task, not as a
+footnote to the trixie image.
 
 ---
 
@@ -135,7 +167,23 @@ mains-switched device that is the normal case.
 
 ## Phase C — promote to `packages/`
 
-### C1. Decide the name — needs Max
+### C1. Decide the name — OPEN, with a direction (Max, 2026-08-15)
+
+Earlier dex thinking pointed at **`dexd`** or simply **`dex`**: *the one binary we
+run that manages everything*, potentially absorbing `pi_video_looper`'s features —
+USB copy-in, **transcode on ingest** (Milestone 3), playlist and timing (Milestone 4).
+
+That reframes the decision. If the endpoint is one daemon, then this crate is not a
+sibling of `pi_video_looper` but its **replacement**, and Phase D becomes a stepping
+stone rather than the destination. Two consequences worth deciding deliberately:
+
+- A name like `dex-player` locks in "plays video" and would have to be migrated again
+  when it grows ingest and playlists. `dex`/`dexd` does not.
+- But a Debian package called `dex` claims a very general name for something that
+  today only loops one file. Shipping `dexd` early and growing into it is the
+  cheaper order; renaming a package that devices already carry is a migration.
+
+### C1b. Original note
 
 `dex-loop` was an experiment name. In `packages/` it sits beside `dexd`,
 `pi_video_looper`, `dex-os`, and its job is narrower than "loop": it is the *player*.
