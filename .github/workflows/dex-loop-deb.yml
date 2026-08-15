@@ -357,6 +357,19 @@ jobs:
           getent passwd dex                       # still retained after purge
           test -d /opt/dex
 
+          # `apt-get install ./dex-loop.deb` pulled in every runtime dependency
+          # dpkg-shlibdeps derived (libmpv2's own deps: ffmpeg-linked libs,
+          # fontconfig, X11 libs, and -- because this container starts with
+          # none of it -- systemd, dbus, python3 too) and apt marks all of
+          # those auto-installed. Purging dex-loop itself does not cascade to
+          # them; a real Pi image already carries systemd/dbus/etc as part of
+          # the base OS, so this is invisible there, but in this bare
+          # container it shows up as hundreds of "leftover" files that were
+          # never dex-loop's to leave behind. autoremove is the missing half
+          # of the lifecycle this job claims to test -- without it, the diff
+          # below flags apt's own dependency bookkeeping as a dex-loop bug.
+          apt-get autoremove --purge -y
+
           # --- leftovers ---
           # Exactly two are intended, both deliberate in postrm: /opt/dex holds
           # artwork the package never shipped, and `dex` may be referenced by
