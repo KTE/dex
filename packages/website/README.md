@@ -60,10 +60,14 @@ The palette is the pair recorded in [`packages/branding`](../branding): a random
 2024-04-11, `#8ed1de` on `#2922c8`, with the light theme its exact inverse. Because the two colours
 are simply swapped between modes, both halves measure the same — body 5.71:1, AA.
 
-Body copy stays monospace, as cloud-docs sets it. Headings are `system-ui` at weight 800 with tight
-tracking, following the branding sketch. `system-ui` rather than a webfont because it costs no
-bytes and no extra files, and resolves to SF Pro, Segoe UI or Roboto — all grotesques. The exact
-face differs by platform; the character does not.
+Body copy stays monospace, as cloud-docs sets it. Headings are `system-ui` at weight 800, following
+the branding sketch. `system-ui` rather than a webfont because it costs no bytes and no extra
+files, and resolves to SF Pro, Segoe UI or Roboto — all grotesques. The exact face differs by
+platform; the character does not.
+
+Only `h1` gets negative tracking (`-0.03em`). It is a display treatment that earns its place at
+2.6em and works against readability at the size the `h2` section headings run, so those stay at
+`letter-spacing: 0`.
 
 Note the upstream variable is `--color--link`, with two hyphens. An override that writes one hyphen
 fails silently and falls back to upstream white/black.

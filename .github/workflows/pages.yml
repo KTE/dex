@@ -56,8 +56,17 @@ jobs:
       - run: pnpm build
 
       # Publishing steps only. A pull request stops after check + build above.
+      #
+      # enablement: true creates the Pages site if the repository has none.
+      # The default is false, which only reads the existing configuration and
+      # fails with "Get Pages site failed ... Not Found" on a repo where Pages
+      # was never turned on - which is exactly what happened on the first
+      # deploy here. Setting it keeps the workflow self-sufficient, so a fork
+      # or a fresh clone does not need a manual API call first.
       - uses: actions/configure-pages@v6  # v6.0.0
         if: github.event_name != 'pull_request'
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v5  # v5.0.0
         if: github.event_name != 'pull_request'
         with:
