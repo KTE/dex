@@ -565,6 +565,17 @@ smaller question.
   is Ubuntu and the target is Debian trixie; linking against the wrong libmpv is
   precisely the ABI mismatch this package exists to prevent. The container makes
   the build environment the target environment.
+- **Including the compiler: `rustc`/`cargo` come from apt, not rustup.** A
+  container that supplies the target's libraries but not its compiler is only
+  half a target environment. The Pi is a *development host*, and it can only
+  keep building its own software while the crate stays inside trixie's Rust
+  (1.85, declared as `rust-version`). With rustup, "builds in CI" and "builds on
+  the device" become separate claims that drift silently — which is exactly how
+  the `cargo-deb` MSRV gap was found: by hand, on the Pi, by luck. The cost is
+  deliberate: Debian's rustc lags, so a dependency needing a newer compiler
+  cannot be adopted, and that constraint should be felt on a red CI build rather
+  than at deploy time. (`cargo-deb` is pinned to `^2` for the same reason; 3.7
+  needs 1.88. Tooling is not shipped, so it may be pinned freely.)
 - **Enables F5.** With install as a discrete step, sealing a read-only rootfs
   stops fighting an in-place build tree.
 

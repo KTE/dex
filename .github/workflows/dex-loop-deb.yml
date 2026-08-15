@@ -16,6 +16,25 @@
 #
 # Verify the pairing whenever the fleet moves to a new Debian release:
 #   ssh <pi> '. /etc/os-release; echo $VERSION_CODENAME; dpkg -s libmpv2'
+#
+# TOOLCHAIN: DEBIAN'S RUSTC, NOT RUSTUP
+# ------------------------------------
+# rustc and cargo are installed with apt, from the same archive the devices
+# use, so CI compiles with the compiler the fleet actually has (trixie: 1.85).
+# This was originally rustup stable, which was inconsistent with the paragraph
+# above: a container that supplies the target's libraries but not its compiler
+# is only half a target environment.
+#
+# What it buys: the Pi is a development host, and it can only keep building its
+# own software while the crate stays inside trixie's Rust. With rustup here,
+# "builds in CI" and "builds on the device" are separate claims, and the day
+# they diverge is the day someone discovers it by hand -- which is how the
+# cargo-deb MSRV gap below was found.
+#
+# The cost is real and deliberate: Debian's rustc lags, so a dependency needing
+# a newer compiler cannot be adopted. That constraint should be felt HERE, on a
+# red build, rather than at deploy time. `rust-version` in Cargo.toml states
+# the same floor; this job is what enforces it.
 name: dex-loop deb
 
 on:
@@ -44,22 +63,20 @@ jobs:
           apt-get update
           # libmpv-dev is what the crate links; dpkg-dev provides
           # dpkg-shlibdeps, which is what turns those links into Depends.
+          # rustc/cargo come from DEBIAN, not rustup -- see "Toolchain" below.
+          # libmpv-dev is what the crate links; dpkg-dev provides
+          # dpkg-shlibdeps, which is what turns those links into Depends.
           apt-get install -y --no-install-recommends \
-            build-essential pkg-config curl ca-certificates git \
-            libmpv-dev dpkg-dev
-          # Record what we linked against. When a future .deb refuses to
-          # install on a device, this line in the log is the first thing to
-          # compare against the device's own `dpkg -s libmpv2`.
+            build-essential pkg-config ca-certificates git \
+            rustc cargo libmpv-dev dpkg-dev
+          # Record what we built and linked against. When a future .deb refuses
+          # to install on a device, these lines in the log are the first thing
+          # to compare against the device's own `dpkg -s libmpv2` / rustc -V.
           dpkg -s libmpv2 | grep -E '^(Package|Version):'
+          rustc --version
+          cargo --version
 
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: |
-          set -eux
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --default-toolchain stable --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -72,8 +89,12 @@ jobs:
           key: dex-loop-deb-${{ hashFiles('experiments/2026-08-12-4k-hevc-perfect-loop/dex-loop/Cargo.lock') }}
           restore-keys: dex-loop-deb-
 
+      # Pinned to the 2.x line: cargo-deb 3.7 uses let-chains and needs rustc
+      # >= 1.88, which trixie does not have. The pin is a CONSEQUENCE of the
+      # toolchain decision, not an independent choice -- if this ever has to be
+      # unpinned, the toolchain question is what actually changed.
       - name: Install cargo-deb
-        run: command -v cargo-deb || cargo install --locked cargo-deb
+        run: command -v cargo-deb || cargo install --locked cargo-deb --version "^2"
 
       # The package is only worth shipping if the code it contains passes. The
       # full suite runs here because this container HAS libmpv -- the Mac

@@ -3,6 +3,12 @@ name = "dex-loop"
 version = "0.1.0"
 edition = "2021"
 description = "Gapless HEVC looper: libmpv fed by an endless in-process byte stream"
+# The compiler Debian trixie ships, which is what the Pi has. The device is a
+# development host, so the crate must stay buildable with the fleet's own
+# toolchain — CI compiles with apt's rustc to enforce it, not rustup's stable.
+# Raising this floor is a decision about whether devices can still build their
+# own software, not a routine bump.
+rust-version = "1.85"
 
 # Dependencies are DECLARED, not avoided — SPEC §5c. This binary links libmpv
 # and, transitively, 228 shared objects; a rule that forbade three small cargo
