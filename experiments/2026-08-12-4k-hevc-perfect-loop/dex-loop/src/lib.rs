@@ -11,5 +11,6 @@
 
 pub mod chunk;
 pub mod ffi_consts;
+pub mod nal;
 pub mod sha256;
 pub mod sidecar;

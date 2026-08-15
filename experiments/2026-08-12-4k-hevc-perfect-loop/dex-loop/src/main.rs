@@ -49,6 +49,7 @@ use dex_loop::ffi_consts::{
     MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
     MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
 };
+use dex_loop::nal::validate_leading_nals;
 use dex_loop::sidecar::{resolve_fps, verify_payload, FpsSource, Sidecar};
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -364,6 +365,16 @@ fn main() -> ExitCode {
             eprintln!("error: {path}: {e}");
             return ExitCode::from(2);
         }
+    }
+
+    // F4 — validate the leading NALs. The wrap is only seamless because byte
+    // 0 begins VPS/SPS/PPS + IDR; a wrong-but-intact asset (open GOP, no
+    // leading IDR, not Annex-B at all) would glitch at every wrap, silently,
+    // ~29k times/day. Truncation is caught by the F3 hash above; this catches
+    // shape. Runs in bench mode too — the premise holds there as well.
+    if let Err(e) = validate_leading_nals(leaked) {
+        eprintln!("error: {path}: {e}");
+        return ExitCode::from(2);
     }
 
     eprintln!(

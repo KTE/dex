@@ -199,26 +199,22 @@ fn playback_failure_exits_nonzero_never_hangs() {
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
 }
 
-/// Undecodable garbage must produce a BOUNDED, nonzero exit — never a hang.
-/// Today the garbage reaches mpv and fails its (bounded) demux probe
-/// (LOADING_FAILED -> END_FILE -> exit 1). Once the F4 NAL gate lands, the
-/// same input is refused before mpv starts (exit 2); task 7 tightens this
-/// assertion to exactly that.
+/// Post-F4: garbage never reaches mpv — the NAL gate refuses it at startup,
+/// fast, with a message naming the actual problem. (The pre-F4 version of
+/// this test allowed exit 1 via mpv's demux-probe failure; the event-loop
+/// hang class is covered by playback_failure_exits_nonzero_never_hangs.)
 #[test]
-fn garbage_bytes_exit_nonzero_within_deadline() {
+fn garbage_bytes_refused_at_the_gate_exit_2() {
     let p = temp_path("garbage.265");
-    // 64 KiB of bytes in 0x02..=0x7E: no 0x00/0x01 (no Annex-B start code
-    // anywhere) and no 0xFF (no MP3/ADTS sync word a demuxer could latch onto).
+    // 64 KiB of bytes in 0x02..=0x7E: no 0x00/0x01 -> no start code anywhere.
     let bytes: Vec<u8> = (0..65536u32)
         .map(|i| ((i.wrapping_mul(2654435761) >> 24) as u8 % 0x7d) + 0x02)
         .collect();
     std::fs::write(&p, &bytes).unwrap();
-    write_sidecar(&p, &bytes, "30");
+    write_sidecar(&p, &bytes, "30"); // hash MATCHES: proves the gate, not F3, refuses
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--fps",
-            "30",
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -227,14 +223,41 @@ fn garbage_bytes_exit_nonzero_within_deadline() {
             "--opt",
             "aid=no",
         ],
-        Duration::from_secs(30),
+        Duration::from_secs(10),
     );
-    assert!(
-        r.exit_code.is_some(),
-        "player HUNG on garbage input; stderr: {}",
-        r.stderr
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("start code"), "stderr: {}", r.stderr);
+}
+
+/// Wrong-but-intact: a CRA-led (open GOP) asset with a CORRECT sidecar hash.
+/// F3 passes — the bytes are exactly what was ingested — and F4 must still
+/// refuse, proving the hash alone is insufficient.
+#[test]
+fn open_gop_asset_refused_at_the_gate_exit_2() {
+    let p = temp_path("opengop.265");
+    let mut bytes = Vec::new();
+    for t in [32u8, 33, 34, 21] {
+        // VPS SPS PPS CRA
+        bytes.extend([0, 0, 0, 1, t << 1, 0x01]);
+        bytes.extend([0x2a; 8]);
+    }
+    std::fs::write(&p, &bytes).unwrap();
+    write_sidecar(&p, &bytes, "30");
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(10),
     );
-    assert_ne!(r.exit_code, Some(0), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("CRA"), "stderr: {}", r.stderr);
 }
 
 // ---- F3: sidecar binding (task 6) ---------------------------------------
