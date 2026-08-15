@@ -54,6 +54,23 @@ attempt in-place recovery (`loadfile` again → forces VO reconfiguration) befor
 escalating to exit. Cap in-place attempts; escalate to tier 1 after N.
 **Cost control:** one property read per 10 s on a non-decode thread.
 
+**2026-08-15, implemented:** landed as `src/health.rs` (pure escalation policy,
+`HealthMonitor`/`HealthAction`, 11 unit tests — attempts, thresholds, the
+cumulative-budget-never-refills property, the position-baseline reset a real
+`loadfile` restart requires) plus the mpv-facing wiring in `main.rs`. One change
+from this text: **not** a synchronous property read on a dedicated thread — see
+F9 above, whose SUSPECTED core-wedge concern this design takes as the deciding
+constraint rather than an open question. `time-pos` is subscribed once via
+`mpv_observe_property` and sampled only from `MPV_EVENT_PROPERTY_CHANGE` events
+on the existing (already-proven-non-blocking) event-loop thread; recovery is
+issued via `mpv_command_async`, never the blocking `mpv_command`. No new
+synchronous mpv call is introduced anywhere in this feature. The event-wait
+timeout was tightened from 30 s to `HEALTH_CHECK_SECS` (10 s) so a genuine stall
+— which by definition produces no events — still gets evaluated on schedule.
+Verified on the Pi: full suite green (58 → 74 tests) and a ~75 s manual run of
+the real `loop4k.265` asset against the real DRM display, health check active
+and silent throughout (~7 ticks, zero spurious recovery/escalation).
+
 ### F2 — Tier-1/2: supervision and reboot escalation
 `deploy/dex-loop.service` exists (tier 1). Add tier 2: a `StartLimitBurst`
 counter feeding an `OnFailure=` unit that reboots after repeated failures within
