@@ -229,6 +229,37 @@ Broadcom SAND-tiled NV12, and the display scans SAND out natively **only**
 straight onto a KMS plane. `--gpu-hwdec-interop=drmprime-overlay` is what puts
 it there; plain `drmprime` imports into GL and is 2x slower (5 fps vs 29).
 
+## Where this is developed
+
+The split is imposed by hardware, not chosen:
+
+| | Mac | Pi 4 |
+|---|---|---|
+| DRM/KMS — the player's whole output path | **does not exist on macOS** | yes |
+| Broadcom HEVC decoder | no | yes |
+| Cam Link — the measurement instrument | **yes** | no |
+| What runs | pure-logic tests (36), the capture/analysis harness | build, the player, the FULL test matrix (58) |
+
+So the player can only ever run on the Pi, and it can only ever be *measured* from
+the Mac. Neither machine alone is enough, and no amount of tooling changes that.
+
+**Both are git checkouts of this repo; they reconcile through the remote, never on
+disk.** An earlier arrangement rsync'd the crate to the Pi and cost real time: the
+Pi copy had no `.git`, so the build-identity work invented a `.dex-build-id` stamp
+file to recover what `git rev-parse` already knew. With a real checkout the startup
+line reads `dex-loop 0.1.0 (8b8c00ef5eef)` and the stamp file is unnecessary.
+
+```bash
+# on the Pi, once
+git clone --no-recurse-submodules https://github.com/KTE/dex.git ~/dex
+cd ~/dex && git checkout experiment/4k-hevc-perfect-loop
+# submodules skipped deliberately: packages/example-content carries video masters
+# the bench does not need. Clone is ~9 MB.
+```
+
+Generated bench assets (`loop4k.265`, encoded cards) live outside the checkout in
+`~/bench/` — they are build products, not repo content.
+
 ## Building
 
 ```bash
