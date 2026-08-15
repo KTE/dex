@@ -2774,6 +2774,170 @@ dex-loop loop.265 --mode 3840x2160@30
 **Step 2 (5 min).** Replace the whole `## Options` section with:
 
 ````markdown
+### Task 10 — Soak monitor run identity and schema guard (T6)
+
+*Added after the plan was first written, from a defect observed while the plan was
+being executed. Harness code, not the player: it can be done independently of
+Tasks 1–9 and touches no file they touch.*
+
+**Files:**
+- Modify: `experiments/2026-08-12-4k-hevc-perfect-loop/scripts/soak-monitor.sh`
+- Test: `experiments/2026-08-12-4k-hevc-perfect-loop/scripts/test-soak-monitor.sh` (create)
+
+**Interfaces:**
+- Consumes: nothing from other tasks — the monitor is standalone harness code on the Mac.
+- Produces: a TSV whose first column is `run_id`, and a non-zero exit (3) when the
+  output file's existing header does not match the header this version writes.
+
+**Why this task exists.** Observed 2026-08-15: the soak was restarted against the same
+output file when its duration changed from 12 h to 3 h. The monitor appends, and writes
+a header only when the file is empty, so run 2's rows joined run 1's and `elapsed_s`
+restarts at 0 mid-file. Every row is individually honest — `iso_time` is correct — while
+the series is not: anything plotting elapsed sees time run backwards, with no warning.
+The same gap bit once before, when adding `held_at` took the column count from 10 to 11
+and differently-shaped rows were appended to an old file in silence.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `scripts/test-soak-monitor.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Self-test for soak-monitor.sh. A monitor that has only ever seen success is untested.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+
+fails=0
+t=$(mktemp -d)
+trap 'rm -rf "$t"' EXIT
+
+# 1. A fresh file gets a header whose first column is run_id.
+./scripts/soak-monitor.sh --out "$t/a.tsv" --interval 1 --duration 1 --frames 60 >/dev/null 2>&1
+head -1 "$t/a.tsv" | grep -q '^run_id	iso_time' \
+  || { echo "FAIL: header does not start with run_id"; fails=$((fails + 1)); }
+
+# 2. Every data row carries a non-empty run_id, and one run uses exactly one value.
+ids=$(awk -F'\t' 'NR>1 {print $1}' "$t/a.tsv" | sort -u | grep -c .)
+[ "$ids" = "1" ] || { echo "FAIL: expected 1 run_id in one run, got $ids"; fails=$((fails + 1)); }
+
+# 3. A SECOND run appended to the same file uses a DIFFERENT run_id, so the merge is
+#    visible rather than silent. This is the defect that prompted the task.
+sleep 1
+./scripts/soak-monitor.sh --out "$t/a.tsv" --interval 1 --duration 1 --frames 60 >/dev/null 2>&1
+ids=$(awk -F'\t' 'NR>1 {print $1}' "$t/a.tsv" | sort -u | grep -c .)
+[ "$ids" = "2" ] || { echo "FAIL: expected 2 run_ids after a restart, got $ids"; fails=$((fails + 1)); }
+
+# 4. A file with a DIFFERENT schema is refused, not appended to.
+printf 'iso_time\telapsed_s\tframes\n2026-01-01T00:00:00+00:00\t0\t1\n' > "$t/old.tsv"
+./scripts/soak-monitor.sh --out "$t/old.tsv" --interval 1 --duration 1 --frames 60 >/dev/null 2>&1
+rc=$?
+[ "$rc" = "3" ] || { echo "FAIL: expected exit 3 on schema mismatch, got $rc"; fails=$((fails + 1)); }
+[ "$(wc -l < "$t/old.tsv")" = "2" ] || { echo "FAIL: monitor appended to a mismatched file"; fails=$((fails + 1)); }
+
+[ "$fails" = "0" ] && echo "test-soak-monitor: PASS" || echo "test-soak-monitor: $fails FAILED"
+exit "$fails"
+```
+
+```bash
+chmod +x scripts/test-soak-monitor.sh
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./scripts/test-soak-monitor.sh`
+Expected: FAIL on the header assertion (no `run_id` column exists yet) and on the
+schema-mismatch assertion (exit is currently 0, and the row is appended).
+
+- [ ] **Step 3: Add the run id and the header guard**
+
+In `scripts/soak-monitor.sh`, replace the single header line:
+
+```bash
+[ -s "$OUT" ] || printf 'iso_time\telapsed_s\tframes\tnulls\twraps\theld\tmax_dwell\theld_at\tplayer\ttemp_c\tthrottled\n' >"$OUT"
+```
+
+with:
+
+```bash
+# One identity per invocation. Date alone is not enough: two runs can start in the
+# same second, and then the merge this exists to expose would be invisible again.
+RUN_ID="$(date +%Y%m%dT%H%M%S)-$$"
+
+HEADER=$'run_id\tiso_time\telapsed_s\tframes\tnulls\twraps\theld\tmax_dwell\theld_at\tplayer\ttemp_c\tthrottled'
+
+# Appending is only safe if the file already has THIS schema. The header was
+# previously written only when the file was empty, so a schema change appended
+# differently-shaped rows to an old file in silence -- which happened once, when
+# held_at took the column count from 10 to 11.
+if [ -s "$OUT" ]; then
+  existing="$(head -1 "$OUT")"
+  if [ "$existing" != "$HEADER" ]; then
+    echo "soak-monitor: $OUT was written by a different schema; refusing to append." >&2
+    echo "  expected: $HEADER" >&2
+    echo "  found:    $existing" >&2
+    echo "  move it aside or pass a different --out." >&2
+    exit 3
+  fi
+else
+  printf '%s\n' "$HEADER" >"$OUT"
+fi
+```
+
+Then prepend `run_id` to the row that is written each sample. Replace:
+
+```bash
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -Iseconds)" "$((now - start))" "$frames" "$nulls" "$wraps" \
+    "$held" "$maxd" "$heldat" "$player" "$temp" "$thr" >>"$OUT"
+```
+
+with:
+
+```bash
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$RUN_ID" "$(date -Iseconds)" "$((now - start))" "$frames" "$nulls" "$wraps" \
+    "$held" "$maxd" "$heldat" "$player" "$temp" "$thr" >>"$OUT"
+```
+
+And the LINK-FAIL row, which must carry the same identity. Replace:
+
+```bash
+    printf '%s\t%s\tLINK-FAIL\n' "$(date -Iseconds)" "$((now - start))" >>"$OUT"
+```
+
+with:
+
+```bash
+    printf '%s\t%s\t%s\tLINK-FAIL\n' "$RUN_ID" "$(date -Iseconds)" "$((now - start))" >>"$OUT"
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `./scripts/test-soak-monitor.sh`
+Expected: `test-soak-monitor: PASS`
+
+Also run: `shellcheck scripts/soak-monitor.sh scripts/test-soak-monitor.sh`
+Expected: clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add experiments/2026-08-12-4k-hevc-perfect-loop/scripts/soak-monitor.sh \
+        experiments/2026-08-12-4k-hevc-perfect-loop/scripts/test-soak-monitor.sh
+git commit -m "E: 4k-loop-probe — soak monitor: run_id column and a header guard
+
+Restarting the monitor against the same output file silently merged two runs:
+elapsed_s restarted at 0 mid-file while every iso_time stayed correct, so the
+rows were individually honest and the series was not. A run_id column makes the
+merge visible instead. The header guard covers the same gap for schema changes,
+which already appended 10-column rows under an 11-column header once.
+
+Adds a self-test, because the monitor has now produced three of its own bugs and
+one that has only ever seen success is untested."
+```
+
+---
+
 ## Options and the sidecar
 
 `dex-loop <asset>` requires `<asset>.json` next to the asset — written at ingest,
