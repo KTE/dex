@@ -271,15 +271,59 @@ appearing on a device in a gallery.
 
 ---
 
-## Decisions needed from Max
+## Decisions
 
-1. **The crux** — rebase dex-os to trixie, two images, or skip dex-os for 4K.
-2. **The package name** (C1) — it becomes the binary, the Debian package and the
-   unit name.
-3. **Whether F9 and T7 block the RC.** Recommendation: **yes for F9** (a suspected
-   MAJOR that two reviewers found independently), **T7 can follow** — but then the
-   RC ships with a recovery path no test has ever exercised, which should be stated
-   in the release notes rather than left implicit.
+**Resolved 2026-08-15:**
+
+1. ~~The crux~~ → **two images**: buster for legacy/HD, trixie for modern/4K.
+3. ~~Do F9 and T7 block the RC~~ → **both do.** "Fixing all findings comes first."
+   The RC therefore ships with the recovery path actually exercised by a test,
+   which was the risk in shipping T7 late.
+
+**Still open:**
+
+2. **The package name** (C1). Direction is `dexd`/`dex`; the decision is really
+   *when* to claim the general name, not which name.
+4. **Who owns the loop** (D1) — recommendation is (a), the looper spawning and
+   killing the player. **The `dexd` direction may dissolve this question entirely:**
+   if the endpoint is one binary absorbing USB copy, transcode and playlists, then
+   there is no looper to integrate with and Phase D collapses into Phase C. Worth
+   deciding *before* writing a backend that may be throwaway.
+5. **dex-os variants within the trixie line** (E3) — one image that selects a mode,
+   or separate 4K and HD images. The two-image decision settles buster-vs-trixie,
+   not this.
+6. **The `+rpt2` ffmpeg criterion** — still unresolved, and it is now the gate on
+   the Pi 5 leg rather than a general concern.
+
+## Also open, tracked elsewhere — pulled in here so the plan is not misleading
+
+These are not Phase A–E work, but they compete for the same evenings:
+
+- **The Pi 5 leg** (see "Does the trixie line run on a Pi 5?"). A day's work with a
+  clear test; blocked only by having a Pi 5 to hand.
+- **Enclosure design** (dex idea B, 2026-08-15). Today's box test is the first data:
+  sealed and passive, 1440p60 at 45 Mbps reached **75.9 C and was still climbing at
+  +0.15 C/min after an hour**, with 4.1 C of headroom left. Whatever the final number,
+  a sealed passive case is marginal — the design needs venting, a heatsink, or the
+  silent fan. Ambient matters too: a gallery warmer than this room eats the margin
+  directly.
+- **Jumper-set configuration** (dex idea A) — dev/prod toggle read from GPIO at
+  startup. Composes well with F5: configuration that needs no filesystem write
+  cannot be corrupted by a power cut, and is visible without a keyboard.
+- **Capture rig permanent home** — tracked in the home-workspace story. Blocks
+  further measurement work more than it blocks shipping.
+- **Licence rollout** — `dex-loop` is MIT-0 and REUSE-compliant; `dex-os`, `dexd`
+  and `example-content` are not yet, and repo-wide REUSE is blocked on the
+  GPL-inherited pi-gen material.
+
+## Deliberately not in this plan
+
+- **F2 tier-2 reboot escalation** — explicitly a future iteration.
+- **Milestone 4 (exhibition format: playlists, per-video timing)** — changes the
+  answer to D1 and should not be pre-empted by it. Note the `dexd` direction points
+  straight at M4, so this may arrive sooner than its milestone number suggests.
+- **The >=500-wrap statistical seam run** — an experiment artifact, not a product gate.
+  The M5 artwork does not loop, so seam behaviour is not on its acceptance path.
 
 ## Deliberately not in this plan
 
@@ -288,4 +332,4 @@ appearing on a device in a gallery.
   answer to D1 and should not be pre-empted by it.
 - **The ≥500-wrap statistical seam run** — an experiment artifact, not a product gate.
   The M5 artwork does not loop, so seam behaviour is not on its acceptance path.
-- **Pi 5 support** — blocked on the unresolved `+rpt2` ffmpeg criterion.
+
