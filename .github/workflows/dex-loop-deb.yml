@@ -68,7 +68,7 @@ jobs:
           # dpkg-shlibdeps, which is what turns those links into Depends.
           apt-get install -y --no-install-recommends \
             build-essential pkg-config ca-certificates git \
-            rustc cargo libmpv-dev dpkg-dev
+            rustc cargo rust-clippy libmpv-dev dpkg-dev lintian
           # Record what we built and linked against. When a future .deb refuses
           # to install on a device, these lines in the log are the first thing
           # to compare against the device's own `dpkg -s libmpv2` / rustc -V.
@@ -100,6 +100,10 @@ jobs:
       # full suite runs here because this container HAS libmpv -- the Mac
       # checkout cannot link the binary at all, so `cargo test --lib` is the
       # most a developer machine can do.
+      - name: Clippy
+        working-directory: ${{ env.CRATE_DIR }}
+        run: cargo clippy --all-targets -- -D warnings
+
       - name: Test
         working-directory: ${{ env.CRATE_DIR }}
         run: cargo test --release
@@ -131,8 +135,74 @@ jobs:
           dpkg-deb --field "$deb" Depends | grep -qE 'libmpv2 \(>= 0\.(4[0-9]|[5-9][0-9])' \
             || { echo "::error::Depends lost its explicit libmpv2 >= 0.40 floor"; exit 1; }
 
+      # Policy check on the built package. --fail-on error,warning is the point:
+      # a linter that reports and exits 0 is a linter nobody reads. Accepted
+      # tags live in deploy/lintian-overrides WITH their reasoning, so silencing
+      # one is a reviewable diff rather than a flag on a command line.
+      - name: Lintian
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          deb=$(find target/debian -name '*.deb' -print -quit)
+          lintian --tag-display-limit 0 --fail-on error,warning "$deb"
+
       - uses: actions/upload-artifact@v4
         with:
           name: dex-loop-deb
           path: ${{ env.CRATE_DIR }}/target/debian/*.deb
           if-no-files-found: error
+
+  # Static checks on what we SHIP but do not compile: the systemd unit and the
+  # shell. Separate job so it reports independently of the package build and
+  # runs even when the build breaks -- these findings are usually the cause.
+  lint:
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+    steps:
+      - name: Install linters
+        run: |
+          set -eux
+          apt-get update
+          # devscripts provides checkbashisms; systemd provides systemd-analyze.
+          apt-get install -y --no-install-recommends \
+            shellcheck devscripts systemd git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      # THE reason this job exists. systemd silently ignores directives it does
+      # not recognise in a given section, so a typo or a section-migrated key is
+      # invisible at runtime -- the unit starts fine and simply does less than
+      # it says. That is how StartLimitIntervalSec=0 sat in [Service] doing
+      # nothing (fixed 2026-08-15): the most safety-critical line in the unit,
+      # ignored, while reading as though it worked.
+      #
+      # The two "Command ... is not executable" notices are expected here: the
+      # binaries live in the package, which is not installed in this container.
+      - name: systemd-analyze verify
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          out=$(systemd-analyze verify deploy/dex-loop.service 2>&1 || true)
+          echo "$out"
+          # Fail on anything that is NOT the known not-installed noise.
+          if echo "$out" | grep -vE 'is not executable|^$' | grep -q .; then
+            echo "::error::systemd-analyze reported problems with dex-loop.service"
+            echo "$out" | grep -vE 'is not executable|^$'
+            exit 1
+          fi
+
+      # Maintainer scripts run as root on every device, and run under /bin/sh --
+      # dash on Debian, not bash. A bashism there fails an install in the field,
+      # on a machine nobody is sitting at.
+      - name: Shell checks
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          shellcheck deploy/dex-wait-hdmi deploy/maintainer-scripts/*
+          checkbashisms deploy/maintainer-scripts/*
+
+      # The harness the bench depends on. Not shipped, but a broken measurement
+      # script costs a whole soak run.
+      - name: Shellcheck the bench harness
+        working-directory: experiments/2026-08-12-4k-hevc-perfect-loop
+        run: shellcheck scripts/*.sh

@@ -20,6 +20,19 @@ Documentation=https://github.com/KTE/dex
 Conflicts=getty@tty1.service
 After=multi-user.target
 
+# LOAD-BEARING. Without this, systemd's default rate limit (5 starts / 10 s)
+# puts the unit into a permanent `failed` state after a burst of crashes --
+# exactly the unattended disaster the unit exists to prevent. A restart loop
+# always beats a dead screen: never give up.
+#
+# MUST live in [Unit], not [Service]. It sat in [Service] until 2026-08-15,
+# where systemd silently IGNORED it ("Unknown key ... ignoring") and the default
+# limit applied the whole time -- so the single most safety-critical line in
+# this file did nothing, while reading as though it did. `systemd-analyze
+# verify` found it in one run; it is now in CI for that reason.
+# (The key was accepted in [Service] before systemd 229 and moved to [Unit].)
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 # The display may not be awake when the Pi boots -- a projector can take 30-90s
@@ -34,11 +47,8 @@ ExecStart=/usr/bin/dex-loop /opt/dex/loop.265 --mode 3840x2160@30
 
 Restart=always
 RestartSec=2
-# LOAD-BEARING. The default rate limit (5 starts / 10 s) would put the unit into
-# a permanent `failed` state after a burst of crashes -- i.e. exactly the
-# unattended disaster this exists to prevent. A restart loop is always better
-# than a dead screen: never give up.
-StartLimitIntervalSec=0
+# NOTE: StartLimitIntervalSec lives in [Unit] above, not here. See the comment
+# there -- putting it in this section is silently ignored.
 
 User=dex
 SupplementaryGroups=video render
