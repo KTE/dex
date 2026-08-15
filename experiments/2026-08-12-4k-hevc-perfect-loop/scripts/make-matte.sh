@@ -36,7 +36,9 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$INPUT" ] && [ -n "$OUTPUT" ] || usage
+if [ -z "$INPUT" ] || [ -z "$OUTPUT" ]; then
+  usage
+fi
 
 KEY="255*eq(r(X\\,Y)\\,211)*eq(g(X\\,Y)\\,211)*eq(b(X\\,Y)\\,211)"
 CHAIN="geq=r='${KEY}':g='${KEY}':b='${KEY}',format=gray"

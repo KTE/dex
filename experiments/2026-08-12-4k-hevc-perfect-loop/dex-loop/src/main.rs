@@ -262,8 +262,15 @@ extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64
     // SAFETY: mpv guarantees `buf` is writable for `nbytes` bytes; next_chunk
     // guarantees c.n >= 1, c.n <= nbytes (the request is clamped, never
     // grown) and c.start + c.n <= data.len(), and the ranges cannot overlap.
+    //
+    // `.cast::<u8>()` rather than `as *mut u8`, because `c_char` is NOT the same
+    // type on both machines this crate is built on: it is `i8` on macOS/aarch64
+    // and `u8` on Linux/aarch64. So `buf as *mut u8` is a real conversion on the
+    // dev Mac and a no-op on the Pi -- where clippy then rejects it as an
+    // unnecessary cast. `.cast()` is correct and lint-clean on both. Do not
+    // "simplify" it to `buf`: that only compiles on the Pi.
     unsafe {
-        std::ptr::copy_nonoverlapping(s.data.as_ptr().add(c.start), buf as *mut u8, c.n);
+        std::ptr::copy_nonoverlapping(s.data.as_ptr().add(c.start), buf.cast::<u8>(), c.n);
     }
     s.pos = c.next_pos;
     if c.next_pos == 0 {
@@ -1007,7 +1014,7 @@ mod tests {
         let data: &'static [u8] = Box::leak(vec![1u8, 2, 3].into_boxed_slice());
         let cookie = Box::into_raw(Box::new(LoopStream { data, pos: 0 })) as *mut c_void;
         let mut buf = [0u8; 8];
-        let r = read_fn(cookie, buf.as_mut_ptr() as *mut c_char, 0);
+        let r = read_fn(cookie, buf.as_mut_ptr().cast::<c_char>(), 0);
         assert_eq!(
             r,
             i64::from(MPV_ERROR_UNSUPPORTED),
@@ -1024,14 +1031,14 @@ mod tests {
         let cookie = Box::into_raw(Box::new(LoopStream { data, pos: 0 })) as *mut c_void;
         let mut buf = [0u8; 8];
 
-        let r = read_fn(cookie, buf.as_mut_ptr() as *mut c_char, 3);
+        let r = read_fn(cookie, buf.as_mut_ptr().cast::<c_char>(), 3);
         assert_eq!(r, 3);
         assert_eq!(&buf[..3], &[10, 20, 30]);
         // SAFETY: single-threaded test; no other call is touching `cookie`.
         let pos_after_first = unsafe { &*(cookie as *mut LoopStream) }.pos;
         assert_eq!(pos_after_first, 3, "the callback must thread position through the same cookie, not reset per call");
 
-        let r = read_fn(cookie, buf.as_mut_ptr() as *mut c_char, 4);
+        let r = read_fn(cookie, buf.as_mut_ptr().cast::<c_char>(), 4);
         assert_eq!(r, 2, "short read: only 2 bytes remain before the wrap");
         assert_eq!(&buf[..2], &[40, 50]);
         let pos_after_second = unsafe { &*(cookie as *mut LoopStream) }.pos;

@@ -25,7 +25,9 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$SOURCE" ] && [ -n "$LOOP_LENGTH" ] && [ -n "$OUTDIR" ] || usage
+if [ -z "$SOURCE" ] || [ -z "$LOOP_LENGTH" ] || [ -z "$OUTDIR" ]; then
+  usage
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUTDIR"

@@ -58,8 +58,9 @@ fi
 FPS="$(awk -v r="$RATE" 'BEGIN { split(r, a, "/"); printf "%g", a[1] / (a[2] ? a[2] : 1) }')"
 DUR="$(awk -v f="$FRAMES" -v r="$FPS" 'BEGIN { printf "%g", f / r }')"
 
-[ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ -n "$FRAMES" ] && [ "$FPS" != "0" ] \
-  || { echo "could not probe $INPUT (got w=$WIDTH h=$HEIGHT frames=$FRAMES fps=$FPS)" >&2; exit 1; }
+if [ -z "$WIDTH" ] || [ -z "$HEIGHT" ] || [ -z "$FRAMES" ] || [ "$FPS" = "0" ]; then
+  echo "could not probe $INPUT (got w=$WIDTH h=$HEIGHT frames=$FRAMES fps=$FPS)" >&2; exit 1
+fi
 
 mkdir -p "$OUTDIR/lossless"
 

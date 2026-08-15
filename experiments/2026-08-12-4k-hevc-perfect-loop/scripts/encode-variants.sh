@@ -30,7 +30,9 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$INPUT" ] && [ -n "$OUTDIR" ] && [ -n "$NAME" ] && [ -n "$FPS" ] || usage
+if [ -z "$INPUT" ] || [ -z "$OUTDIR" ] || [ -z "$NAME" ] || [ -z "$FPS" ]; then
+  usage
+fi
 mkdir -p "$OUTDIR"
 
 # Comma is the csv writer's default separator; ffmpeg 8.1 rejects an explicit
@@ -39,7 +41,9 @@ mkdir -p "$OUTDIR"
 DIMS="$(ffprobe -v error -select_streams v:0 \
   -show_entries stream=width,height -of csv=p=0 "$INPUT")"
 IFS=',' read -r WIDTH HEIGHT <<< "$DIMS"
-[ -n "$WIDTH" ] && [ -n "$HEIGHT" ] || { echo "could not read dimensions from $INPUT" >&2; exit 1; }
+if [ -z "$WIDTH" ] || [ -z "$HEIGHT" ]; then
+  echo "could not read dimensions from $INPUT" >&2; exit 1
+fi
 
 # Grain goes here rather than into the lossless intermediate: its whole purpose
 # is to defeat compression, so baking it into an ffv1 source would bloat that

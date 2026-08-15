@@ -54,7 +54,9 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ -n "$FPS" ] && [ -n "$FRAMES" ] && [ -n "$OUTPUT" ] || usage
+if [ -z "$WIDTH" ] || [ -z "$HEIGHT" ] || [ -z "$FPS" ] || [ -z "$FRAMES" ] || [ -z "$OUTPUT" ]; then
+  usage
+fi
 PERIOD="${PERIOD:-$FRAMES}"
 
 # RENDER SMALL, UPSCALE. The highest octave is 23 cycles across the frame — a

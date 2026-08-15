@@ -17,7 +17,9 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$INPUT" ] && [ -n "$OUTPUT" ] || usage
+if [ -z "$INPUT" ] || [ -z "$OUTPUT" ]; then
+  usage
+fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILTER="$(node "$HERE/../bin/barcode-filter.mjs" burn)"

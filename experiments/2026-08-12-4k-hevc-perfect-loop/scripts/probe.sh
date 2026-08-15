@@ -42,7 +42,9 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$CONFIG" ] && [ -n "$ASSET" ] || usage
+if [ -z "$CONFIG" ] || [ -z "$ASSET" ]; then
+  usage
+fi
 
 # Kiosk flags shared by every configuration. A visible OSC or a stray keybinding
 # would be indistinguishable from a player artifact in the capture.
