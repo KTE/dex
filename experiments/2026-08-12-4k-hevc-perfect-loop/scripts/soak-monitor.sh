@@ -31,23 +31,30 @@ LOOP_LENGTH=90
 PLAYER_PROC="dex-loop"
 OUT="out/soak/monitor.tsv"
 DURATION=0 # 0 = until interrupted
+# Bound on the capture step. Observed 2026-08-15: ffmpeg can wedge mid
+# avfoundation pixel-format renegotiation with the Cam Link, producing zero
+# output and never exiting on its own. A real capture takes a few seconds;
+# 20s is generous headroom, not a target.
+CAPTURE_TIMEOUT=20
 
 usage() {
   echo "usage: $0 [--out FILE] [--interval SEC] [--duration SEC] [--frames N]" >&2
   echo "          [--fps F] [--loop-length N] [--host USER@HOST]" >&2
+  echo "          [--capture-timeout SEC]" >&2
   exit 2
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out)         OUT="$2";         shift 2 ;;
-    --interval)    INTERVAL="$2";    shift 2 ;;
-    --duration)    DURATION="$2";    shift 2 ;;
-    --frames)      FRAMES="$2";      shift 2 ;;
-    --fps)         FPS="$2";         shift 2 ;;
-    --loop-length) LOOP_LENGTH="$2"; shift 2 ;;
-    --player-proc) PLAYER_PROC="$2"; shift 2 ;;
-    --host)        HOST="$2";        shift 2 ;;
+    --out)             OUT="$2";             shift 2 ;;
+    --interval)        INTERVAL="$2";        shift 2 ;;
+    --duration)        DURATION="$2";        shift 2 ;;
+    --frames)          FRAMES="$2";          shift 2 ;;
+    --fps)             FPS="$2";             shift 2 ;;
+    --loop-length)     LOOP_LENGTH="$2";     shift 2 ;;
+    --player-proc)     PLAYER_PROC="$2";     shift 2 ;;
+    --host)            HOST="$2";            shift 2 ;;
+    --capture-timeout) CAPTURE_TIMEOUT="$2"; shift 2 ;;
     -h | --help) usage ;;
     *) usage ;;
   esac
@@ -97,7 +104,40 @@ while :; do
   fi
 
   tmp=$(mktemp)
-  node bin/capture.mjs --source "$SOURCE" --out "$tmp" --frames "$FRAMES" --fps "$FPS" >/dev/null 2>&1 || true
+  # Backgrounded and reaped with an explicit deadline, not called in the
+  # foreground: ffmpeg has been observed to wedge mid avfoundation
+  # pixel-format renegotiation, producing zero output and never exiting on
+  # its own. A foreground call would then block this line -- and therefore
+  # every row after it -- forever, which is a worse failure than the one this
+  # monitor exists to catch: a soak that goes silent for its remaining hours
+  # with no warning. On timeout, ffmpeg (node's child, not this shell's, so
+  # `kill "$cap_pid"` alone would leave it running and holding the device) is
+  # killed explicitly by parent pid. The empty/partial $tmp then flows into
+  # the same node -e step below, which already reports an all-zero row for
+  # zero captured frames -- an honest row, not a missing one.
+  node bin/capture.mjs --source "$SOURCE" --out "$tmp" --frames "$FRAMES" --fps "$FPS" >/dev/null 2>&1 &
+  cap_pid=$!
+  waited=0
+  while kill -0 "$cap_pid" 2>/dev/null; do
+    if [ "$waited" -ge "$CAPTURE_TIMEOUT" ]; then
+      echo "soak-monitor: capture exceeded ${CAPTURE_TIMEOUT}s, killing it (row will read zeroed, not LINK-FAIL)" >&2
+      # Grab ffmpeg's pid via node's pid WHILE node is still alive to find it
+      # by. Killing node first would orphan ffmpeg (reparenting it away from
+      # $cap_pid), so a later "-P $cap_pid" lookup would then match nothing
+      # and leak it -- observed: SIGTERM alone does not stop an ffmpeg wedged
+      # in this state, only SIGKILL does, so both pids need a kill each.
+      ffmpeg_pid=$(pgrep -P "$cap_pid" 2>/dev/null || true)
+      kill -TERM "$cap_pid" 2>/dev/null || true
+      if [ -n "$ffmpeg_pid" ]; then kill -TERM "$ffmpeg_pid" 2>/dev/null || true; fi
+      sleep 1
+      kill -KILL "$cap_pid" 2>/dev/null || true
+      if [ -n "$ffmpeg_pid" ]; then kill -KILL "$ffmpeg_pid" 2>/dev/null || true; fi
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$cap_pid" 2>/dev/null || true
 
   # shellcheck disable=SC2016  # the $ are JS template literals, not shell expansions
   read -r frames nulls wraps held maxd heldat < <(node -e '

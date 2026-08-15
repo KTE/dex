@@ -17,16 +17,21 @@ fails=0
 t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT
 
-# Each real sample is one capture + one SSH round trip; 45s is generous slack
-# above the few seconds that takes when the hardware is present, and short
-# enough that a wedged device fails this test in well under a minute rather
-# than hanging it.
-CAP=45
+# A short --capture-timeout so a wedged Cam Link (observed 2026-08-15: ffmpeg
+# stuck mid avfoundation pixel-format renegotiation, zero output, no exit)
+# degrades to a zeroed row in a few seconds instead of stalling this test.
+# Either outcome -- a real capture or a timed-out one -- still produces a row
+# with a run_id, which is all tests 1-3 below check. CAP is the outer bound
+# (capture-timeout + kill grace + one SSH round trip + the sleep between
+# samples), generous but short enough that a genuinely wedged device fails
+# this test in seconds rather than hanging it.
+CAPTURE_TIMEOUT=3
+CAP=20
 run_monitor() {
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$CAP" ./scripts/soak-monitor.sh "$@"
+    timeout "$CAP" ./scripts/soak-monitor.sh --capture-timeout "$CAPTURE_TIMEOUT" "$@"
   else
-    ./scripts/soak-monitor.sh "$@"
+    ./scripts/soak-monitor.sh --capture-timeout "$CAPTURE_TIMEOUT" "$@"
   fi
 }
 
