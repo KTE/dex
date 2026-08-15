@@ -590,16 +590,6 @@ fn main() -> ExitCode {
             // fatal turns an invisible performance collapse into an END_FILE
             // error, which is handled and restartable.
             ("hwdec-software-fallback", "no"),
-            // On the overlay interop the frame never enters the GL pipeline
-            // ("Using HW-overlay mode. No GL filtering is performed"), so there
-            // are no shaders worth caching and the cache is pure overhead.
-            // Disabling it also removes a per-start error the packaged service
-            // would otherwise log forever: the `dex` user's home is
-            // /nonexistent, so mpv tries to create a cache dir there and fails.
-            // Fixing it here rather than provisioning a writable home is the
-            // honest direction -- we do not want the cache. A service that logs
-            // a failure on every start teaches its operator to skip the journal.
-            ("gpu-shader-cache", "no"),
             ("fullscreen", "yes"),
             ("osc", "no"),
             ("input-default-bindings", "no"),

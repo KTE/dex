@@ -43,6 +43,22 @@ StartLimitIntervalSec=0
 User=dex
 SupplementaryGroups=video render
 
+# mpv resolves a shader-cache directory under $XDG_CACHE_HOME (falling back to
+# $HOME/.cache) during VO init, and does so BEFORE consulting
+# --gpu-shader-cache: verified by A/B on mpv 0.40, where setting that flag to
+# `no` changes nothing. The `dex` user's home is /nonexistent, so without this
+# the service logs
+#   Failed to create /nonexistent for shader cache (...)---disabling.
+# on every single start. Harmless in itself, and exactly the kind of constant
+# harmless error that trains an operator to stop reading the journal — which is
+# the only diagnostic channel this player has on site.
+#
+# CacheDirectory= rather than a writable HOME: systemd creates
+# /var/cache/dex-loop owned by User=, keeps it writable under
+# ProtectSystem=strict, and cleans it up on purge.
+CacheDirectory=dex-loop
+Environment=XDG_CACHE_HOME=/var/cache/dex-loop
+
 # The player only ever reads one file.
 ProtectSystem=strict
 ProtectHome=yes
