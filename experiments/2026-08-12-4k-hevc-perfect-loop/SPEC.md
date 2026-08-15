@@ -397,6 +397,69 @@ measure *held frames at the wrap*, not fps.
   └────────────────────────────────────────────────────────────────────────┘
 ```
 
+
+#### How a frame actually travels
+
+The layer stack above answers "who owns what". It cannot show the *path*, because
+the path is not a stack — it is a loop. Compressed bytes go **down**, a file
+descriptor comes **up**, and the pixels never move at all:
+
+```mermaid
+flowchart TB
+  subgraph APP["dex-loop — ours, ~370 lines"]
+    LOOP["loop:// read_fn<br/>never returns 0 → no EOF"]
+  end
+
+  subgraph MPV["libmpv 0.40 — presentation + timing"]
+    SCHED["vsync scheduling<br/>display-resample"]
+    VO["vo=gpu · gpu-context=drm<br/>atomic commit / page flip"]
+  end
+
+  subgraph FF["FFmpeg — libavformat / libavcodec"]
+    DEMUX["demux raw Annex-B HEVC"]
+    HWA["hwaccel: V4L2 Request API"]
+  end
+
+  subgraph KRN["Linux kernel"]
+    V4L2["rpi-hevc-dec<br/>/dev/video19"]
+    KMS["DRM / KMS — vc4<br/>plane · CRTC · connector"]
+  end
+
+  subgraph HW["Broadcom BCM2711"]
+    HEVC["HEVC decode block"]
+    CMA[("CMA buffer<br/>SAND-tiled NV12")]
+    HVS["HVS compositor"]
+    PHY["PixelValve → HDMI PHY<br/>297 MHz TMDS"]
+  end
+
+  LOOP -->|compressed bytes| DEMUX
+  DEMUX --> HWA
+  HWA -->|slice params + bitstream| V4L2
+  V4L2 --> HEVC
+  HEVC ==>|writes pixels ONCE| CMA
+
+  CMA -.->|dma-buf fd| V4L2
+  V4L2 -.-> HWA
+  HWA -.->|AVFrame w/ DRM_PRIME| VO
+  SCHED --> VO
+  VO -.->|"same fd, as a framebuffer<br/>(drmprime-overlay)"| KMS
+
+  CMA ==>|scanned out in place| HVS
+  KMS -->|plane config| HVS
+  HVS ==> PHY
+
+  classDef pixels fill:#1f6feb22,stroke:#1f6feb,stroke-width:2px
+  class CMA,HEVC,HVS,PHY pixels
+```
+
+**Legend.** Thin arrows are compressed data and control. Dotted arrows carry a
+*file descriptor*, not pixels. Thick arrows are the only places actual pixels
+move — and note they all live in the bottom box.
+
+The frame is written into CMA once by the HEVC block and is scanned out from
+that same memory by the HVS. Everything in between is passing a handle around.
+That is what "zero-copy" means here, concretely.
+
 **Read the arrows carefully: the decoded frame never travels back up the stack.**
 It is written once into CMA by the HEVC block and stays there. What moves upward
 is a *dma-buf file descriptor*; libmpv hands that to KMS as a framebuffer, and
