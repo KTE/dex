@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dex &mdash; Raspberry Pi based digital exhibition player</title>
+<meta name="description" content="A Raspberry Pi based digital exhibition player. Plays video and images on a screen or projector, in a loop, with no gap between video repeats.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>dex</h1>
+  <p>Raspberry Pi based digital exhibition player.</p>
+</header>
+
+<main>
+  <p>Plays video and images on a screen or projector, in a loop, with no gap between video
+  repeats. Made for galleries showing video work, and for artists packaging a work that has been
+  sold.</p>
+
+  <ul>
+    <li>Seamless video looping. Raw H.264 files (<code>.h264</code>), not <code>.mp4</code>.
+      No audio.</li>
+    <li>Images: JPEG, PNG and GIF.</li>
+    <li>Media lives on a FAT partition. Mount the SD card on macOS, Windows or Linux and copy
+      files to it.</li>
+    <li>Runs without a network connection or a login.</li>
+    <li>Raspberry Pi 4, Pi Zero 2 W and Pi Zero. Not the Raspberry Pi 5.</li>
+  </ul>
+
+  <section>
+    <h2>status</h2>
+    <p><code>v1.0.0-rc.1</code>, April 2024.</p>
+  </section>
+
+  <section>
+    <h2>documentation</h2>
+    <ul>
+      <li><a href="https://github.com/KTE/dex#getting-started">getting started</a></li>
+      <li><a href="https://github.com/KTE/dex/blob/main/packages/dex-os/README.md">dex OS</a>,
+        the system image</li>
+      <li><a href="https://github.com/KTE/dex">source code</a></li>
+    </ul>
+  </section>
+</main>
+
+<footer>
+  <p>Built with <a href="https://github.com/RPi-Distro/pi-gen">pi-gen</a> and
+  <a href="https://github.com/adafruit/pi_video_looper">pi_video_looper</a>.
+  By <abbr title="Kunst-Technik-Einheit">KTE</abbr>.</p>
+</footer>
+
+</body>
+</html>
