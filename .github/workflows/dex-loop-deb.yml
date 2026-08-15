@@ -37,12 +37,28 @@
 # the same floor; this job is what enforces it.
 name: dex-loop deb
 
+# NOTE ON TRIGGERS. This originally fired only on `dex-loop-v*` tags, plus
+# workflow_dispatch — which meant it could not run AT ALL:
+#   * workflow_dispatch only registers for workflows present on the DEFAULT
+#     branch, and this file lives on the experiment branch, so it never appeared
+#     in the Actions UI or `gh workflow list`;
+#   * and a branch push matched nothing, because only `tags:` was listed.
+# Four jobs that never execute report the same green nothing as four jobs that
+# pass. Branch pushes are also what CI is FOR: linting and packaging checks that
+# only run at release time cannot prevent the release.
 on:
   workflow_dispatch:
   push:
+    branches: ["main", "experiment/**"]
     tags: ["dex-loop-v*"]
     paths:
       - "experiments/2026-08-12-4k-hevc-perfect-loop/dex-loop/**"
+      - "experiments/2026-08-12-4k-hevc-perfect-loop/scripts/**"
+      - ".github/workflows/dex-loop-deb.yml"
+  pull_request:
+    paths:
+      - "experiments/2026-08-12-4k-hevc-perfect-loop/dex-loop/**"
+      - "experiments/2026-08-12-4k-hevc-perfect-loop/scripts/**"
       - ".github/workflows/dex-loop-deb.yml"
 
 permissions:
