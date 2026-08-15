@@ -1,6 +1,6 @@
-# Publishes packages/website to GitHub Pages, served at dex.ars.is
+# Builds packages/website with Astro and publishes it to GitHub Pages,
+# served at dex.ars.is
 #
-# There is no build step: the directory is uploaded as-is.
 # The custom domain is stored in the repository's Pages settings, not in a CNAME
 # file - GitHub ignores CNAME files when a site is published from a workflow.
 
@@ -15,9 +15,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read # actions/checkout
-  pages: write # create the Pages deployment
-  id-token: write # OIDC token that proves the artifact came from this repo
+  contents: read  # actions/checkout
+  pages: write  # create the Pages deployment
+  id-token: write  # OIDC token that proves the artifact came from this repo
 
 # One deployment at a time. Do not cancel a run that is mid-publish.
 concurrency:
@@ -25,16 +25,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/website
+    steps:
+      - uses: actions/checkout@v7  # v7.0.1
+
+      # Reads the pnpm version from the package's "packageManager" field.
+      # The path is relative to the repository root, not to working-directory.
+      - uses: pnpm/action-setup@v6  # v6.0.10
+        with:
+          package_json_file: packages/website/package.json
+
+      - uses: actions/setup-node@v7  # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: packages/website/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm build
+
+      - uses: actions/configure-pages@v6  # v6.0.0
+      - uses: actions/upload-pages-artifact@v5  # v5.0.0
+        with:
+          path: packages/website/dist
+
   deploy:
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v7 # v7.0.1
-      - uses: actions/configure-pages@v6 # v6.0.0
-      - uses: actions/upload-pages-artifact@v5 # v5.0.0
-        with:
-          path: packages/website
       - id: deployment
-        uses: actions/deploy-pages@v5 # v5.0.0
+        uses: actions/deploy-pages@v5  # v5.0.0

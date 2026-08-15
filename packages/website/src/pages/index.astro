@@ -1,0 +1,49 @@
+---
+import { getCollection, render } from 'astro:content'
+
+const blocks = await Promise.all(
+  (await getCollection('blocks'))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(async (entry) => ({ ...entry, Content: (await render(entry)).Content })),
+)
+
+const inSlot = (slot: 'header' | 'main' | 'footer') =>
+  blocks.filter((block) => block.data.slot === slot)
+
+const meta = blocks.find((block) => block.data.title)
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{meta?.data.title}</title>
+    <meta name="description" content={meta?.data.description} />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      {inSlot('header').map(({ Content }) => <Content />)}
+    </header>
+
+    <main>
+      {
+        inSlot('main').map(({ Content, data }) =>
+          data.section ? (
+            <section>
+              <Content />
+            </section>
+          ) : (
+            <Content />
+          ),
+        )
+      }
+    </main>
+
+    <footer>
+      {inSlot('footer').map(({ Content }) => <Content />)}
+    </footer>
+  </body>
+</html>
