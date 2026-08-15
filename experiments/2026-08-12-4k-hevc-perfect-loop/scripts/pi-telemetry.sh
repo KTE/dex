@@ -14,9 +14,14 @@ set -euo pipefail
 
 INTERVAL=5
 DURATION=0 # 0 = until killed
+# NOT always "mpv": dex-loop embeds libmpv, so there is no separate mpv
+# process and sampling `ps -C mpv` against the real player silently reports
+# NA for an entire run (soak-monitor.sh's PLAYER_PROC comment documents the
+# same trap). Default to the actual shipping binary name.
+PROC=dex-loop
 
 usage() {
-  echo "usage: $0 [--interval SEC] [--duration SEC]" >&2
+  echo "usage: $0 [--interval SEC] [--duration SEC] [--proc NAME]" >&2
   exit 2
 }
 
@@ -24,6 +29,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --interval) INTERVAL="$2"; shift 2 ;;
     --duration) DURATION="$2"; shift 2 ;;
+    --proc) PROC="$2"; shift 2 ;;
     -h | --help) usage ;;
     *) usage ;;
   esac
@@ -45,7 +51,7 @@ decode_throttled() {
   echo "${out%,}"
 }
 
-printf 'iso_time\tuptime_s\ttemp_c\tarm_mhz\tcore_mhz\tvolts\tload1\tthrottled_hex\tthrottled_flags\tmpv_cpu\tmpv_rss_kb\n'
+printf 'iso_time\tuptime_s\ttemp_c\tarm_mhz\tcore_mhz\tvolts\tload1\tthrottled_hex\tthrottled_flags\tproc_cpu\tproc_rss_kb\n'
 
 start=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)
 
@@ -61,14 +67,14 @@ while :; do
   thr_hex=$(vcgencmd get_throttled | cut -d= -f2)
   thr_flags=$(decode_throttled "$((thr_hex))")
 
-  # mpv may not be running yet, or may have exited; absent is not an error.
-  read -r mpv_cpu mpv_rss <<<"$(ps -o %cpu=,rss= -C mpv 2>/dev/null | head -1)"
-  mpv_cpu=${mpv_cpu:-NA}
-  mpv_rss=${mpv_rss:-NA}
+  # PROC may not be running yet, or may have exited; absent is not an error.
+  read -r proc_cpu proc_rss <<<"$(ps -o %cpu=,rss= -C "$PROC" 2>/dev/null | head -1)"
+  proc_cpu=${proc_cpu:-NA}
+  proc_rss=${proc_rss:-NA}
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -Is)" "$((now - start))" "$temp" "$arm" "$core" "$volts" \
-    "$load1" "$thr_hex" "$thr_flags" "$mpv_cpu" "$mpv_rss"
+    "$load1" "$thr_hex" "$thr_flags" "$proc_cpu" "$proc_rss"
 
   sleep "$INTERVAL"
 done
