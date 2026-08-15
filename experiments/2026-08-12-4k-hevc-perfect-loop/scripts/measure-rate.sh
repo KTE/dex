@@ -112,9 +112,20 @@ tsv_out = os.environ.get("TSVOUT") or ""
 # longer than the loop is garbage -- it under-reports and can go negative. Poll
 # faster than the loop and accumulate, treating a backwards step as one wrap.
 duration = q("duration") or 0.0
-prev = q("playback-time")
+# The IPC socket exists as soon as mpv's input layer starts, which is well
+# before the demuxer has opened a large raw elementary stream and decode has
+# actually begun -- a single immediate query races that pipeline and loses on
+# multi-hundred-MB raw .265 assets (small mp4s with an index win the race by
+# luck, not by being fundamentally different). Retry instead of failing on
+# the first empty answer.
+prev = None
+for _ in range(40):
+    prev = q("playback-time")
+    if prev is not None:
+        break
+    time.sleep(0.25)
 if prev is None:
-    print("FAIL: mpv did not report playback-time", file=sys.stderr)
+    print("FAIL: mpv did not report playback-time (waited 10s)", file=sys.stderr)
     sys.exit(1)
 
 STEP = 0.25
