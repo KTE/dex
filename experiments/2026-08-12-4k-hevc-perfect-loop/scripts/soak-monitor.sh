@@ -25,6 +25,10 @@ FPS=30
 FRAMES=1500
 INTERVAL=900 # seconds between samples
 LOOP_LENGTH=90
+# The process to check for liveness. NOT always "mpv": dex-loop embeds libmpv,
+# so there is no separate mpv process and checking for one reports a healthy
+# player as dead.
+PLAYER_PROC="dex-loop"
 OUT="out/soak/monitor.tsv"
 DURATION=0 # 0 = until interrupted
 
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
     --frames)      FRAMES="$2";      shift 2 ;;
     --fps)         FPS="$2";         shift 2 ;;
     --loop-length) LOOP_LENGTH="$2"; shift 2 ;;
+    --player-proc) PLAYER_PROC="$2"; shift 2 ;;
     --host)        HOST="$2";        shift 2 ;;
     -h | --help) usage ;;
     *) usage ;;
@@ -96,8 +101,11 @@ while :; do
   ' "$tmp" "$LOOP_LENGTH")
   rm -f "$tmp"
 
+  # `pgrep -c` PRINTS the count and EXITS NON-ZERO when it is 0, so a
+  # `|| echo 0` fallback emits a second value and shifts every field after it.
+  # Capture it plainly and default only if the variable is empty.
   read -r player temp thr < <(ssh -i "$KEY" -o ConnectTimeout=10 "$HOST" \
-    'printf "%s %s %s\n" "$(pgrep -c -x mpv || echo 0)" "$(vcgencmd measure_temp | tr -dc "0-9.")" "$(vcgencmd get_throttled | cut -d= -f2)"' 2>/dev/null || echo "? ? ?")
+    "c=\$(pgrep -c -x '$PLAYER_PROC' 2>/dev/null); printf '%s %s %s\\n' \"\${c:-0}\" \"\$(vcgencmd measure_temp | tr -dc '0-9.')\" \"\$(vcgencmd get_throttled | cut -d= -f2)\"" 2>/dev/null || echo "? ? ?")
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -Iseconds)" "$((now - start))" "$frames" "$nulls" "$wraps" \
