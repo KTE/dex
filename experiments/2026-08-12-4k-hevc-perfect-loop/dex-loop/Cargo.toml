@@ -85,7 +85,10 @@ priority = "optional"
 #
 # So: keep $auto for what can be derived, and state what cannot. Raise the
 # floor whenever a fix is verified against a newer mpv.
-depends = "$auto, libmpv2 (>= 0.40.0)"
+# `adduser` is here because postinst calls it -- lintian catches maintainer
+# scripts that use a tool the package does not depend on, which on a minimal
+# image is a failing install rather than a missing convenience.
+depends = "$auto, libmpv2 (>= 0.40.0), adduser"
 
 assets = [
     # /usr/bin, not /usr/local/bin: Debian policy reserves /usr/local for the
@@ -94,6 +97,9 @@ assets = [
     ["target/release/dex-loop", "usr/bin/", "755"],
     ["deploy/dex-wait-hdmi", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/dex-loop/", "644"],
+    ["deploy/man/dex-loop.1", "usr/share/man/man1/", "644"],
+    ["deploy/man/dex-wait-hdmi.1", "usr/share/man/man1/", "644"],
+    ["deploy/lintian-overrides", "usr/share/lintian/overrides/dex-loop", "644"],
 ]
 
 # sidecar-check is deliberately NOT shipped: it is an INGEST tool (it validates
@@ -101,6 +107,9 @@ assets = [
 # workstation, never on the gallery device.
 
 maintainer-scripts = "deploy/maintainer-scripts"
+# A non-native package without a Debian changelog is a lintian error, and
+# the changelog is where a device operator can see what shipped.
+changelog = "deploy/changelog"
 
 [package.metadata.deb.systemd-units]
 unit-scripts = "deploy"

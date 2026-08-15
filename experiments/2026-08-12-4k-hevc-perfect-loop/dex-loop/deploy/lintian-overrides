@@ -1,0 +1,19 @@
+# cargo-deb 2.12 hardcodes the systemd unit destination as lib/systemd/system.
+# On a merged-usr system -- which trixie is, and every device we ship to -- that
+# path IS usr/lib/systemd/system, the same directory by symlink. Verified: the
+# package installs, enables, starts, stops, removes and purges correctly, and
+# systemd resolves the unit as /usr/lib/systemd/system/dex-loop.service. Lintian
+# is objecting to the spelling, not to the outcome.
+#
+# NOT worked around by dropping cargo-deb's systemd integration and hand-writing
+# the enable/disable/mask lifecycle in maintainer scripts. That lifecycle was
+# checked end-to-end on real hardware, including the subtle part (remove leaves
+# the unit masked so a reinstall restores its enabled state; purge cleans it).
+# Reimplementing deb-systemd-helper by hand to change a path spelling would
+# trade a cosmetic tag for a real regression risk in the one code path that runs
+# on every device.
+#
+# Fix properly by upgrading cargo-deb, which needs rustc >= 1.88; we are pinned
+# to trixie's 1.85 on purpose (SPEC 5c, "Toolchain"). This override should be
+# deleted the moment that pin moves.
+dex-loop: aliased-location

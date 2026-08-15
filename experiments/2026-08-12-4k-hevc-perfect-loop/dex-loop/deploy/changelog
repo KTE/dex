@@ -1,0 +1,11 @@
+dex-loop (0.1.0-1) unstable; urgency=medium
+
+  * Initial packaged release. Gapless 4K HEVC loop player for Raspberry Pi
+    gallery installations: libmpv fed by an endless in-process byte stream so
+    the decoder never sees EOF and never seeks, which removes the seam at the
+    loop point.
+  * Frame rate is bound to the asset by an ingest sidecar (fps + sha256); the
+    player refuses to start rather than guess a rate.
+  * Tier-0 self-healing: a bounded in-place recovery before escalating to exit.
+
+ -- Max Albrecht <1@178.is>  Sat, 15 Aug 2026 17:30:00 +0200

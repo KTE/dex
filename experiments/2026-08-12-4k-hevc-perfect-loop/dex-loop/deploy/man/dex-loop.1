@@ -1,0 +1,71 @@
+.TH DEX\-LOOP 1 "2026-08-15" "dex-loop 0.1.0" "dex"
+.SH NAME
+dex\-loop \- gapless HEVC loop player for unattended installations
+.SH SYNOPSIS
+.B dex\-loop
+.I stream.265
+.RB [ \-\-fps
+.IR F ]
+.RB [ \-\-mode
+.IR WxH@R ]
+.RB [ \-\-bench\-no\-sidecar ]
+.RB [ \-\-no\-defaults ]
+.RB [ \-\-opt
+.IR K=V ...]
+.SH DESCRIPTION
+Plays a raw Annex\-B HEVC elementary stream in an endless loop with no visible
+seam. The stream is presented to libmpv through a callback that never reports
+end\-of\-file, so the decoder never seeks and the wrap costs no frame.
+.PP
+Intended for gallery devices that run for weeks unattended and are switched off
+at the mains. There is no graceful shutdown path by design.
+.SH OPTIONS
+.TP
+.BI \-\-fps " F"
+Frame rate to bind, as \fB30\fR, \fB29.97\fR or \fB30000/1001\fR. A raw
+elementary stream carries no timestamps, so this cannot be inferred. Normally
+it comes from the sidecar; passing it here is only permitted if it agrees.
+.TP
+.BI \-\-mode " WxH@R"
+Force a DRM mode, e.g. \fB3840x2160@30\fR.
+.TP
+.B \-\-bench\-no\-sidecar
+Run without a sidecar. Requires an explicit \fB\-\-fps\fR. For bench use only:
+deployments must bind the rate to the asset.
+.TP
+.B \-\-no\-defaults
+Omit the built\-in mpv option set (see \fBNOTES\fR).
+.TP
+.BI \-\-opt " K=V"
+Pass an additional mpv option. Repeatable.
+.SH FILES
+.TP
+.I <stream>.json
+Required sidecar beside the asset, binding \fBfps\fR and \fBsha256\fR to the
+exact bytes. A missing, stale or mismatched sidecar refuses startup.
+.TP
+.I /opt/dex/loop.265
+Asset read by the packaged systemd service.
+.SH EXIT STATUS
+.TP
+.B 0
+Never, in normal operation: the player is designed not to end.
+.TP
+.B 1
+Playback failed or recovery was exhausted.
+.TP
+.B 2
+A startup gate refused: bad invocation, missing or mismatched sidecar, or an
+asset whose first frames are not a closed GOP starting at an IDR.
+.SH NOTES
+By default the player selects the only zero\-copy path measured to reach
+realtime 4K30 on a Pi 4: the decoder's SAND\-tiled frames go straight to a KMS
+plane via \fB\-\-gpu\-hwdec\-interop=drmprime\-overlay\fR. Every other interop
+detiles and misses realtime.
+.SH SEE ALSO
+.BR dex-wait-hdmi (1),
+.BR mpv (1),
+.BR journalctl (1)
+.PP
+Diagnosis starts with
+.BR "journalctl -u dex-loop -n 20" .

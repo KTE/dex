@@ -1,0 +1,30 @@
+.TH DEX\-WAIT\-HDMI 1 "2026-08-15" "dex-loop 0.1.0" "dex"
+.SH NAME
+dex\-wait\-hdmi \- block until a DRM connector reports a display
+.SH SYNOPSIS
+.B dex\-wait\-hdmi
+.SH DESCRIPTION
+Waits for an HDMI connector to become connected before returning. Run as
+.B ExecStartPre
+of
+.BR dex-loop (1).
+.PP
+A projector can take 30\-90 seconds to present EDID while a Pi boots in about
+15. Without this wait the player starts into a fallback mode that never
+corrects itself, and the installation shows the wrong resolution until someone
+notices.
+.PP
+The primary fix for boot ordering is at the KMS layer rather than here: bake
+the display's EDID into
+.I cmdline.txt
+so the Pi always believes the intended mode is attached. This wait is the
+fallback for devices where that has not been done.
+.SH EXIT STATUS
+.TP
+.B 0
+A connector reported a display.
+.TP
+.B 1
+Timed out. The service still starts; the player will use whatever mode exists.
+.SH SEE ALSO
+.BR dex-loop (1)

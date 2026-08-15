@@ -13,7 +13,8 @@ configure)
   # and `render` only to open /dev/dri -- everything else is denied by the
   # unit's own sandboxing (ProtectSystem=strict, ProtectHome, NoNewPrivileges).
   if ! getent passwd dex >/dev/null; then
-    adduser --system --group --no-create-home --shell /usr/sbin/nologin dex
+    adduser --system --group --home /nonexistent --no-create-home \
+      --shell /usr/sbin/nologin dex
   fi
   # Idempotent: adduser to a group the user is already in is a no-op, so this
   # also repairs an install where the groups were dropped.
