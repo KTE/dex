@@ -35,19 +35,26 @@ usage: make-sidecar.sh <stream.265> [--fps F] [--out FILE] [--force]
                  will fs::read() at startup -- sha256 is computed over them
                  unmodified)
   --fps F        frame rate to bind, as dex-loop's sidecar grammar expects:
-                 "30", "29.97", or "30000/1001". Overrides ffprobe detection;
-                 if ffprobe also detected a rate and it disagrees, this warns
-                 (loudly) but still uses F -- an explicit --fps is the operator
-                 speaking, not a guess.
-                 Required whenever ffprobe cannot derive a trustworthy rate
-                 from the stream itself (see fps honesty note above).
+                 "30", "29.97", or "30000/1001". Overrides ffprobe detection.
+                 If ffprobe also detected a rate and it disagrees beyond a
+                 small tolerance, this REFUSES (exit 2) unless --force is
+                 also given -- a wrong --fps plays the loop at the wrong
+                 speed forever with every metric green, so a large
+                 disagreement is treated as a likely typo, not honored
+                 silently. Required whenever ffprobe cannot derive a
+                 trustworthy rate from the stream itself (see fps honesty
+                 note above).
   --out FILE     sidecar path. Default: <stream.265>.json (what dex-loop
                  looks for unconditionally: "<path>.json", no flag to change
                  it on the player side). In --check mode, the sidecar to
                  verify.
-  --force        overwrite an existing sidecar. Without it, an existing
-                 <out> file refuses generation -- this script never
-                 silently clobbers a prior ingest.
+  --force        operator override for two separate refusals: (1) overwrite
+                 an existing sidecar -- without it, an existing <out> file
+                 refuses generation, so this script never silently clobbers
+                 a prior ingest; (2) accept an explicit --fps that disagrees
+                 with ffprobe's own detected rate beyond tolerance -- without
+                 it, that combination refuses rather than guessing which
+                 rate is right.
   --check        verify an existing sidecar against its stream (parses it
                  with the real parser and confirms sha256 over the exact
                  on-disk bytes) instead of generating one. Use before a soak.
@@ -65,8 +72,15 @@ CHECK=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --fps)     FPS_ARG="$2"; shift 2 ;;
-    --out)     OUT="$2";     shift 2 ;;
+    # `[ $# -ge 2 ]` before touching $2: under `set -u`, a flag as the LAST
+    # token (an edited systemd unit, a line-continuation typo) would
+    # otherwise dereference an unset $2 and abort with a raw "unbound
+    # variable" -- loud, but the wrong exit code (1, "verification
+    # failure") for what the exit-code contract at the top of this script
+    # calls a bad invocation (2). Refuse through `usage` instead, same as
+    # every other malformed-invocation case here.
+    --fps)     [ $# -ge 2 ] || usage; FPS_ARG="$2"; shift 2 ;;
+    --out)     [ $# -ge 2 ] || usage; OUT="$2";     shift 2 ;;
     --force)   FORCE=1;      shift ;;
     --check)   CHECK=1;      shift ;;
     -h|--help) usage ;;
@@ -201,9 +215,26 @@ if [ -n "$FPS_ARG" ]; then
     detected_dec="$(fps_to_decimal "$DETECTED_FPS")"
     diff="$(awk -v a="$given_dec" -v b="$detected_dec" 'BEGIN { d = a - b; if (d < 0) d = -d; print d }')"
     if awk -v d="$diff" 'BEGIN { exit !(d > 0.02) }'; then
+      # A wrong --fps binds the wrong rate into a hash-verified sidecar:
+      # --check then passes FOREVER and the player runs slow/fast forever
+      # with every metric green -- the one failure principle 5 says must be
+      # made IMPOSSIBLE, not just warned about. A disagreement this large is
+      # far more often an ingest typo (3 for 30, a copy-pasted wrong asset's
+      # rate) than a deliberate override, so refuse unless the operator
+      # confirms with --force -- the same flag that already means "I know
+      # what I'm doing, proceed anyway" for the overwrite gate below.
+      if [ "$FORCE" -ne 1 ]; then
+        echo "error: --fps $FPS_ARG disagrees with ffprobe-detected rate $DETECTED_FPS" \
+             "(from $STREAM's SPS VUI timing)." >&2
+        echo "       Refusing rather than guessing which one is right -- a wrong fps" \
+             "plays the loop at the wrong speed forever with every metric green." >&2
+        echo "       If --fps $FPS_ARG is correct (ffprobe's guess is what's wrong)," \
+             "pass --force to use it anyway. Otherwise drop --fps and trust the" \
+             "detected rate." >&2
+        exit 2
+      fi
       echo "warning: --fps $FPS_ARG disagrees with ffprobe-detected rate $DETECTED_FPS" \
-           "(from $STREAM's SPS VUI timing) -- using --fps $FPS_ARG as given." \
-           "Verify this is intentional, not an ingest typo." >&2
+           "(from $STREAM's SPS VUI timing) -- proceeding because --force was given." >&2
     fi
   fi
 elif [ -n "$DETECTED_FPS" ]; then

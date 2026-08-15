@@ -26,7 +26,12 @@ trap 'rm -rf "$t"' EXIT
 # samples), generous but short enough that a genuinely wedged device fails
 # this test in seconds rather than hanging it.
 CAPTURE_TIMEOUT=3
-CAP=20
+# Outer bound: capture-timeout (3) + kill grace (~1s) + node parse + the new
+# ssh telemetry leg's worst case (ConnectTimeout 10s to an unreachable host,
+# or up to a 10s remote `timeout` on a slow-but-reachable one) + the sleep
+# between samples. 20 left only a few seconds of headroom on a loaded Mac;
+# 30 gives the ssh leg room to hit its own bound without flaking this test.
+CAP=30
 run_monitor() {
   if command -v timeout >/dev/null 2>&1; then
     timeout "$CAP" ./scripts/soak-monitor.sh --capture-timeout "$CAPTURE_TIMEOUT" "$@"

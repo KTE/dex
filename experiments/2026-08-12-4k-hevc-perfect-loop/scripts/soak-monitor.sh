@@ -60,6 +60,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Wraps ssh in a LOCAL wall-clock bound when `timeout` is available (GNU
+# coreutils; present on this Mac via `brew install coreutils`, but not
+# guaranteed on every machine this script might run on -- degrade to an
+# unbounded call rather than fail outright, matching test-soak-monitor.sh's
+# own `command -v timeout` pattern). This is belt-and-braces on top of the
+# ssh-level ConnectTimeout/BatchMode/ServerAlive options and the remote-side
+# `timeout 10` at the call site below; see the comment there for why all
+# three layers are needed.
+run_ssh_bounded() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 20 ssh "$@"
+  else
+    ssh "$@"
+  fi
+}
+
 mkdir -p "$(dirname "$OUT")"
 # held_at is load-bearing, not decoration: a held frame AT THE WRAP is a player
 # seam, while one at a random index is a capture-side duplicate, which SPEC 4.3
@@ -126,12 +142,21 @@ while :; do
       # $cap_pid), so a later "-P $cap_pid" lookup would then match nothing
       # and leak it -- observed: SIGTERM alone does not stop an ffmpeg wedged
       # in this state, only SIGKILL does, so both pids need a kill each.
-      ffmpeg_pid=$(pgrep -P "$cap_pid" 2>/dev/null || true)
+      # pgrep -P can print MORE THAN ONE pid (capture.mjs spawns exactly one
+      # child today, verified live, but a future refactor -- spawn via a
+      # shell, add a second helper process -- would silently reopen this
+      # leak if the kill below stayed a single unquoted-into-one-arg call).
+      # Iterate instead of trusting it to always be a single pid.
+      ffmpeg_pids=$(pgrep -P "$cap_pid" 2>/dev/null || true)
       kill -TERM "$cap_pid" 2>/dev/null || true
-      if [ -n "$ffmpeg_pid" ]; then kill -TERM "$ffmpeg_pid" 2>/dev/null || true; fi
+      if [ -n "$ffmpeg_pids" ]; then
+        for p in $ffmpeg_pids; do kill -TERM "$p" 2>/dev/null || true; done
+      fi
       sleep 1
       kill -KILL "$cap_pid" 2>/dev/null || true
-      if [ -n "$ffmpeg_pid" ]; then kill -KILL "$ffmpeg_pid" 2>/dev/null || true; fi
+      if [ -n "$ffmpeg_pids" ]; then
+        for p in $ffmpeg_pids; do kill -KILL "$p" 2>/dev/null || true; done
+      fi
       break
     fi
     sleep 1
@@ -160,14 +185,35 @@ while :; do
       const held = runs.filter(r => r >= 2).length;
       console.log(`${v.length} ${v.length - ok.length} ${wraps} ${held} ${Math.max(...runs)} ${idx.length ? idx.join(",") : "-"}`);
     });
-  ' "$tmp" "$LOOP_LENGTH")
+  ' "$tmp" "$LOOP_LENGTH" || {
+    # A node crash/OOM mid-soak must not silence the rest of the run the same
+    # way an unbounded ffmpeg/ssh hang would -- log an honest zeroed row and
+    # keep going, rather than letting `set -e` kill the whole monitor on a
+    # `read` that got nothing from a failed process substitution.
+    echo "soak-monitor: node parse step failed for this sample -- logging a zeroed row instead of going silent" >&2
+    echo "0 0 0 0 0 -"
+  })
   rm -f "$tmp"
 
   # `pgrep -c` PRINTS the count and EXITS NON-ZERO when it is 0, so a
   # `|| echo 0` fallback emits a second value and shifts every field after it.
   # Capture it plainly and default only if the variable is empty.
-  read -r player temp thr < <(ssh -i "$KEY" -o ConnectTimeout=10 "$HOST" \
-    "c=\$(pgrep -c -x '$PLAYER_PROC' 2>/dev/null); printf '%s %s %s\\n' \"\${c:-0}\" \"\$(vcgencmd measure_temp | tr -dc '0-9.')\" \"\$(vcgencmd get_throttled | cut -d= -f2)\"" 2>/dev/null || echo "? ? ?")
+  #
+  # BatchMode+ServerAlive bound a connection that establishes fine but then
+  # goes quiet (network drop mid-read; ConnectTimeout alone only covers the
+  # initial handshake). The remote `timeout 10` additionally bounds a
+  # healthy-transport-but-wedged-remote-command case (e.g. a hung vcgencmd
+  # firmware call) that no client-side ssh option can see, because from
+  # ssh's point of view the connection itself is fine. `run_ssh_bounded`
+  # wraps the whole call in a LOCAL timeout too, guarding this Mac's own
+  # ssh client against a hang the remote-side bound cannot reach (e.g. a
+  # wedge during key exchange). Without any of this, an unresponsive Pi
+  # silences every row for the rest of a multi-day soak with no warning --
+  # the same failure class the capture-step bound above exists to prevent.
+  read -r player temp thr < <(run_ssh_bounded -i "$KEY" -o ConnectTimeout=10 \
+    -o BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "$HOST" \
+    "timeout 10 sh -c 'c=\$(pgrep -c -x $PLAYER_PROC 2>/dev/null); printf \"%s %s %s\\n\" \"\${c:-0}\" \"\$(vcgencmd measure_temp | tr -dc 0-9.)\" \"\$(vcgencmd get_throttled | cut -d= -f2)\"'" \
+    2>/dev/null || echo "? ? ?")
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$RUN_ID" "$(date -Iseconds)" "$((now - start))" "$frames" "$nulls" "$wraps" \

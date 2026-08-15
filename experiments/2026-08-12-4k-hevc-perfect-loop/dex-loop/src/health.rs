@@ -37,7 +37,14 @@
 //!   PLAN.md's F1 text ("has not advanced across two consecutive checks").
 //! * Once that bar is met, the caller is told to attempt an in-place
 //!   recovery (re-issue `loadfile ... replace`, which opens a brand-new
-//!   `loop://` stream and forces mpv to reconfigure the VO).
+//!   `loop://` stream, restarting demux+decode and forcing a `vo_reconfig`).
+//!   In mpv v0.40, a playlist replace tears down and rebuilds the demuxer
+//!   and decoder chain but does NOT tear down the video output itself
+//!   (`uninit_video_out` runs only on process termination) -- so this
+//!   plausibly repairs a decode-side wedge, but a fault in the DRM/GPU
+//!   context surviving the replace may still need a full process restart
+//!   (tier 1) to clear. Unverified against a physical HDMI-loss bench test
+//!   as of 2026-08-15; see PLAN.md's F1 addendum.
 //! * Recovery attempts are drawn from a budget fixed at construction and
 //!   NEVER replenished for the life of the process — see "why the budget
 //!   never resets" below. Once exhausted, the next qualifying stall

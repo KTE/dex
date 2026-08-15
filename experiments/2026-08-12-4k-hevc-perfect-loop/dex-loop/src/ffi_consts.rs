@@ -48,3 +48,21 @@ pub const MPV_ERROR_UNSUPPORTED: c_int = -18;
 /// MPV_EVENT_LOG_MESSAGE's mistranscription a segfault instead of a caught
 /// error.
 pub const MPV_FORMAT_DOUBLE: c_int = 5;
+
+/// `mpv_end_file_reason` tag for MPV_EVENT_END_FILE's `reason` field:
+/// "Playback was stopped by an external action" (client.h). Bench-confirmed
+/// live on the Pi's mpv 0.40.0 (three independent adversarial reviews,
+/// 2026-08-15, IPC/ctypes probes) that `loadfile <url> replace` delivers
+/// exactly this reason for the file being replaced. F1's in-place recovery
+/// issues that exact command, so main.rs must recognize and absorb this one
+/// reason for precisely the one command it issued itself -- every other
+/// reason, and every STOP with no recovery in flight, stays fatal. See
+/// PLAN.md's F1 addendum for why treating ANY end-file as fatal made
+/// tier-0 recovery unreachable before this constant existed.
+///
+/// Unlike the event ids above, mpv exposes no runtime name lookup for
+/// END_FILE reasons, so this is transcription-only -- but a wrong value
+/// here fails in the SAFE direction: main.rs's absorption check simply
+/// never matches, so an unmatched STOP falls through to the pre-existing
+/// fatal path exactly as it did before this feature existed.
+pub const MPV_END_FILE_REASON_STOP: c_int = 2;

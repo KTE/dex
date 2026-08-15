@@ -71,6 +71,83 @@ Verified on the Pi: full suite green (58 → 74 tests) and a ~75 s manual run of
 the real `loop4k.265` asset against the real DRM display, health check active
 and silent throughout (~7 ticks, zero spurious recovery/escalation).
 
+**2026-08-15 addendum, from three further adversarial reviews (rust/libmpv/gallery-ops
+lenses, run independently, all three CONFIRMING the same root cause via live
+mpv 0.40 probes on the Pi):**
+
+- **C1/CRITICAL — fixed.** In-place recovery's own `loadfile ... replace`
+  killed the process on its first step: mpv v0.40 delivers
+  `END_FILE(reason=stop)` for the file being replaced (bench-confirmed live
+  by all three reviews independently), and the event loop treated EVERY
+  end-file as fatal. So the ONE untested path (the Pi soak never saw a real
+  stall, hence "silent throughout" above) was the one that was broken --
+  every recovery attempt would have killed itself before doing any good,
+  silently converting tier 0 into an unconditional tier-1 restart with a
+  misleading journal line ("playback ended" instead of "recovery
+  completed"). Fixed: `MPV_END_FILE_REASON_STOP` added to `ffi_consts.rs`
+  (2, bench-verified); `main.rs` now sets a `recovery_stop_pending` flag
+  when (and only when) the recovery's `mpv_command_async` is actually
+  queued, clears it either on consuming the matching END_FILE(stop) or on
+  an async command-reply error (no END_FILE will come for a rejected
+  command), and absorbs exactly one matching stop instead of exiting. Pure
+  decision logic (`is_expected_recovery_stop`) extracted and unit-tested
+  (3 new tests) so this exact regression -- the entire fix is one boolean
+  condition -- cannot silently reappear.
+- **Baseline-reset bug — fixed.** `main.rs`'s driver-side `last_position`
+  was never cleared when a recovery was issued, so a wedged core's stale
+  pre-recovery position could read as a false "first sample = progress"
+  tick, stretching the worst-case escalation timeline beyond the documented
+  ~2-tick window. Now cleared in the same arm that issues the recovery,
+  mirroring `HealthMonitor::tick`'s own baseline reset.
+- **False "DISABLED" warning — fixed.** If `mpv_observe_property(time-pos)`
+  ever fails to register (OOM/unsupported format per client.h -- very
+  unlikely, near-zero probability), the code printed "tier-0 self-healing is
+  DISABLED" but then kept running the tick loop anyway with `last_position`
+  permanently `None` -- every tick would read as a stall, eventually issuing
+  recovery commands (and, once the budget exhausted, exiting) against a
+  perfectly healthy player. `health` is now `Option<HealthMonitor>`, `None`
+  when registration failed, and the entire tick block is skipped in that
+  case -- the warning is now actually true.
+- **Escalate/fatal-exit path — fixed.** All three fatal exit sites
+  (Escalate, END_FILE, QUEUE_OVERFLOW) previously `break`-ed into a shared
+  `mpv_terminate_destroy(ctx)` call before returning. `mpv_terminate_destroy`
+  synchronously joins mpv's own threads -- on the Escalate path specifically,
+  that fires precisely because the core LOOKS wedged, so the one exit path
+  whose entire job is "let the supervisor take over" could itself block on
+  the same wedge it was trying to escape. All three sites now call
+  `std::process::exit(1)` directly, skipping the destroy call entirely --
+  per design principle 4 (the mains switch IS the shutdown path), an abrupt
+  exit here is not a shortcut, it is correct: the kernel reclaims the DRM
+  master and every other resource on process exit regardless.
+- **Wording fix (libmpv review, minor).** The recovery log line and
+  `health.rs`'s module doc said "forces mpv to reconfigure the VO", which
+  overstates what a v0.40 playlist replace actually does: it tears down and
+  rebuilds demux+decode and forces a `vo_reconfig`, but does NOT tear down
+  the video output itself (`uninit_video_out` only runs on process
+  termination). Re-scoped in both places. Practical implication, NOT yet
+  verified: tier 0 plausibly repairs a decode-side wedge but may not repair
+  a fault in the DRM/GPU context itself (the HDMI-blink / late-waking-sink
+  class the feature was motivated by) -- that may still need tier 1. Needs
+  a physical HDMI-unplug bench test to settle; not done in this pass
+  (device-level verification, not a code fix).
+- **Not yet verified (libmpv review, SUSPECTED MINOR): startup grace for
+  the `None` path.** `HealthMonitor` gives `Some` values one tick of
+  "first sample" grace but `None` values none (deliberate -- see
+  `health.rs`'s test doc). If a display takes longer than the ~20 s
+  (2-tick) window to produce its first `time-pos` sample during a genuinely
+  slow-but-not-failing cold start (a projector waking from standby against
+  DRM modeset), F1 would issue a recovery mid-startup. Plausible slow paths
+  either fail fast (already tier 1's job) or complete well under 10 s in
+  practice, and 20 s to first sample has comfortable margin over measured
+  4K decode startup (~1-3 s) behind `dex-wait-hdmi`'s EDID gate -- but this
+  is inference, not a measurement of a genuinely slow cold VO bring-up.
+  Worth one bench measurement before the next gallery install; not done in
+  this pass.
+
+All four Rust-level fixes verified: `cargo check --all-targets` and
+`cargo test --lib` clean on the Mac (48 lib tests); full matrix re-verified
+on the Pi (see the phasing note / session log for the exact count).
+
 ### F2 — Tier-1/2: supervision and reboot escalation
 `deploy/dex-loop.service` exists (tier 1). Add tier 2: a `StartLimitBurst`
 counter feeding an `OnFailure=` unit that reboots after repeated failures within
@@ -157,6 +234,29 @@ exactly this wedge. This is also the honest answer to F1's gap (periodic health
 check) using infrastructure that already exists. Not implemented in this pass:
 needs its own design + on-device soak, not a drive-by addition to an unrelated
 hardening pass.
+
+**2026-08-15 addendum, stakes sharpened by F1 (rust + gallery-ops reviews,
+SUSPECTED MAJOR, still deferred):** F1 lands on top of this un-mitigated risk
+rather than closing it. The heartbeat's two synchronous `mpv_get_property_string`
+calls run on the SAME event thread, BEFORE the health-check tick in the loop
+body, so if the ~600 s heartbeat boundary lands inside the stall-to-escalate
+window (now roughly 2-3 ticks × 10 s ≈ 20-30 s per episode, before C1's fix;
+was theorized to be somewhat longer with the pre-fix baseline-reset bug), a
+core wedge coinciding with that boundary blocks `get_prop` and disables BOTH
+tier 0 and tier 1 for that episode -- bug #1's exact shape (alive, green,
+black wall), entered through the one door F1's own module doc claims is
+closed "by construction". The claim is feature-locally true (F1 itself adds
+no new synchronous call) but doesn't hold once F7's pre-existing heartbeat is
+accounted for.
+
+**Still deliberately not implemented in this pass**, for the same reason as
+above: this is a concurrency-sensitive change (converting to
+`mpv_get_property_async` + tracking last-known values across ticks, or
+skipping the heartbeat's reads while a recovery is in flight, or landing
+`WatchdogSec=`/`sd_notify`) that deserves its own design and on-device soak
+rather than a same-pass addition alongside three other structural fixes to
+the same event loop. Recorded here with the sharpened risk so it is not lost
+track of, not because the risk is considered acceptable long-term.
 
 ### F3 addendum — sidecar JSON subset: deliberately NOT widened to arbitrary JSON types
 **2026-08-15:** two reviews independently flagged that a non-subset *value* under
@@ -280,6 +380,28 @@ libmpv was embedded; and silently merged runs (below). Add a self-test to
 assert it reports `player=0` and a full 11-field row. **A monitor that has only
 ever seen success is untested.**
 
+### T7 — Recommended, not implemented: a live-fire test for F1's recovery command (rust review, 2026-08-15)
+**Why:** C1 (see F1's 2026-08-15 addendum) shipped and reached the bench without
+ever having been exercised against a real mpv instance -- the crate's own
+justification ("would need real decode, forbidden by the vid=no rule") turned
+out to be wrong: the reviewer's probe used `vo=null` with a real (tiny,
+software-decoded) video track to exercise `loadfile ... replace` headlessly on
+the Pi with no DRM and no display touched, and that is exactly what caught C1.
+**What:** a hidden `--force-recovery-after-secs N` bench-only flag that
+artificially triggers `HealthAction::AttemptRecovery` N seconds after start
+during otherwise-healthy playback, plus a bench test asserting the process
+*survives* it (keeps playing, does not exit) using a `vo=null` build. This
+would have failed before the C1 fix and pins it going forward the same way
+`tests/ffi_constants.rs` pins the event-id transcriptions. **Why not done in
+this pass:** it is new test *infrastructure* (a new CLI flag + a new bench
+harness invocation path), not a fix to an existing defect, and landing it
+alongside four structural changes to the same event loop in one pass raises
+the odds of introducing exactly the kind of untested new path this task
+exists to close. The pure-logic regression tests added for C1
+(`is_expected_recovery_stop`, 3 cases) narrow but do not eliminate the gap
+this closes; T7 is the real fix for "the recovery path is undertested" and
+should land as its own small, reviewed change.
+
 ### T6 — `run_id` column, and a header guard
 **Observed 2026-08-15.** The soak was restarted against the same output file
 when its duration was changed from 12 h to 3 h. The monitor appends and only
@@ -306,6 +428,56 @@ Two defects, one cause — the file is append-only and carries no run identity:
 Both are a few lines, and both matter more for the **multi-day** soak than they
 did here: a mid-run restart over days would be much harder to spot by eye than
 one obvious reset in a six-row table.
+
+**2026-08-15 addendum, harness fixes from the same three-review round:**
+
+- **soak-monitor.sh's ssh telemetry leg was unbounded (gallery-ops review,
+  MAJOR, fixed).** `-o ConnectTimeout=10` only bounds connection
+  *establishment*; a session that connects and then goes quiet (network
+  drop mid-read, or a hung remote `vcgencmd` firmware call) could block
+  `read` forever, silencing every row for the rest of a multi-day soak with
+  no warning -- the exact failure class `ece396b` had just fixed for the
+  capture step, one line lower. Fixed with three layers: ssh-level
+  `BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=2` (catches
+  a connection that goes quiet), a remote-side `timeout 10` wrapping the
+  actual `vcgencmd`/`pgrep` calls (catches a healthy-transport-but-hung
+  remote command, which ServerAlive cannot see), and a local `timeout 20`
+  around the whole ssh invocation when available (belt-and-braces; degrades
+  gracefully via `command -v timeout` on a Mac without GNU coreutils).
+  Manually verified against both the real Pi (clean row) and an unreachable
+  host (bounded at ~10s, `? ? ?` fallback).
+- **soak-monitor.sh's node parse step had no failure fallback (rust review,
+  MINOR, fixed).** The ssh step already degraded to `"? ? ?"` on failure;
+  the node step (same script, a few lines above) did not -- a node
+  crash/OOM mid-soak under `set -e` would kill the whole monitor with no
+  row and no message. Now falls back to an honest zeroed row plus a stderr
+  warning, matching the ssh step's pattern.
+- **soak-monitor.sh's capture-timeout kill path assumed one ffmpeg pid
+  (rust + gallery-ops reviews, NIT, fixed).** `pgrep -P "$cap_pid"` can
+  print more than one pid; the kill calls now iterate over all of them
+  instead of passing a possibly-multi-line string as one `kill` argument.
+  Works today either way (capture.mjs spawns exactly one direct child,
+  verified), but a future capture.mjs refactor could have silently reopened
+  the leak this was written to close.
+- **test-soak-monitor.sh's CAP bumped 20 → 30 (rust review, NIT, fixed).**
+  The new ssh bound above can legitimately take up to its own ~10-20s
+  worst case; the old 20s outer bound left only a few seconds of headroom
+  on a loaded Mac.
+- **make-sidecar.sh: a wildly wrong explicit `--fps` now refuses instead of
+  warning-and-proceeding (gallery-ops review, MINOR, fixed).** A typo'd
+  `--fps 3` (for 30) against a stream ffprobe could read a trustworthy rate
+  from used to print a warning and generate the sidecar anyway; the hash
+  then binds the wrong rate, `--check` passes forever, and the player runs
+  10x slow with every metric green -- F3's exact target failure, laundered
+  through F3's own tooling. Now refuses (exit 2) unless `--force` is also
+  given, per principle 5 (operator error must be impossible, not merely
+  detectable). Two new regression tests added to `test-make-sidecar.sh`.
+- **make-sidecar.sh: `--fps`/`--out` as the last token no longer crashes on
+  an unbound variable (rust review, NIT, fixed).** Under `set -u`, a
+  trailing `--fps` with no value dereferenced an unset `$2` and aborted
+  with exit 1 ("verification failure") instead of the correct exit 2
+  ("bad invocation") via the normal `usage` path. Guarded with
+  `[ $# -ge 2 ] || usage`. One new regression test.
 
 ## Phasing
 

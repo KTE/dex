@@ -46,9 +46,9 @@
 
 use dex_loop::chunk::{clamp_want, next_chunk};
 use dex_loop::ffi_consts::{
-    MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE,
-    MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW, MPV_EVENT_SHUTDOWN,
-    MPV_EVENT_START_FILE, MPV_FORMAT_DOUBLE,
+    MPV_END_FILE_REASON_STOP, MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE,
+    MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW,
+    MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE, MPV_FORMAT_DOUBLE,
 };
 use dex_loop::health::{HealthAction, HealthMonitor};
 use dex_loop::heartbeat::format_heartbeat;
@@ -381,6 +381,19 @@ fn emit_heartbeat(ctx: *mut MpvHandle, started: Instant) {
     );
 }
 
+/// Whether an `MPV_EVENT_END_FILE` with this `reason` is the expected
+/// teardown half of F1's in-place recovery -- its own `loadfile ...
+/// replace` command -- rather than a real failure. Pure and separately
+/// tested (unlike the rest of the event loop, which needs libmpv) so this
+/// one boolean condition -- the entire fix for the regression where every
+/// recovery attempt killed the process on its own first step -- cannot
+/// silently break again without a failing test. See
+/// `MPV_END_FILE_REASON_STOP`'s doc comment for the mpv behaviour this
+/// encodes.
+fn is_expected_recovery_stop(recovery_stop_pending: bool, reason: c_int) -> bool {
+    recovery_stop_pending && reason == MPV_END_FILE_REASON_STOP
+}
+
 fn usage() -> ! {
     eprintln!(
         "usage: dex-loop <stream.265> [--fps <F>] [--mode WxH@R] [--bench-no-sidecar] [--no-defaults] [--opt K=V ...]
@@ -670,7 +683,15 @@ fn main() -> ExitCode {
             MPV_FORMAT_DOUBLE,
         )
     };
-    if rc < 0 {
+    // Whether the health check is actually usable this run. Gates the tick
+    // loop below (`health: Option<HealthMonitor>`) -- without this gate, a
+    // failed registration would leave `last_position` permanently `None`,
+    // and every tick would read as a stall forever, eventually issuing
+    // recovery commands (and, once the budget is exhausted, exiting)
+    // against a perfectly healthy player: the exact opposite of the
+    // "DISABLED" warning below.
+    let health_check_registered = rc >= 0;
+    if !health_check_registered {
         eprintln!(
             "warning: {} -- tier-0 self-healing is DISABLED for this run; tier 1 \
              (process restart on a fatal event) still applies",
@@ -717,10 +738,23 @@ fn main() -> ExitCode {
     // from mpv -- and fed to `health` on a fixed cadence. See
     // dex_loop::health's module doc for the full policy and reasoning.
     let mut last_position: Option<f64> = None;
-    let mut health = HealthMonitor::new(MAX_RECOVERY_ATTEMPTS);
+    let mut health: Option<HealthMonitor> = if health_check_registered {
+        Some(HealthMonitor::new(MAX_RECOVERY_ATTEMPTS))
+    } else {
+        None
+    };
     let mut last_health_check = Instant::now();
+    // Set for exactly the span between issuing the in-place recovery's
+    // `loadfile ... replace` and observing the END_FILE(reason=stop) that
+    // command produces for the file it replaces (bench-confirmed live,
+    // three independent reviews, 2026-08-15) -- see the MPV_EVENT_END_FILE
+    // handler below and PLAN.md's F1 addendum. Nothing else in this program
+    // ever issues a command that produces a STOP-reason end-file, so this
+    // flag is what tells "our own recovery's expected teardown" apart from
+    // an actual failure that happens to carry the same reason code.
+    let mut recovery_stop_pending = false;
 
-    let mut exit = ExitCode::SUCCESS;
+    let exit = ExitCode::SUCCESS;
     loop {
         // Wake at least every HEALTH_CHECK_SECS. In the healthy steady
         // state mpv delivers frequent time-pos property-change events on
@@ -741,48 +775,84 @@ fn main() -> ExitCode {
             last_heartbeat = Instant::now();
         }
 
-        if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
-            last_health_check = Instant::now();
-            match health.tick(last_position) {
-                HealthAction::Healthy => {}
-                HealthAction::AttemptRecovery { attempt, max } => {
-                    eprintln!(
-                        "dex-loop: health check: no progress across 2 consecutive \
-                         checks ({HEALTH_CHECK_SECS}s apart) -- attempting in-place \
-                         recovery {attempt}/{max} (re-issuing loadfile to force VO \
-                         reconfiguration)"
-                    );
-                    // mpv_command_async, not mpv_command: this call runs on
-                    // the SAME event thread that also has to keep detecting
-                    // every fatal event, and a synchronous command could
-                    // block that thread against a wedged core -- see
-                    // dex_loop::health's module doc.
-                    let cmd_loadfile = CString::new("loadfile").unwrap();
-                    let cmd_url = CString::new("loop://endless").unwrap();
-                    let cmd_replace = CString::new("replace").unwrap();
-                    let argv: [*const c_char; 4] = [
-                        cmd_loadfile.as_ptr(),
-                        cmd_url.as_ptr(),
-                        cmd_replace.as_ptr(),
-                        std::ptr::null(),
-                    ];
-                    let rc =
-                        unsafe { mpv_command_async(ctx, RECOVERY_COMMAND_USERDATA, argv.as_ptr()) };
-                    if rc < 0 {
+        if let Some(h) = health.as_mut() {
+            if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
+                last_health_check = Instant::now();
+                match h.tick(last_position) {
+                    HealthAction::Healthy => {}
+                    HealthAction::AttemptRecovery { attempt, max } => {
                         eprintln!(
-                            "warning: {}",
-                            err(ctx, "mpv_command_async(loadfile)", rc)
+                            "dex-loop: health check: no progress across 2 consecutive \
+                             checks ({HEALTH_CHECK_SECS}s apart) -- attempting in-place \
+                             recovery {attempt}/{max} (re-issuing loadfile: restarts \
+                             demux+decode and forces a VO reconfigure; does not tear \
+                             down/re-init the DRM/GPU context itself -- see PLAN.md's \
+                             F1 addendum)"
                         );
+                        // Mirror HealthMonitor's own baseline reset
+                        // (health.rs: `self.last_position = None` in the
+                        // AttemptRecovery arm of `tick`). Without this, the
+                        // driver would keep feeding the STALE pre-recovery
+                        // position back into the next tick, which the
+                        // monitor -- now comparing against its own `None`
+                        // baseline -- would misread as a fresh first sample
+                        // (i.e. progress), buying a spurious "Healthy" tick
+                        // that stretches the real escalation timeline.
+                        last_position = None;
+                        // mpv_command_async, not mpv_command: this call runs on
+                        // the SAME event thread that also has to keep detecting
+                        // every fatal event, and a synchronous command could
+                        // block that thread against a wedged core -- see
+                        // dex_loop::health's module doc.
+                        let cmd_loadfile = CString::new("loadfile").unwrap();
+                        let cmd_url = CString::new("loop://endless").unwrap();
+                        let cmd_replace = CString::new("replace").unwrap();
+                        let argv: [*const c_char; 4] = [
+                            cmd_loadfile.as_ptr(),
+                            cmd_url.as_ptr(),
+                            cmd_replace.as_ptr(),
+                            std::ptr::null(),
+                        ];
+                        let rc = unsafe {
+                            mpv_command_async(ctx, RECOVERY_COMMAND_USERDATA, argv.as_ptr())
+                        };
+                        if rc < 0 {
+                            eprintln!(
+                                "warning: {}",
+                                err(ctx, "mpv_command_async(loadfile)", rc)
+                            );
+                        } else {
+                            // Only now: the command was actually queued, so
+                            // mpv WILL deliver an END_FILE(reason=stop) for
+                            // the file being replaced (see
+                            // MPV_END_FILE_REASON_STOP's doc comment) --
+                            // that event must be absorbed, not treated as
+                            // the fatal failure it would otherwise look
+                            // like. If mpv_command_async itself failed
+                            // (above), no such event is coming, so the flag
+                            // must NOT be set.
+                            recovery_stop_pending = true;
+                        }
                     }
-                }
-                HealthAction::Escalate => {
-                    eprintln!(
-                        "dex-loop: FATAL: tier-0 self-healing exhausted its recovery \
-                         budget ({MAX_RECOVERY_ATTEMPTS} attempt(s)) with no progress \
-                         -- exiting so the supervisor restarts (tier 1)"
-                    );
-                    exit = ExitCode::FAILURE;
-                    break;
+                    HealthAction::Escalate => {
+                        eprintln!(
+                            "dex-loop: FATAL: tier-0 self-healing exhausted its recovery \
+                             budget ({MAX_RECOVERY_ATTEMPTS} attempt(s)) with no progress \
+                             -- exiting so the supervisor restarts (tier 1)"
+                        );
+                        // std::process::exit, not `break` into the shared
+                        // mpv_terminate_destroy() teardown at the end of
+                        // main: Escalate fires precisely because the core
+                        // looks wedged, and mpv_terminate_destroy
+                        // synchronously joins mpv's own threads -- a core
+                        // that cannot advance time-pos may not be able to
+                        // complete that join either, which would block the
+                        // one exit path whose entire job is to let the
+                        // supervisor take over. Per design principle 4 (the
+                        // mains switch IS the shutdown path), exiting
+                        // abruptly here is not a shortcut, it is correct.
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -837,6 +907,14 @@ fn main() -> ExitCode {
                          was rejected: {}",
                         err(ctx, "mpv_command_async(loadfile) reply", error)
                     );
+                    // Rejected AFTER being queued (mpv_command_async itself
+                    // returned success) but before taking effect: no
+                    // matching END_FILE(reason=stop) will ever arrive for
+                    // this attempt, so the flag must not sit waiting for
+                    // one -- a stale flag left set here could otherwise
+                    // mask a real, later, unrelated END_FILE(stop) as this
+                    // attempt's expected teardown.
+                    recovery_stop_pending = false;
                 }
             }
             continue;
@@ -854,6 +932,23 @@ fn main() -> ExitCode {
         if id == MPV_EVENT_END_FILE {
             // SAFETY: `data` is an mpv_event_end_file for this event id.
             let ef = unsafe { &*((*ev).data as *const MpvEventEndFile) };
+            if is_expected_recovery_stop(recovery_stop_pending, ef.reason) {
+                // The in-place recovery's own `loadfile ... replace` just
+                // produced the END_FILE(reason=stop) mpv always emits for
+                // the file being replaced -- the expected teardown half of
+                // a recovery that is still in progress, not a failure. See
+                // MPV_END_FILE_REASON_STOP's doc comment and PLAN.md's F1
+                // addendum: before this check existed, EVERY in-place
+                // recovery attempt killed the process on its own first
+                // step, making tier 0 unreachable.
+                recovery_stop_pending = false;
+                eprintln!(
+                    "dex-loop: health check: in-place recovery's loadfile replaced the \
+                     stream; absorbing the expected END_FILE(reason=stop) for the file \
+                     it replaced, not treating it as a failure"
+                );
+                continue;
+            }
             let why = unsafe { CStr::from_ptr(mpv_error_string(ef.error)) };
             eprintln!(
                 "dex-loop: FATAL: playback ended (reason={}, error={}) -- an endless \
@@ -861,8 +956,11 @@ fn main() -> ExitCode {
                 ef.reason,
                 why.to_string_lossy()
             );
-            exit = ExitCode::FAILURE;
-            break;
+            // std::process::exit, not `break`: see the Escalate arm's
+            // comment above for why the shared mpv_terminate_destroy()
+            // teardown is the wrong tool on a fatal exit path -- the same
+            // reasoning applies here (and to QUEUE_OVERFLOW below).
+            std::process::exit(1);
         }
         if id == MPV_EVENT_QUEUE_OVERFLOW {
             // mpv's internal event ring chokes at 1000 pending events and
@@ -878,8 +976,7 @@ fn main() -> ExitCode {
                  dropped and may have been the one that mattered; exiting so the \
                  supervisor restarts"
             );
-            exit = ExitCode::FAILURE;
-            break;
+            std::process::exit(1);
         }
     }
 
@@ -941,5 +1038,36 @@ mod tests {
         assert_eq!(pos_after_second, 0, "eager wrap: position must land back at 0, not at len");
 
         unsafe { drop(Box::from_raw(cookie as *mut LoopStream)) };
+    }
+
+    // The C1 regression this pins: `loadfile ... replace` (F1's in-place
+    // recovery) makes mpv emit END_FILE(reason=stop) for the file being
+    // replaced. Before `is_expected_recovery_stop` existed, the event loop
+    // treated ANY end-file as fatal, so the recovery's own first step
+    // always killed the process -- tier 0 was unreachable through the real
+    // event loop. These three cases are the whole fix.
+
+    #[test]
+    fn a_pending_recovery_absorbs_its_own_stop_reason_end_file() {
+        assert!(is_expected_recovery_stop(true, MPV_END_FILE_REASON_STOP));
+    }
+
+    #[test]
+    fn a_stop_reason_end_file_with_no_recovery_pending_stays_fatal() {
+        // Nothing else in this program issues a command that produces a
+        // stop-reason end-file -- but if one ever did, it must not be
+        // silently swallowed just because the reason code matches.
+        assert!(!is_expected_recovery_stop(false, MPV_END_FILE_REASON_STOP));
+    }
+
+    #[test]
+    fn any_other_reason_stays_fatal_even_while_a_recovery_is_pending() {
+        // eof=0, quit=3, error=4, redirect=5 (2 is stop, tested above).
+        for reason in [0, 3, 4, 5] {
+            assert!(
+                !is_expected_recovery_stop(true, reason),
+                "reason {reason} must not be absorbed"
+            );
+        }
     }
 }
