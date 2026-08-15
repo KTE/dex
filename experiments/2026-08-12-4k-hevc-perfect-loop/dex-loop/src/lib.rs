@@ -10,3 +10,4 @@
 #![forbid(unsafe_code)]
 
 pub mod chunk;
+pub mod ffi_consts;

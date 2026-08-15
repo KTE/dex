@@ -45,6 +45,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use dex_loop::chunk::{clamp_want, next_chunk};
+use dex_loop::ffi_consts::{
+    MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
+    MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
+};
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs;
@@ -97,21 +101,6 @@ struct MpvEventLogMessage {
     text: *const c_char,
     log_level: c_int,
 }
-
-// Verified against mpv v0.40.0 client.h. These are NOT sequential-by-category:
-// LOG_MESSAGE is 2, and 6 is START_FILE. Casting an event payload to the wrong
-// struct dereferences garbage as pointers -- getting 6 wrong segfaulted on the
-// first frame, because START_FILE's payload is not a log message.
-const MPV_EVENT_NONE: c_int = 0;
-const MPV_EVENT_SHUTDOWN: c_int = 1;
-const MPV_EVENT_LOG_MESSAGE: c_int = 2;
-const MPV_EVENT_START_FILE: c_int = 6;
-const MPV_EVENT_END_FILE: c_int = 7;
-
-/// `MPV_ERROR_UNSUPPORTED`. The documented sentinel for "this stream callback
-/// is not supported"; `-1` is `MPV_ERROR_EVENT_QUEUE_FULL`, which happens to
-/// work only because mpv 0.40 tests the sign rather than the value.
-const MPV_ERROR_UNSUPPORTED: i64 = -18;
 
 #[link(name = "mpv")]
 extern "C" {
@@ -171,7 +160,7 @@ extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64
     let Some(c) = next_chunk(s.data.len(), s.pos, clamp_want(nbytes)) else {
         // Zero-length request (or an impossible empty payload). Report an
         // error, never 0.
-        return MPV_ERROR_UNSUPPORTED;
+        return i64::from(MPV_ERROR_UNSUPPORTED);
     };
 
     // SAFETY: mpv guarantees `buf` is writable for `nbytes` bytes; next_chunk
@@ -190,7 +179,7 @@ extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64
 /// operation that produces the seam. Refusing here keeps the only available
 /// behaviour "keep reading forwards".
 extern "C" fn seek_fn(_cookie: *mut c_void, _offset: i64) -> i64 {
-    MPV_ERROR_UNSUPPORTED
+    i64::from(MPV_ERROR_UNSUPPORTED)
 }
 
 /// Report the size as unknown, again like a pipe.
@@ -199,7 +188,7 @@ extern "C" fn seek_fn(_cookie: *mut c_void, _offset: i64) -> i64 {
 /// position for a stream that has neither, and would invite it to treat the end
 /// of the buffer as the end of the media.
 extern "C" fn size_fn(_cookie: *mut c_void) -> i64 {
-    MPV_ERROR_UNSUPPORTED
+    i64::from(MPV_ERROR_UNSUPPORTED)
 }
 
 extern "C" fn close_fn(cookie: *mut c_void) {
