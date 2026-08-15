@@ -109,8 +109,16 @@ jobs:
       # >= 1.88, which trixie does not have. The pin is a CONSEQUENCE of the
       # toolchain decision, not an independent choice -- if this ever has to be
       # unpinned, the toolchain question is what actually changed.
+      #
+      # Guard on the FILE, not on PATH. `command -v cargo-deb` was wrong in a way
+      # that only appears once the cache is warm: cargo installs to
+      # ~/.cargo/bin, which is NOT on PATH here (cargo comes from apt, there is
+      # no rustup to add it), so on a cache hit the guard said "missing" while
+      # cargo said "binary already exists in destination" and exited 101. Both
+      # were right about different questions. `cargo deb` itself still works
+      # because cargo searches $CARGO_HOME/bin for subcommands regardless of PATH.
       - name: Install cargo-deb
-        run: command -v cargo-deb || cargo install --locked cargo-deb --version "^2"
+        run: test -x "$HOME/.cargo/bin/cargo-deb" || cargo install --locked cargo-deb --version "^2"
 
       # The package is only worth shipping if the code it contains passes. The
       # full suite runs here because this container HAS libmpv -- the Mac
