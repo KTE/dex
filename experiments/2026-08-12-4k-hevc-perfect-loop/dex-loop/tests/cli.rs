@@ -154,12 +154,36 @@ fn empty_file_exits_2() {
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    // Pin the INTENDED gate (main.rs's empty-payload guard), not just any
+    // refusal: without this, deleting that guard would leave the test green
+    // via the (also exit-2) missing-sidecar path instead.
+    assert!(r.stderr.contains("is empty"), "stderr: {}", r.stderr);
 }
 
 #[test]
 fn no_args_exits_2_with_usage() {
     let r = run_with_deadline(&[], Duration::from_secs(10));
     assert_eq!(r.exit_code, Some(GATE_EXIT));
+    assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
+}
+
+/// A `--fps`/`--mode` with no following value used to evaporate silently
+/// (`args.get(i)` -> `None` -> the flag is just dropped) instead of refusing:
+/// an edited systemd unit or a line-continuation typo would start the player
+/// on the connector-preferred mode, or with no fps cross-check, with zero
+/// error. `--opt` already fell into `usage()` on a missing value -- these two
+/// flags must too.
+#[test]
+fn fps_flag_missing_value_refused_exit_2_with_usage() {
+    let r = run_with_deadline(&["/nonexistent/x.265", "--fps"], Duration::from_secs(10));
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
+}
+
+#[test]
+fn mode_flag_missing_value_refused_exit_2_with_usage() {
+    let r = run_with_deadline(&["/nonexistent/x.265", "--mode"], Duration::from_secs(10));
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
@@ -197,6 +221,17 @@ fn playback_failure_exits_nonzero_never_hangs() {
         r.stderr
     );
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    // Exit 1 is also returned by four OTHER failure sites (mpv_create,
+    // set_opt, mpv_initialize, loadfile). Without this, a regression that
+    // makes one of those fail instead -- e.g. `--opt` plumbing silently
+    // broken so `vo=null` never reaches mpv -- would produce an instant exit
+    // 1 and this test would stay green while no longer exercising the
+    // END_FILE branch at all. Pin the branch, not just the exit code.
+    assert!(
+        r.stderr.contains("playback ended"),
+        "exited 1 but not via the END_FILE branch this test exists to pin: {}",
+        r.stderr
+    );
 }
 
 /// Post-F4: garbage never reaches mpv — the NAL gate refuses it at startup,
@@ -366,6 +401,69 @@ fn agreeing_fps_and_sidecar_reach_playback() {
         Duration::from_secs(30),
     );
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    // Disambiguate from the other four exit-1 sites -- see the comment on
+    // playback_failure_exits_nonzero_never_hangs.
+    assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
+}
+
+/// A rejected mpv option is a deterministic, operator-fixable bad invocation
+/// -- the same asset + flags fail identically on every restart -- so per the
+/// exit-code contract it must be 2 ("fix and redeploy"), not 1 ("the
+/// supervisor restarts"): reading it as transient sends deploy-night triage
+/// looking in the wrong place.
+#[test]
+fn bad_opt_value_refused_exit_2_not_1() {
+    let p = temp_path("badopt.265");
+    let bytes = stub_annexb();
+    std::fs::write(&p, &bytes).unwrap();
+    write_sidecar(&p, &bytes, "30");
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--fps",
+            "30",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+            "--opt",
+            "this-option-does-not-exist=1",
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+}
+
+/// SUSPECTED-then-confirmed (adversarial review, 2026-08-15): a rational fps
+/// string reaches mpv's `container-fps-override` and is accepted end to end.
+/// Verified live on the bench Pi at review time via manual invocation; pinned
+/// here so a future mpv, or a future edit to how fps is plumbed, cannot
+/// silently regress every NTSC-rate asset into an exit-1 boot loop.
+#[test]
+fn rational_fps_reaches_playback() {
+    let p = temp_path("ntsc.265");
+    std::fs::write(&p, stub_annexb()).unwrap(); // bench path: no sidecar needed
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--bench-no-sidecar",
+            "--fps",
+            "30000/1001",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
 }
 
 /// Exit 1, not 2: the two-flag bench escape hatch bypasses the sidecar gate
@@ -391,6 +489,9 @@ fn bench_escape_hatch_bypasses_sidecar() {
         Duration::from_secs(30),
     );
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    // Disambiguate from the other four exit-1 sites -- see the comment on
+    // playback_failure_exits_nonzero_never_hangs.
+    assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
 }
 
 #[test]

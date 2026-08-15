@@ -15,7 +15,7 @@ use std::ffi::{c_char, c_int, CStr};
 
 use dex_loop::ffi_consts::{
     MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
-    MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
+    MPV_EVENT_QUEUE_OVERFLOW, MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
 };
 
 #[link(name = "mpv")]
@@ -58,6 +58,19 @@ fn event_ids_match_the_live_library() {
 }
 
 #[test]
+fn queue_overflow_id_matches_the_live_library() {
+    // mpv's internal event ring silently drops events (including a
+    // potential END_FILE) once it chokes at 1000 pending; this id is the
+    // only signal that happened. Pin it against the live library exactly
+    // like the others above -- a mistranscription here would defeat the
+    // fatal handling in main.rs just as silently as the LOG_MESSAGE bug did.
+    assert_eq!(
+        event_name(MPV_EVENT_QUEUE_OVERFLOW).as_deref(),
+        Some("event-queue-overflow")
+    );
+}
+
+#[test]
 fn the_exact_bug_that_shipped_cannot_recur() {
     // The historical defect: LOG_MESSAGE transcribed as 6, which is
     // START_FILE. Pin the two apart, in both directions.
@@ -76,10 +89,29 @@ fn the_exact_bug_that_shipped_cannot_recur() {
 #[test]
 fn error_unsupported_matches_the_live_library() {
     // The live mpv 0.40 string for -18 is "not supported" — NOT "unsupported";
-    // PLAN.md's original assertion would have failed here. Match loosely
-    // enough to survive that wording family, and pin that -18 is not the
-    // sign-compatible-but-wrong EVENT_QUEUE_FULL (-1) this code once used.
+    // PLAN.md's original assertion would have failed here. Exact match, not
+    // a `.contains("supported")` hedge: err_table also has "unsupported
+    // format for accessing option" (-6) and "...property" (-9), both of
+    // which pass a loose "supported" substring check just as well as -18
+    // does -- so a mistranscription of MPV_ERROR_UNSUPPORTED as -6 or -9
+    // would sail through the exact test whose entire job is to catch that.
+    // The whole philosophy here is "assert against the live library and let
+    // drift fail loudly"; a wording-family hedge defeats it.
     let s = error_string(MPV_ERROR_UNSUPPORTED);
-    assert!(s.contains("supported"), "mpv_error_string(-18) = {s:?}");
-    assert_ne!(error_string(MPV_ERROR_UNSUPPORTED), error_string(-1));
+    assert_eq!(s, "not supported", "mpv_error_string(-18) = {s:?}");
+    assert_ne!(
+        error_string(MPV_ERROR_UNSUPPORTED),
+        error_string(-1),
+        "-1 is EVENT_QUEUE_FULL, the sign-compatible-but-wrong value this code once used"
+    );
+    assert_ne!(
+        error_string(MPV_ERROR_UNSUPPORTED),
+        error_string(-6),
+        "-6 is OPTION_FORMAT, not UNSUPPORTED"
+    );
+    assert_ne!(
+        error_string(MPV_ERROR_UNSUPPORTED),
+        error_string(-9),
+        "-9 is PROPERTY_FORMAT, not UNSUPPORTED"
+    );
 }

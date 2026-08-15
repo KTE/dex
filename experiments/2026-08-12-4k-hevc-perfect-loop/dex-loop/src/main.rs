@@ -47,7 +47,7 @@
 use dex_loop::chunk::{clamp_want, next_chunk};
 use dex_loop::ffi_consts::{
     MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
-    MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
+    MPV_EVENT_QUEUE_OVERFLOW, MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
 };
 use dex_loop::heartbeat::format_heartbeat;
 use dex_loop::nal::validate_leading_nals;
@@ -169,17 +169,31 @@ const HEARTBEAT_SECS: u64 = 600;
 /// The stream read callback: a thin unsafe shell over
 /// [`dex_loop::chunk::next_chunk`], which owns (and tests) every rule that
 /// matters — never return 0 (to mpv, 0 is final EOF, the one event this
-/// program exists to prevent), wrap eagerly, report a zero-length request as
-/// an error rather than 0, saturate the u64 request size. This function only
-/// performs the memcpy the pure core cannot.
+/// program exists to prevent), wrap eagerly, saturate the u64 request size.
+/// This function only performs the memcpy the pure core cannot.
+///
+/// The `None` (zero-length request) branch below is unreachable in mpv 0.40
+/// (`stream.c` guards `len <= 0` before ever calling in) and, if it ever did
+/// fire, a negative return is treated identically to 0 by
+/// `stream_read_unbuffered` (`res <= 0` -> EOF either way) -- so returning an
+/// error here is not a mechanism mpv honors specially. It is kept as a
+/// defensive sentinel so THIS crate's own diagnostics can tell "asked for
+/// nothing" apart from "ran out of things to give"; if the path ever does
+/// fire on a future mpv, the result is an ordinary END_FILE -> fatal exit ->
+/// supervisor restart, not a seam.
 extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64 {
     // SAFETY: `cookie` is the Box<LoopStream> leaked in `open_fn`, and mpv
     // guarantees it is passed back unmodified for the life of the stream.
+    // The `&mut` additionally requires exclusivity: stream_cb.h serializes
+    // every callback for a given stream (read/seek/size/close never run
+    // concurrently with each other for the same cookie), so no other
+    // callback can be touching this LoopStream while this borrow is live.
     let s = unsafe { &mut *(cookie as *mut LoopStream) };
 
     let Some(c) = next_chunk(s.data.len(), s.pos, clamp_want(nbytes)) else {
         // Zero-length request (or an impossible empty payload). Report an
-        // error, never 0.
+        // error, never 0 -- see the doc comment above for why this is
+        // belt-and-braces rather than load-bearing against mpv itself.
         return i64::from(MPV_ERROR_UNSUPPORTED);
     };
 
@@ -350,11 +364,19 @@ fn main() -> ExitCode {
         match args[i].as_str() {
             "--fps" => {
                 i += 1;
-                cli_fps = args.get(i).cloned();
+                // A missing value here (flag is the last token -- an edited
+                // systemd unit, a line-continuation typo) must refuse loudly,
+                // not evaporate: a silently-dropped --fps falls through to
+                // "no cross-check", and a silently-dropped --mode falls
+                // through to the connector-preferred mode -- wrong cadence
+                // or wrong resolution, forever, with no error.
+                let Some(v) = args.get(i) else { usage() };
+                cli_fps = Some(v.clone());
             }
             "--mode" => {
                 i += 1;
-                mode = args.get(i).cloned();
+                let Some(v) = args.get(i) else { usage() };
+                mode = Some(v.clone());
             }
             "--no-defaults" => defaults = false,
             "--bench-no-sidecar" => bench_no_sidecar = true,
@@ -522,7 +544,12 @@ fn main() -> ExitCode {
         if let Err(e) = set_opt(ctx, k, v) {
             eprintln!("error: {e}");
             unsafe { mpv_terminate_destroy(ctx) };
-            return ExitCode::FAILURE;
+            // A rejected option is deterministic given these inputs: the
+            // same asset + flags fail identically on every restart, so per
+            // the exit-code contract this is "bad invocation" (2) -- fix and
+            // redeploy -- not a runtime failure (1) that the supervisor's
+            // restart loop could ever resolve on its own.
+            return ExitCode::from(2);
         }
     }
 
@@ -641,8 +668,82 @@ fn main() -> ExitCode {
             exit = ExitCode::FAILURE;
             break;
         }
+        if id == MPV_EVENT_QUEUE_OVERFLOW {
+            // mpv's internal event ring chokes at 1000 pending events and
+            // silently drops every event after that -- including END_FILE --
+            // until the client drains back to empty (client.c send_event).
+            // There is no reservation for fatal events, so a dropped
+            // END_FILE would otherwise leave this program in mpv's default
+            // idle mode forever: exactly bug #1's failure, entered through a
+            // different door. We cannot know what was lost, so treat this
+            // exactly like END_FILE: exit and let the supervisor restart.
+            eprintln!(
+                "dex-loop: FATAL: mpv event queue overflowed -- at least one event was \
+                 dropped and may have been the one that mattered; exiting so the \
+                 supervisor restarts"
+            );
+            exit = ExitCode::FAILURE;
+            break;
+        }
     }
 
     unsafe { mpv_terminate_destroy(ctx) };
     exit
+}
+
+// ---------------------------------------------------------------------------
+// This is the `dex-loop` BIN target, so these tests link libmpv (Pi only:
+// `cargo test`) even though they call no mpv function -- `cargo check
+// --all-targets` type-checks them on the Mac without linking. `cargo test
+// --lib` (the Mac-safe command) does not run this module; it only runs
+// tests under the `dex_loop` LIB target (src/lib.rs and its submodules).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Historical bug #3 lived exactly at this line: `read_fn` returning 0
+    // for a zero-length request, which mpv reads as final EOF. `chunk.rs`'s
+    // `next_chunk(_, _, 0) == None` test pins the pure boundary; this test
+    // pins the shell around it -- reintroduce `else { return 0; }` here and
+    // every test in the crate stays green except this one (mpv itself
+    // essentially never issues a zero-length read, so the Pi integration
+    // suite can't see it either).
+    #[test]
+    fn read_fn_reports_mpv_error_not_zero_for_a_zero_length_request() {
+        let data: &'static [u8] = Box::leak(vec![1u8, 2, 3].into_boxed_slice());
+        let cookie = Box::into_raw(Box::new(LoopStream { data, pos: 0 })) as *mut c_void;
+        let mut buf = [0u8; 8];
+        let r = read_fn(cookie, buf.as_mut_ptr() as *mut c_char, 0);
+        assert_eq!(
+            r,
+            i64::from(MPV_ERROR_UNSUPPORTED),
+            "must be an mpv error, never 0 -- to mpv, 0 means final EOF"
+        );
+        // Reclaim what open_fn would normally leave leaked for the stream's
+        // lifetime, via the same path close_fn uses.
+        unsafe { drop(Box::from_raw(cookie as *mut LoopStream)) };
+    }
+
+    #[test]
+    fn read_fn_copies_bytes_and_advances_the_shared_position() {
+        let data: &'static [u8] = Box::leak(vec![10u8, 20, 30, 40, 50].into_boxed_slice());
+        let cookie = Box::into_raw(Box::new(LoopStream { data, pos: 0 })) as *mut c_void;
+        let mut buf = [0u8; 8];
+
+        let r = read_fn(cookie, buf.as_mut_ptr() as *mut c_char, 3);
+        assert_eq!(r, 3);
+        assert_eq!(&buf[..3], &[10, 20, 30]);
+        // SAFETY: single-threaded test; no other call is touching `cookie`.
+        let pos_after_first = unsafe { &*(cookie as *mut LoopStream) }.pos;
+        assert_eq!(pos_after_first, 3, "the callback must thread position through the same cookie, not reset per call");
+
+        let r = read_fn(cookie, buf.as_mut_ptr() as *mut c_char, 4);
+        assert_eq!(r, 2, "short read: only 2 bytes remain before the wrap");
+        assert_eq!(&buf[..2], &[40, 50]);
+        let pos_after_second = unsafe { &*(cookie as *mut LoopStream) }.pos;
+        assert_eq!(pos_after_second, 0, "eager wrap: position must land back at 0, not at len");
+
+        unsafe { drop(Box::from_raw(cookie as *mut LoopStream)) };
+    }
 }

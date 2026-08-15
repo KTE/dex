@@ -15,6 +15,11 @@ pub const MPV_EVENT_SHUTDOWN: c_int = 1;
 pub const MPV_EVENT_LOG_MESSAGE: c_int = 2;
 pub const MPV_EVENT_START_FILE: c_int = 6;
 pub const MPV_EVENT_END_FILE: c_int = 7;
+/// "At least one event had to be dropped." Delivered once the internal
+/// 1000-slot event ring chokes and starts silently discarding events --
+/// including, potentially, an END_FILE. Treated as fatal: see the event
+/// loop in main.rs.
+pub const MPV_EVENT_QUEUE_OVERFLOW: c_int = 24;
 
 /// The documented "not supported" sentinel for stream callbacks. `-1` is
 /// MPV_ERROR_EVENT_QUEUE_FULL, which happens to work only because mpv 0.40

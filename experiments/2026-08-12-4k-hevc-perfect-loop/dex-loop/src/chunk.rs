@@ -25,10 +25,16 @@ pub struct Chunk {
 ///
 /// Returns `None` exactly when no bytes can be produced without lying: a
 /// zero-length request (`want == 0`), or the impossible-after-startup empty
-/// payload (`len == 0`). The caller MUST turn `None` into an mpv ERROR
-/// return — never 0. To mpv, 0 means final EOF (stream_cb.h), the one event
-/// this program exists to prevent, and "0 bytes requested" must never share a
-/// return value with "the stream has ended".
+/// payload (`len == 0`). The caller turns `None` into an mpv ERROR return
+/// rather than 0 — NOT because mpv treats the two return values differently
+/// (mpv 0.40's `stream_read_unbuffered` maps any `res <= 0` to EOF
+/// uniformly, so a negative return would end the stream exactly like 0
+/// would) but because mpv never actually issues a zero-length read in the
+/// first place (`stream.c` guards `len <= 0` before calling in at all) — the
+/// distinction is for THIS CRATE'S OWN error ledger, so its diagnostics can
+/// tell "asked for nothing" apart from "ran out of things to give". If mpv
+/// ever did call with `want == 0` on some future version, the result would
+/// be an ordinary END_FILE -> fatal exit -> supervisor restart, not a seam.
 ///
 /// A short read is legal (stream_cb.h), so the wrap is never stitched across
 /// one call: the tail is returned now, the head on the next call.

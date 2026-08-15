@@ -200,8 +200,13 @@ exact bytes (sha256 — a truncated copy glitches at every wrap).
 
 `fps` is a string (`"30"`, `"29.97"`, `"30000/1001"`), passed verbatim to mpv.
 Required: `fps`, `sha256`. Optional: `width`, `height`, `source`, `encoder_cmd`.
-Unknown keys are ignored. The parser is a strict JSON subset (flat object, strings +
-unsigned integers); anything else refuses startup — fail closed.
+Unknown keys are ignored — but their *values* still must be strings or unsigned
+integers, the same subset `fps`/`sha256` use (arrays/booleans/null/nested objects
+are refused everywhere, not just on the required keys). String escapes include
+`\uXXXX` (standard JSON, surrogate pairs included), so a `source`/`encoder_cmd`
+value produced by a default-safe serializer (Python's `json.dumps`, Go's
+`encoding/json`) does not break startup on a non-ASCII byte. Anything outside the
+subset refuses startup — fail closed.
 
 | flag | meaning |
 |---|---|
@@ -213,10 +218,11 @@ unsigned integers); anything else refuses startup — fail closed.
 
 Startup gates, in order: asset readable and non-empty → sidecar parses → fps resolved →
 sha256 matches → leading NALs are VPS/SPS/PPS + IDR (open-GOP/CRA assets are refused —
-the wrap premise is "IDR at frame 0"). Exit codes: **2** = refused before playback
-(fix the asset/invocation; restarting cannot help), **1** = playback/runtime failure
-(the supervisor restarts). Every start logs `dex-loop <version> (<git hash>)` and a
-heartbeat line (`wraps=`, `temp=`, `frame-drops=`) at boot and every 10 minutes.
+the wrap premise is "IDR at frame 0") → every `--opt`/default/`--mode` mpv option is
+accepted. Exit codes: **2** = refused before playback (fix the asset/invocation —
+including a rejected mpv option; restarting cannot help), **1** = playback/runtime
+failure (the supervisor restarts). Every start logs `dex-loop <version> (<git hash>)`
+and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`) at boot and every 10 minutes.
 
 The defaults encode the measured zero-copy path: the Pi's decoder emits
 Broadcom SAND-tiled NV12, and the display scans SAND out natively **only**
@@ -261,6 +267,20 @@ silently; mpv's diagnostics went nowhere.
 Still outstanding (see the story): asset+fps binding via an ingest sidecar,
 read-only rootfs, and a frame-advance watchdog.
 
+**Second pass, same day**, after F3/F4/F7 landed and three more adversarial reviews
+ran against that hardening: `--fps`/`--mode` with a missing value no longer evaporate
+silently (they refused via `usage()`, matching `--opt`); a rejected mpv option now
+exits 2, not 1 (it is a deterministic, operator-fixable bad invocation, not a runtime
+failure the supervisor's restart loop could resolve); the event loop now treats
+`MPV_EVENT_QUEUE_OVERFLOW` as fatal too, since mpv's internal event ring silently
+drops events — potentially an END_FILE — once it chokes; sidecar strings support
+`\uXXXX` escapes (surrogate pairs included), because a default-safe JSON serializer
+escapes every non-ASCII byte that way, including inside informational keys this
+player does not even interpret; the heartbeat's sub-zero temperature formatting no
+longer drops the sign; and `build.rs` now also reruns on source changes (not just
+`.git/HEAD`) and can take its git hash from a `.dex-build-id` stamp file, since the
+Pi build is an rsync mirror, not a checkout, and `git rev-parse` there always failed.
+
 ## Deployment
 
 `deploy/` carries the systemd unit and the HDMI connector wait. The unit's
@@ -272,6 +292,11 @@ screen.
 The primary boot-order fix is at the KMS layer, not in the player -- bake the
 projector's EDID into `cmdline.txt` so the Pi always believes a 4K30 display is
 attached. See the comments in `deploy/dex-wait-hdmi`.
+
+**Triage.** Every refusal and every runtime failure is journal-only today (see
+PLAN.md's F8): on site this reads as a plain black rectangle, so start with
+`journalctl -u dex-loop -n 20` for the last startup line, the gate that refused
+(if exit 2), or the `playback ended (reason=..., error=...)` line (if exit 1).
 
 ## Caveats
 

@@ -1,1 +1,3 @@
 /target
+# Written by an external sync step (see build.rs); never checked in.
+/.dex-build-id

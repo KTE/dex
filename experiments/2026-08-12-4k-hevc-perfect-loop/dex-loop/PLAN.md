@@ -94,6 +94,93 @@ Version/git hash in the startup line; heartbeat log every ~10 min (loop count,
 temperature, drop counters) so degradation is diagnosable after the fact;
 `--drm-format` comment on the plane-swap portability caveat (done in code, keep).
 
+**2026-08-15 addendum, from three further adversarial reviews:** F7's git hash was
+always `nogit` on the ONE host that can actually build this (libmpv only exists on
+the Pi, and the Pi builds from an rsync mirror at `~/bench/dex-loop`, which is not a
+git checkout — confirmed live). `build.rs` now prefers a `.dex-build-id` stamp file
+over `git rev-parse` when present (implemented). **Still outstanding:** the Mac-side
+sync step that populates it does not exist yet as a script in this repo (today it is
+presumably an ad-hoc `rsync` invocation) — before the next Pi build, that step needs
+one line writing the source commit hash (`git rev-parse --short=12 HEAD`, `+dirty`
+appended if the source checkout has local changes) to
+`~/bench/dex-loop/.dex-build-id` before the rsync. Until that lands, the Pi binary
+still reports `nogit`.
+
+### F8 — On-site photographable failure signal (deferred — device config, needs on-device verification)
+**Why (gallery-ops review, 2026-08-15):** every refusal this crate can produce — gate
+(exit 2) or runtime (exit 1) — is journal-only. On tty1 there is no getty (conflicted
+away so the player can take DRM) and stderr goes to journald, so on site every one of
+these failure classes photographs identically: a black rectangle. This round of
+hardening added four new gate classes (sidecar hash mismatch, sidecar missing, CRA
+asset, rejected mpv option) without adding any on-site signal for any of them.
+**What:** `deploy/dex-loop.service` could carry an `ExecStopPost=+/bin/sh -c '...'`
+(privileged `+` prefix) that writes the last refusal line to `/dev/tty1` — fbcon owns
+the display exactly when dex-loop has refused, so the reason becomes literally
+photographable by gallery staff. **Why deferred rather than implemented now:**
+fbcon/tty1 ownership and the exact escape sequence needed are hardware- and
+kernel-version-dependent claims that need verifying on the actual Pi + projector, not
+something to land blind in a code-review pass. A cheap partial mitigation (the
+`journalctl -u dex-loop -n 20` triage line) was added to the README in the meantime.
+
+### F9 — Heartbeat's property read is the first synchronous mpv-core call from the event thread (deferred — suspected, needs on-device verification)
+**Why (gallery-ops review, 2026-08-15, SUSPECTED):** `emit_heartbeat` calls
+`mpv_get_property_string` from the event loop thread. If the mpv core is ever wedged
+(e.g. the VO thread stuck in a DRM ioctl against a dying projector, holding the core
+lock), this call could block — which would silence the heartbeat AND stop the event
+loop from ever returning to `mpv_wait_event`, i.e. bug #1's exact shape (alive,
+supervisor green, screen black) entered through a new door. Before this change the
+event loop never touched the core at all. The reviewer could not force this scenario
+without owning the display, hence SUSPECTED, not CONFIRMED.
+**What (the reviewer's own suggested next step, worth taking seriously):** the
+heartbeat plumbing makes a systemd watchdog nearly free to add — `WatchdogSec=` in
+the unit plus a hand-rolled `sd_notify` (one UDP-style datagram to `$NOTIFY_SOCKET`,
+std-only, no new dependency) turns the heartbeat from a diagnostic into a gate:
+systemd kills and restarts the unit if the notify datagram stops arriving, covering
+exactly this wedge. This is also the honest answer to F1's gap (periodic health
+check) using infrastructure that already exists. Not implemented in this pass:
+needs its own design + on-device soak, not a drive-by addition to an unrelated
+hardening pass.
+
+### F3 addendum — sidecar JSON subset: deliberately NOT widened to arbitrary JSON types
+**2026-08-15:** two reviews independently flagged that a non-subset *value* under
+ANY key — including keys this player ignores entirely — refuses startup, and that
+`\uXXXX` string escapes specifically would break on a default-safe JSON serializer's
+output (Python's `json.dumps` `ensure_ascii=True`, Go's `encoding/json` escaping of
+`<`/`>`/`&`) even inside an ignored key like `source`. **Fixed:** the string grammar
+now supports `\uXXXX` (including UTF-16 surrogate pairs) everywhere, closing the
+concrete, near-certain trigger. **Deliberately NOT done:** widening the *value*
+grammar itself to accept arbitrary JSON types (booleans, `null`, floats, arrays,
+nested objects) under keys this player doesn't interpret. Reasons: (1) the milestone-3
+ingest tool that would actually emit such values does not exist yet — this is
+speculative scope for a hand-rolled, gate-critical, zero-dependency parser; (2)
+unbounded recursive value-skipping (nested arrays/objects) is itself new attack
+surface in a parser whose entire job is "fail closed, predictably" — a
+stack-depth concern that a fixed, flat, scalars-only grammar does not have. If the
+ingest tool that eventually gets built needs richer informational metadata than a
+flat string/uint, revisit then, with a concrete grammar to test against rather than
+a hypothetical one. In the meantime this constraint is stated in both the module doc
+and the README, not just implied.
+
+### T note — `resolve_fps` string-equality is exact-match by design
+**2026-08-15 (libmpv review, NIT):** `--fps 30` does not match a sidecar `"30/1"`
+(exactly what an ffprobe-driven ingest would emit for `r_frame_rate`), by design —
+the operator remedy is dropping `--fps` (the sidecar is authoritative regardless).
+No code defect; recorded so the eventual ingest tool and any deploy scripts commit to
+ONE canonical fps spelling rather than drifting.
+
+### Bench note — sidecars needed before the next soak
+**2026-08-15 (gallery-ops review):** the currently-running soak was started with the
+pre-hardening binary and the bare `--fps 30 --mode ...` invocation; `~/bench` has no
+`.json` sidecars. That exact invocation now exits 2 under the new binary (the
+sidecar gate is working as intended) — generate `<asset>.json` sidecars for the bench
+assets before the next soak launch (see the one-liner in this README's Options
+section). The final multi-day soak (phasing step 8) should deliberately exercise the
+sidecar path, not `--bench-no-sidecar`, since that is what actually ships. Separately:
+the ingest procedure (once it exists) should end with a mandatory bench test-play —
+`tests/cli.rs`'s `truncated_asset_vs_full_hash_refused_exit_2` fixture is a reminder
+that an asset corrupted *before* ingest hashes "correctly" and can otherwise push mpv
+into F1's unbounded-probe hole.
+
 ## T — Test coverage
 
 Grounded in **bugs actually found**, not in coverage percentage. Every row below

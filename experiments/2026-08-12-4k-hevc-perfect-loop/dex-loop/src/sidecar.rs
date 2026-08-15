@@ -17,11 +17,24 @@
 //! breaking deployed players.
 //!
 //! The parser accepts a STRICT SUBSET of JSON — one flat object, string and
-//! unsigned-integer values, escapes \" \\ \/ \n \r \t only. Anything else is
-//! a parse error, and a parse error refuses startup. Fail-closed IS the F3
+//! unsigned-integer values only (this applies uniformly to every key, known
+//! or not: an ignored key's value must still be a string or unsigned
+//! integer, never an array/bool/null/nested object). Anything else is a
+//! parse error, and a parse error refuses startup. Fail-closed IS the F3
 //! semantics: an unparseable sidecar and a missing one are the same
 //! operational fact. Hand-rolled because the crate has a zero-dependency rule
 //! and must build offline on the Pi.
+//!
+//! String escapes: \" \\ \/ \n \r \t, plus \uXXXX (standard JSON, including
+//! UTF-16 surrogate pairs for code points above U+FFFF). \uXXXX support
+//! matters beyond ordinary correctness: it is what every "safe by default"
+//! JSON serializer reaches for on non-ASCII bytes -- Python's `json.dumps`
+//! (default `ensure_ascii=True`) turns ANY non-ASCII character into \uXXXX,
+//! and Go's `encoding/json` does the same for `<`, `>`, `&`. That includes
+//! inside informational keys like `source`/`encoder_cmd` that this parser
+//! does not even interpret -- refusing \uXXXX there refused otherwise
+//! byte-perfect, correctly-hashed assets on nothing but a plausible ingest
+//! tool's default serializer settings.
 
 /// A parsed JSON value, restricted to the sidecar subset: strings and
 /// unsigned integers only.
@@ -125,9 +138,14 @@ impl Parser<'_> {
                     Some(b'n') => s.push(b'\n'),
                     Some(b'r') => s.push(b'\r'),
                     Some(b't') => s.push(b'\t'),
+                    Some(b'u') => {
+                        let ch = self.unicode_escape()?;
+                        let mut buf = [0u8; 4];
+                        s.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    }
                     e => {
                         return Err(format!(
-                            r#"unsupported escape {e:?} (subset: \" \\ \/ \n \r \t)"#
+                            r#"unsupported escape {e:?} (subset: \" \\ \/ \n \r \t \uXXXX)"#
                         ))
                     }
                 },
@@ -137,6 +155,52 @@ impl Parser<'_> {
                 Some(c) => s.push(c),
             }
         }
+    }
+    /// Decode a `\uXXXX` escape (the `u` is already consumed). JSON strings
+    /// are UTF-16 code UNITS, so a code point above U+FFFF (most emoji, for
+    /// instance) is always written as a surrogate PAIR -- two consecutive
+    /// `\uXXXX` escapes -- per the JSON spec itself, not a sidecar-specific
+    /// extension.
+    fn unicode_escape(&mut self) -> Result<char, String> {
+        let unit = self.hex4()?;
+        if (0xDC00..=0xDFFF).contains(&unit) {
+            return Err(format!("lone low surrogate \\u{unit:04x} in string"));
+        }
+        if !(0xD800..=0xDBFF).contains(&unit) {
+            // Not a surrogate: this code unit IS the code point, and every
+            // non-surrogate u16 is a valid Unicode scalar value.
+            return char::from_u32(u32::from(unit))
+                .ok_or_else(|| format!("invalid \\u{unit:04x} escape"));
+        }
+        // High surrogate: must be immediately followed by a low surrogate.
+        if self.next_byte() != Some(b'\\') || self.next_byte() != Some(b'u') {
+            return Err(format!(
+                "high surrogate \\u{unit:04x} not immediately followed by a low surrogate"
+            ));
+        }
+        let low = self.hex4()?;
+        if !(0xDC00..=0xDFFF).contains(&low) {
+            return Err(format!(
+                "high surrogate \\u{unit:04x} followed by \\u{low:04x}, which is not a low \
+                 surrogate"
+            ));
+        }
+        let c = 0x10000u32 + ((u32::from(unit) - 0xD800) << 10) + (u32::from(low) - 0xDC00);
+        char::from_u32(c)
+            .ok_or_else(|| format!("invalid surrogate pair \\u{unit:04x}\\u{low:04x}"))
+    }
+    fn hex4(&mut self) -> Result<u16, String> {
+        let mut v: u16 = 0;
+        for _ in 0..4 {
+            let c = self
+                .next_byte()
+                .ok_or("unterminated \\u escape (need 4 hex digits)")?;
+            let d = (c as char)
+                .to_digit(16)
+                .ok_or_else(|| format!("invalid hex digit {:?} in \\u escape", c as char))?;
+            v = v * 16 + d as u16;
+        }
+        Ok(v)
     }
     fn number(&mut self) -> Result<u64, String> {
         let start = self.i;
@@ -377,11 +441,75 @@ mod tests {
             r#"{"a":"x"}"trailing"#,          // trailing data
             r#"{"a":"x""b":"y"}"#,            // missing comma
             r#"{"a":"unterminated}"#,         // unterminated string
-            "{\"a\":\"bad \\u0041 escape\"}", // \u outside the subset
             r#"{"a":"x","a":"y"}"#,           // duplicate key
         ] {
             assert!(parse_flat_json(bad).is_err(), "accepted: {bad}");
         }
+    }
+
+    #[test]
+    fn unicode_escapes_are_decoded() {
+        // These are raw string literals: the JSON *source text* the parser
+        // receives contains the literal four characters `\`, `u`, and four
+        // hex digits -- the parser itself must turn that into a code point.
+        // The expected side uses Rust's OWN (unrelated) `\u{...}` syntax
+        // purely so this file's source stays plain ASCII.
+
+        // ASCII code point spelled via the escape A.
+        let json = format!(r#"{{"a":"\{}0041"}}"#, 'u');
+        let kv = parse_flat_json(&json).unwrap();
+        assert_eq!(kv[0].1, Value::Str("A".to_string()));
+
+        // The actual field bug: json.dumps({"source": "Zürich.mp4"}) with
+        // Python's DEFAULT ensure_ascii=True produces the escape ü for
+        // "ü". Built with `format!` so this file's source stays plain ASCII;
+        // `\u{fc}` on the expected side is Rust's own (unrelated) escape.
+        let json = format!(r#"{{"a":"Z\{}00fcrich.mp4"}}"#, 'u');
+        let kv = parse_flat_json(&json).unwrap();
+        assert_eq!(kv[0].1, Value::Str("Z\u{fc}rich.mp4".to_string()));
+
+        // Outside the BMP: a UTF-16 surrogate pair, standard JSON (not a
+        // sidecar-specific extension) -- U+1F389 PARTY POPPER is
+        // 🎉.
+        let json = format!(r#"{{"a":"\{0}d83c\{0}df89"}}"#, 'u');
+        let kv = parse_flat_json(&json).unwrap();
+        assert_eq!(kv[0].1, Value::Str("\u{1F389}".to_string()));
+
+        // A \u escape next to a plain escape in the same string, to prove
+        // they compose: é (é) then a plain \n.
+        let json = format!(r#"{{"a":"caf\{}00e9\nmore"}}"#, 'u');
+        let kv = parse_flat_json(&json).unwrap();
+        assert_eq!(kv[0].1, Value::Str("caf\u{e9}\nmore".to_string()));
+    }
+
+    #[test]
+    fn malformed_unicode_escapes_are_refused() {
+        for bad in [
+            r#"{"a":"\u12"}"#,         // truncated: only 2 hex digits
+            r#"{"a":"\u12zz"}"#,       // non-hex digits
+            r#"{"a":"\ud800"}"#,       // lone high surrogate, no pair follows
+            r#"{"a":"\udc00"}"#,       // lone low surrogate
+            r#"{"a":"\ud800A"}"#,      // high surrogate followed by a non-surrogate
+            r#"{"a":"\ud800\udbff"}"#, // high surrogate followed by ANOTHER high surrogate
+        ] {
+            assert!(parse_flat_json(bad).is_err(), "accepted: {bad}");
+        }
+    }
+
+    #[test]
+    fn unicode_escape_in_an_ignored_sidecar_key_no_longer_breaks_startup() {
+        // The concrete field scenario: an ingest tool's default-safe JSON
+        // serializer \u-escapes a non-ASCII byte inside "source", a key this
+        // player does not even interpret -- and startup used to refuse
+        // anyway, on an otherwise byte-perfect, correctly-hashed asset. Built
+        // with `format!` so the JSON text itself contains the literal escape
+        // ü, not an already-decoded byte -- that is the actual bug.
+        let text = format!(
+            r#"{{"fps":"30","sha256":"{GOOD_SHA}","source":"Z\{}00fcrich.mp4"}}"#,
+            'u'
+        );
+        let s = Sidecar::from_json(&text).unwrap();
+        assert_eq!(s.fps, "30");
     }
 
     #[test]
