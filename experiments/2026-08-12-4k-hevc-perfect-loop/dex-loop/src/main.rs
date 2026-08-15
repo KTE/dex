@@ -42,6 +42,9 @@
 //! * The real frame rate, because a raw stream carries no timestamps. This is
 //!   why frame rate has to become ingest metadata (milestone 3).
 
+#![deny(unsafe_op_in_unsafe_fn)]
+
+use dex_loop::chunk::{clamp_want, next_chunk};
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs;
@@ -154,49 +157,31 @@ const _: () = {
     assert_send::<LoopStream>();
 };
 
-/// Copy the next bytes out of the loop, wrapping at the end.
-///
-/// **Never returns 0.** Zero means *final EOF* to mpv (stream_cb.h), which is
-/// precisely the event this program exists to avoid. At the end of the payload
-/// the offset wraps to 0 and the next read continues from the start, so the
-/// decoder receives the loop's leading IDR as an ordinary mid-stream keyframe.
-///
-/// A zero-length request therefore returns an ERROR rather than 0. mpv 0.40
-/// never issues one, but "0 bytes requested" and "the stream has ended" must
-/// not be allowed to share a return value when the whole design rests on the
-/// difference.
-///
-/// A short read is legal, so the wrap does not need to be stitched across a
-/// single call: returning the tail now and the head next time is correct and
-/// keeps this function branch-light.
+/// The stream read callback: a thin unsafe shell over
+/// [`dex_loop::chunk::next_chunk`], which owns (and tests) every rule that
+/// matters — never return 0 (to mpv, 0 is final EOF, the one event this
+/// program exists to prevent), wrap eagerly, report a zero-length request as
+/// an error rather than 0, saturate the u64 request size. This function only
+/// performs the memcpy the pure core cannot.
 extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64 {
     // SAFETY: `cookie` is the Box<LoopStream> leaked in `open_fn`, and mpv
     // guarantees it is passed back unmodified for the life of the stream.
     let s = unsafe { &mut *(cookie as *mut LoopStream) };
 
-    if s.pos >= s.data.len() {
-        s.pos = 0;
-    }
-    // try_from, not `as`: on a 32-bit target `as usize` truncates, and an
-    // nbytes that is an exact multiple of 2^32 would become a 0-byte request
-    // and thus a spurious EOF. Saturating instead can only ever shrink the
-    // request, which is always legal (short reads are permitted).
-    let want = usize::try_from(nbytes).unwrap_or(usize::MAX);
-    let avail = s.data.len() - s.pos;
-    let n = want.min(avail);
-    if n == 0 {
-        // `avail` is never 0 (payload is non-empty and pos wraps above), so
-        // this means a 0-byte request. Report an error, never EOF.
+    let Some(c) = next_chunk(s.data.len(), s.pos, clamp_want(nbytes)) else {
+        // Zero-length request (or an impossible empty payload). Report an
+        // error, never 0.
         return MPV_ERROR_UNSUPPORTED;
-    }
+    };
 
-    // SAFETY: mpv guarantees `buf` is writable for `nbytes`; `n <= nbytes` and
-    // `n` bytes are readable from `data[pos..]`, and the ranges cannot overlap.
+    // SAFETY: mpv guarantees `buf` is writable for `nbytes` bytes; next_chunk
+    // guarantees c.n >= 1, c.n <= nbytes (the request is clamped, never
+    // grown) and c.start + c.n <= data.len(), and the ranges cannot overlap.
     unsafe {
-        std::ptr::copy_nonoverlapping(s.data.as_ptr().add(s.pos), buf as *mut u8, n);
+        std::ptr::copy_nonoverlapping(s.data.as_ptr().add(c.start), buf as *mut u8, c.n);
     }
-    s.pos += n;
-    n as i64
+    s.pos = c.next_pos;
+    c.n as i64
 }
 
 /// Report the stream as unseekable, exactly like a pipe.
