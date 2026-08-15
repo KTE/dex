@@ -312,8 +312,35 @@ jobs:
           test -x /usr/bin/dex-loop
           test -x /usr/bin/dex-wait-hdmi
           getent passwd dex                       # the service user exists
-          id -nG dex | grep -qw video             # ...and can open /dev/dri
-          id -nG dex | grep -qw render
+
+          # postinst only joins dex to a group that EXISTS in the target
+          # environment (see deploy/maintainer-scripts/postinst's own
+          # `getent group "$g"` guard) -- a real Pi has both video and render
+          # (verified on device: groups=105(dex),44(video),992(render)), but
+          # this minimal debian:trixie container has no udev, so render is
+          # never created here at all. Asserting unconditional membership in
+          # both groups was asserting something postinst never promised: THE
+          # TEST was wrong here, not the package.
+          #
+          # Mirror postinst's own conditional rather than hard-coding the
+          # group names twice, but don't let that degrade into a no-op: video
+          # is a static base-passwd group present in every Debian environment
+          # including this container, so its existence -- and dex's
+          # membership in it -- is asserted unconditionally below, not just
+          # conditionally skipped like render. That keeps at least one real
+          # assertion in force even in a future container where render is
+          # ALSO absent, so this loop can never silently pass on both groups.
+          getent group video >/dev/null \
+            || { echo "::error::video group unexpectedly absent from this container -- the membership check below would be vacuous"; exit 1; }
+          for g in video render; do
+            if getent group "$g" >/dev/null; then
+              id -nG dex | grep -qw "$g" \
+                || { echo "::error::postinst did not add dex to the existing '$g' group"; exit 1; }
+            else
+              echo "group '$g' does not exist in this container (expected: no udev here) -- skipping membership check"
+            fi
+          done
+
           test -d /opt/dex                        # asset directory created
           test -f /lib/systemd/system/dex-loop.service
           test -f /usr/share/man/man1/dex-loop.1.gz
