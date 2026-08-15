@@ -1,6 +1,8 @@
 # dex-loop
 
-Gapless HEVC looper for the Raspberry Pi. One process, no dependencies, no shell.
+Gapless HEVC looper for the Raspberry Pi. One process, no shell, and a dependency
+set small enough to read — all of it declared (SPEC §5c). It links libmpv, so the
+honest count is 228 shared objects, not zero.
 
 ```bash
 # once, at ingest -- mpv needs a raw elementary stream, not MP4:

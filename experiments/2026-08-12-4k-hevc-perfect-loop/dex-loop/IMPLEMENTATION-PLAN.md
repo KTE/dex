@@ -80,6 +80,14 @@ preference:
     code. Hand-rolled, one-shot only, pinned by the NIST vectors (incl. the 1M-'a' vector)
     plus `shasum`-verified padding-boundary vectors at 55/56/63/64/65/112 bytes.
 
+    > **SUPERSEDED 2026-08-15 — see SPEC §5c.** The reasoning above is sound *given* its
+    > premise, "builds offline on the Pi". Shipping a `.deb` retires that premise: the Pi
+    > installs a built artifact and compiles nothing. The zero-dependency rule is withdrawn
+    > in favour of *a small, declared, auditable dependency set*; `sha2` replaces this
+    > module, keeping the vectors, re-pointed at the crate. Recorded rather than rewritten,
+    > because the constraint was real while it held — but **it no longer justifies
+    > hand-writing anything.** Same applies to item 11 below.
+
 11. **Sidecar JSON is parsed by a hand-rolled STRICT SUBSET parser, fail-closed.** One flat
     object, string and unsigned-integer values, six escapes, nothing else. Anything outside
     the subset is a parse error and a parse error refuses startup — which is the F3 semantics

@@ -489,6 +489,82 @@ all the debugging effort even though they were already written. A custom player
 mpv release; if the Pi 5 leg needs a different interop; or if a measured *seam*
 (not a throughput number) appears that mpv cannot fix. Not otherwise.
 
+## 5c. Dependencies and packaging — settled 2026-08-15, do not re-litigate without new evidence
+
+Recorded because the rule it replaces was reasonable, produced two pieces of
+hand-written code that reviewers will keep flagging, and was dissolved by a
+decision about *deployment* rather than one about dependencies.
+
+**The rule that was.** The crate carried a **zero-dependency** rule — no cargo
+dependencies at all. That is why SHA-256 (185 lines) and a JSON subset parser
+(585 lines) are hand-written. The rule was not arbitrary: the plan states its
+real goal, **"builds offline on the Pi"** (IMPLEMENTATION-PLAN.md §1.10). But
+the name claims more than the property delivers.
+
+**What the binary actually links:**
+
+```
+dex-loop  →  NEEDED: libmpv.so.2, libgcc_s.so.1, libc.so.6
+             ldd, transitive: 228 shared objects
+```
+
+Zero cargo dependencies; **228 shared libraries**. The crate does not avoid a
+dependency tree — it declines to *declare* the one it has. Nothing checks
+libmpv's version at install time, so an ABI move surfaces as a black screen in
+the gallery instead of a failed install on the bench. For a player whose whole
+design premise is unattended operation for weeks, that is the wrong place to
+find out.
+
+**What changed.** The offline-build requirement binds only while the target is
+also the build host. Shipping a `.deb` removes that: the Pi installs a built
+artifact and compiles nothing. The requirement is not overruled — it **stops
+existing**, and everything derived from it is released.
+
+**The policy now.** Not "no dependencies" but *a small, **declared**, auditable
+dependency set*. Cargo dependencies and system libraries both count, and the
+package is where both are declared. A dependency earns its place by removing
+code we would otherwise own forever; it loses its place by pulling in a tree we
+cannot read.
+
+**Consequences:**
+
+| Was | Now | Why |
+|---|---|---|
+| hand-rolled `sha256.rs`, 185 lines | `sha2` | Commodity function. The existing NIST + padding-boundary vectors stay, re-pointed at the crate, so the swap is provably behaviour-preserving. The hand-rolled version is *correct* — this is about not owning it, not about fixing it. |
+| hand-rolled JSON subset, 585 lines | `serde_json` + a narrowed contract | The parser implements `\uXXXX` **including UTF-16 surrogate pairs** for a file whose four values are an fps string, 64 hex characters, and two integers. |
+| `cargo build` on the target | `.deb` built in CI | Declares the 228, versions the install, removes the toolchain from the device. |
+
+**Narrowing the sidecar contract is independent of the parser choice, and comes
+first.** No sidecar value can legitimately hold a non-ASCII byte, and the crate
+already knows it — `fps_is_valid` accepts only `is_ascii_digit()`. So today the
+surrogate-pair decoder reconstructs an astral code point, re-encodes it as
+UTF-8, and hands it to a validator that rejects it on the next line. The fix is
+to reject non-ASCII at the door: unicode leaves the format's scope **by
+construction**, not by careful handling. Whichever parser we use is then a
+smaller question.
+
+**Packaging.**
+
+- **Artifact:** `dex-loop_<version>_arm64.deb`.
+- **`Depends:` is computed, not hand-written.** `dpkg-shlibdeps` derives it from
+  the binary's linked sonames, so the declaration cannot drift from what the
+  binary actually needs — which is the whole point of the change.
+- **Contents:** the binary, the systemd unit, and `dex-wait-hdmi`.
+- **Built in CI** (GitHub Actions). `dex` is a public repo, so the free
+  `ubuntu-24.04-arm` runners apply — native arm64, no qemu.
+- **Built inside a `debian:trixie` container on that runner.** The runner image
+  is Ubuntu and the target is Debian trixie; linking against the wrong libmpv is
+  precisely the ABI mismatch this package exists to prevent. The container makes
+  the build environment the target environment.
+- **Enables F5.** With install as a discrete step, sealing a read-only rootfs
+  stops fighting an in-place build tree.
+
+**When to revisit.** If a dependency's tree grows past what we can audit; if
+trixie stops carrying a Pi-patched ffmpeg (which would reopen §5b, not this
+section); or if devices ever need to build locally again. Not otherwise — and
+specifically, "the crate has no dependencies" is no longer a reason to
+hand-write anything.
+
 ## 6. Escalation ladder (fixed, no re-litigation)
 
 1. **pivid on Pi 4** — cheapest, because `example-content` already ships pivid `.json` timelines.
