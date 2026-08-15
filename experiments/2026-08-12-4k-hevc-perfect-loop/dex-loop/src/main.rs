@@ -78,8 +78,37 @@ struct MpvEvent {
     data: *mut c_void,
 }
 
+/// `mpv_event_end_file`. Only the first two fields are read; the trailing
+/// playlist fields exist in the C struct but are irrelevant to a single-file
+/// appliance, and reading a prefix of a #[repr(C)] struct is well-defined.
+#[repr(C)]
+struct MpvEventEndFile {
+    reason: c_int,
+    error: c_int,
+}
+
+#[repr(C)]
+struct MpvEventLogMessage {
+    prefix: *const c_char,
+    level: *const c_char,
+    text: *const c_char,
+    log_level: c_int,
+}
+
+// Verified against mpv v0.40.0 client.h. These are NOT sequential-by-category:
+// LOG_MESSAGE is 2, and 6 is START_FILE. Casting an event payload to the wrong
+// struct dereferences garbage as pointers -- getting 6 wrong segfaulted on the
+// first frame, because START_FILE's payload is not a log message.
 const MPV_EVENT_NONE: c_int = 0;
 const MPV_EVENT_SHUTDOWN: c_int = 1;
+const MPV_EVENT_LOG_MESSAGE: c_int = 2;
+const MPV_EVENT_START_FILE: c_int = 6;
+const MPV_EVENT_END_FILE: c_int = 7;
+
+/// `MPV_ERROR_UNSUPPORTED`. The documented sentinel for "this stream callback
+/// is not supported"; `-1` is `MPV_ERROR_EVENT_QUEUE_FULL`, which happens to
+/// work only because mpv 0.40 tests the sign rather than the value.
+const MPV_ERROR_UNSUPPORTED: i64 = -18;
 
 #[link(name = "mpv")]
 extern "C" {
@@ -90,6 +119,7 @@ extern "C" {
     fn mpv_command(ctx: *mut MpvHandle, args: *const *const c_char) -> c_int;
     fn mpv_wait_event(ctx: *mut MpvHandle, timeout: f64) -> *mut MpvEvent;
     fn mpv_error_string(error: c_int) -> *const c_char;
+    fn mpv_request_log_messages(ctx: *mut MpvHandle, min_level: *const c_char) -> c_int;
     fn mpv_stream_cb_add_ro(
         ctx: *mut MpvHandle,
         protocol: *const c_char,
@@ -114,12 +144,27 @@ struct LoopStream {
     pos: usize,
 }
 
+// The cookie is created on one mpv thread, read on the demux thread, and freed
+// on whichever thread closes the stream. That requires Send. It is Send today,
+// but the raw-pointer laundering through `cookie` means the compiler never
+// checks -- so assert it, and a future field (Rc, *mut, an mmap guard) becomes
+// a compile error rather than a data race.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<LoopStream>();
+};
+
 /// Copy the next bytes out of the loop, wrapping at the end.
 ///
-/// **Never returns 0.** Zero means EOF to mpv, which is precisely the event that
-/// causes the seam this program exists to avoid. At the end of the payload the
-/// offset wraps to 0 and the next read continues from the start, so the decoder
-/// receives the loop's leading IDR as an ordinary mid-stream keyframe.
+/// **Never returns 0.** Zero means *final EOF* to mpv (stream_cb.h), which is
+/// precisely the event this program exists to avoid. At the end of the payload
+/// the offset wraps to 0 and the next read continues from the start, so the
+/// decoder receives the loop's leading IDR as an ordinary mid-stream keyframe.
+///
+/// A zero-length request therefore returns an ERROR rather than 0. mpv 0.40
+/// never issues one, but "0 bytes requested" and "the stream has ended" must
+/// not be allowed to share a return value when the whole design rests on the
+/// difference.
 ///
 /// A short read is legal, so the wrap does not need to be stitched across a
 /// single call: returning the tail now and the head next time is correct and
@@ -132,12 +177,17 @@ extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64
     if s.pos >= s.data.len() {
         s.pos = 0;
     }
-    let want = nbytes as usize;
+    // try_from, not `as`: on a 32-bit target `as usize` truncates, and an
+    // nbytes that is an exact multiple of 2^32 would become a 0-byte request
+    // and thus a spurious EOF. Saturating instead can only ever shrink the
+    // request, which is always legal (short reads are permitted).
+    let want = usize::try_from(nbytes).unwrap_or(usize::MAX);
     let avail = s.data.len() - s.pos;
     let n = want.min(avail);
     if n == 0 {
-        // Only reachable if the payload is empty, which is rejected at startup.
-        return 0;
+        // `avail` is never 0 (payload is non-empty and pos wraps above), so
+        // this means a 0-byte request. Report an error, never EOF.
+        return MPV_ERROR_UNSUPPORTED;
     }
 
     // SAFETY: mpv guarantees `buf` is writable for `nbytes`; `n <= nbytes` and
@@ -155,7 +205,7 @@ extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64
 /// operation that produces the seam. Refusing here keeps the only available
 /// behaviour "keep reading forwards".
 extern "C" fn seek_fn(_cookie: *mut c_void, _offset: i64) -> i64 {
-    -1
+    MPV_ERROR_UNSUPPORTED
 }
 
 /// Report the size as unknown, again like a pipe.
@@ -164,7 +214,7 @@ extern "C" fn seek_fn(_cookie: *mut c_void, _offset: i64) -> i64 {
 /// position for a stream that has neither, and would invite it to treat the end
 /// of the buffer as the end of the media.
 extern "C" fn size_fn(_cookie: *mut c_void) -> i64 {
-    -1
+    MPV_ERROR_UNSUPPORTED
 }
 
 extern "C" fn close_fn(cookie: *mut c_void) {
@@ -306,19 +356,36 @@ fn main() -> ExitCode {
             ("gpu-context", "drm"),
             ("gpu-api", "opengl"),
             ("gpu-hwdec-interop", "drmprime-overlay"),
-            // Video on the primary plane, mpv's GL/OSD surface on the overlay:
-            // keeps the 4K video off the V3D render path entirely.
+            // Video on the primary plane, mpv's GL/OSD surface on the overlay --
+            // SWAPPED from mpv's defaults, deliberately: it keeps the 4K video
+            // off the V3D render path entirely. Caveat: mpv sets ZPOS only on
+            // the video plane, so video-under-GL visibility relies on vc4's
+            // default plane ordering rather than anything mpv guarantees.
+            // Verified on this Pi 4 + kernel; re-verify after a kernel upgrade
+            // or on any other DRM driver.
             ("drm-draw-plane", "overlay"),
             ("drm-drmprime-video-plane", "primary"),
             ("video-sync", "display-resample"),
+            // Without this, a decoder that cannot use the hardware path falls
+            // back to software SILENTLY and plays 4K30 at ~14 fps. Making it
+            // fatal turns an invisible performance collapse into an END_FILE
+            // error, which is handled and restartable.
+            ("hwdec-software-fallback", "no"),
             ("fullscreen", "yes"),
             ("osc", "no"),
             ("input-default-bindings", "no"),
             ("terminal", "no"),
             // A raw elementary stream has no timestamps; mpv must generate them.
             ("correct-pts", "no"),
-            // The stream never ends, so an unbounded cache would grow forever.
+            // NOTE: this is belt-and-braces, not the load-bearing bound. mpv
+            // only runs its aggressive cache for streams flagged as network,
+            // and stream_cb streams are not; readahead here is governed by
+            // demuxer-readahead-secs instead. The flat memory measured over
+            // 3.5 h is due to that, not to this cap.
             ("demuxer-max-bytes", "64MiB"),
+            // The actual prefetch depth. One second of decoded-ahead insurance
+            // across the wrap, where the whole gaplessness claim is decided.
+            ("demuxer-readahead-secs", "1.0"),
         ] {
             opts.push((k.to_string(), v.to_string()));
         }
@@ -339,20 +406,31 @@ fn main() -> ExitCode {
 
     // Register `loop://` BEFORE initialize, so the protocol exists by the time
     // the play command is issued.
+    //
+    // `user_data` is a LEAKED Box, not a pointer to a local. mpv keeps this
+    // pointer until mpv_terminate_destroy returns and may dereference it from
+    // its own threads at any point; aiming it at a stack slot in main() worked
+    // only because every exit path happens to tear mpv down first. That is UB
+    // the moment anything unwinds (a dev build does), and one refactor away
+    // from UB even in release. 16 bytes, leaked once, removes the hazard.
     let proto = CString::new("loop").unwrap();
-    let mut data_ptr: &'static [u8] = leaked;
-    let rc = unsafe {
-        mpv_stream_cb_add_ro(
-            ctx,
-            proto.as_ptr(),
-            &mut data_ptr as *mut &'static [u8] as *mut c_void,
-            Some(open_fn),
-        )
-    };
+    let user_data = Box::into_raw(Box::new(leaked)) as *mut c_void;
+    let rc = unsafe { mpv_stream_cb_add_ro(ctx, proto.as_ptr(), user_data, Some(open_fn)) };
     if rc < 0 {
         eprintln!("error: {}", err(ctx, "mpv_stream_cb_add_ro", rc));
         unsafe { mpv_terminate_destroy(ctx) };
         return ExitCode::FAILURE;
+    }
+
+    // Without this, libmpv discards every diagnostic it produces: `terminal=no`
+    // is the libmpv default, so log output goes nowhere unless it is requested
+    // as events. For an appliance whose value is a performance property that
+    // functional testing cannot see, this is the difference between a field
+    // failure being diagnosable and being a mystery.
+    let lvl = CString::new("warn").unwrap();
+    let rc = unsafe { mpv_request_log_messages(ctx, lvl.as_ptr()) };
+    if rc < 0 {
+        eprintln!("warning: {}", err(ctx, "mpv_request_log_messages", rc));
     }
 
     let rc = unsafe { mpv_initialize(ctx) };
@@ -372,22 +450,63 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Run until mpv shuts down. There is no natural end -- the stream is
-    // infinite -- so this only returns on an explicit quit or a fatal error.
+    // Run until mpv stops playing. The stream is infinite by construction, so
+    // there is no benign way for playback to end: END_FILE means something
+    // failed, and it must be FATAL here.
+    //
+    // This is the single most important behaviour in the program, and it is not
+    // obvious. libmpv is not the CLI player: `mpv_create` enables idle mode by
+    // default (client.h), so a failed playback emits END_FILE and then sits in
+    // idle FOREVER -- it never emits SHUTDOWN. A loop that waits only for
+    // SHUTDOWN therefore blocks forever with the process alive, healthy to any
+    // supervisor, and the wall black. That is strictly worse than crashing.
+    //
+    // Compounding it: with vo=gpu the video output is created during file load,
+    // NOT during mpv_initialize. So every display-side failure -- projector not
+    // awake, no EDID, DRM master held by a getty -- passes both the initialize
+    // and loadfile return codes and lands here. Which is exactly the most
+    // likely failure in a gallery.
+    //
+    // So: exit non-zero and let the supervisor restart us.
+    let mut exit = ExitCode::SUCCESS;
     loop {
         let ev = unsafe { mpv_wait_event(ctx, -1.0) };
-        if ev.is_null() {
+        let id = unsafe { (*ev).event_id };
+
+        if id == MPV_EVENT_NONE {
             continue;
         }
-        let id = unsafe { (*ev).event_id };
         if id == MPV_EVENT_SHUTDOWN {
             break;
         }
-        if id == MPV_EVENT_NONE {
+        if id == MPV_EVENT_START_FILE {
             continue;
+        }
+        if id == MPV_EVENT_LOG_MESSAGE {
+            // SAFETY: mpv guarantees `data` is an mpv_event_log_message for
+            // this event id, with NUL-terminated strings valid until the next
+            // mpv_wait_event call.
+            let m = unsafe { &*((*ev).data as *const MpvEventLogMessage) };
+            let pfx = unsafe { CStr::from_ptr(m.prefix) }.to_string_lossy();
+            let txt = unsafe { CStr::from_ptr(m.text) }.to_string_lossy();
+            eprint!("mpv/{pfx}: {txt}");
+            continue;
+        }
+        if id == MPV_EVENT_END_FILE {
+            // SAFETY: `data` is an mpv_event_end_file for this event id.
+            let ef = unsafe { &*((*ev).data as *const MpvEventEndFile) };
+            let why = unsafe { CStr::from_ptr(mpv_error_string(ef.error)) };
+            eprintln!(
+                "dex-loop: FATAL: playback ended (reason={}, error={}) -- an endless \
+                 stream must never end; exiting so the supervisor restarts",
+                ef.reason,
+                why.to_string_lossy()
+            );
+            exit = ExitCode::FAILURE;
+            break;
         }
     }
 
     unsafe { mpv_terminate_destroy(ctx) };
-    ExitCode::SUCCESS
+    exit
 }

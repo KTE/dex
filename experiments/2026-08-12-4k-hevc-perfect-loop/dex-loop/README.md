@@ -84,6 +84,33 @@ sudo apt install rustc cargo libmpv-dev   # trixie: rustc 1.85
 cargo build --release                     # ~30 s on a Pi 4, no dependencies
 ```
 
+## Reviewed 2026-08-15
+
+Three adversarial reviews (Rust/unsafe soundness, libmpv API contract, gallery
+operations). Fixed since: the event loop ignored `MPV_EVENT_END_FILE`, and
+because `mpv_create` enables idle mode by default, ANY playback failure left the
+process alive in idle **forever** on a black screen -- strictly worse than
+crashing, and the most likely gallery failure (projector not awake at boot) hit
+exactly that path. `user_data` pointed at a stack local; `read_fn` could return 0
+(= final EOF) for a zero-length request; `seek_fn`/`size_fn` used `-1` rather
+than the documented `MPV_ERROR_UNSUPPORTED`; software decode could fall back
+silently; mpv's diagnostics went nowhere.
+
+Still outstanding (see the story): asset+fps binding via an ingest sidecar,
+read-only rootfs, and a frame-advance watchdog.
+
+## Deployment
+
+`deploy/` carries the systemd unit and the HDMI connector wait. The unit's
+`StartLimitIntervalSec=0` is load-bearing: the default rate limit would put the
+service into a permanent `failed` state after a burst of crashes, which is the
+unattended failure this is meant to prevent. A restart loop always beats a dead
+screen.
+
+The primary boot-order fix is at the KMS layer, not in the player -- bake the
+projector's EDID into `cmdline.txt` so the Pi always believes a 4K30 display is
+attached. See the comments in `deploy/dex-wait-hdmi`.
+
 ## Caveats
 
 * **Raw Annex-B only.** MP4 in, `.265` out, once at ingest (milestone 3).

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Wait for an HDMI connector to report `connected`, then exit 0.
+#
+# Install: /usr/local/bin/dex-wait-hdmi
+#
+# Why: a dex player is switched on at the mains, and a projector can take 30-90s
+# to present EDID while the Pi boots in ~15. Starting before then means KMS picks
+# a fallback mode (typically 1024x768) and STAYS there -- the display never
+# corrects itself, and the installation shows the wrong thing all day.
+#
+# This is belt-and-braces. The primary fix is at the KMS layer, in
+# /boot/firmware/cmdline.txt, so boot order stops mattering at all:
+#
+#   # capture once, while the projector is awake and connected:
+#   cat /sys/class/drm/card*-HDMI-A-1/edid | sudo tee /lib/firmware/edid/dex.bin
+#   # then add to cmdline.txt (one line):
+#   drm.edid_firmware=HDMI-A-1:edid/dex.bin video=HDMI-A-1:3840x2160@30D
+#
+# The trailing `D` forces digital-enabled even when the connector reads
+# disconnected. With that in place the Pi always believes a 4K30 display is
+# attached and the projector simply locks on when it finishes warming up.
+# This script then only covers the cases the baked EDID cannot: a swapped cable,
+# or a replaced projector that invalidates it.
+set -uo pipefail
+
+TIMEOUT="${DEX_HDMI_TIMEOUT:-120}"
+
+for _ in $(seq "$TIMEOUT"); do
+  # Glob the card number: vc4/v3d probe order makes card0/card1 unstable across
+  # kernel versions, so hardcoding it breaks on upgrade.
+  if grep -qx 'connected' /sys/class/drm/card*-HDMI-A-*/status 2>/dev/null; then
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "dex-wait-hdmi: no connected HDMI connector after ${TIMEOUT}s" >&2
+# Fail the unit so Restart=always retries the whole sequence, rather than
+# starting the player into a display that is not there.
+exit 1

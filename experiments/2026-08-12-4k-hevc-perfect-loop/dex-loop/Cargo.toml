@@ -8,6 +8,14 @@ description = "Gapless HEVC looper: libmpv fed by an endless in-process byte str
 # and a dex player should not carry a dependency tree it does not need.
 [dependencies]
 
+# Match release: an unwind crossing the FFI boundary, or main unwinding while
+# mpv threads are live, is UB territory. rustc >= 1.81 aborts at the extern "C"
+# boundary, but main() unwinding out from under a registered callback is a
+# separate hazard, and a dev build should not have a weaker safety story than
+# the shipping one.
+[profile.dev]
+panic = "abort"
+
 [profile.release]
 opt-level = 2
 lto = true

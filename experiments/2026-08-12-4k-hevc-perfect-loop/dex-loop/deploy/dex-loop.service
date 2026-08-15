@@ -1,0 +1,53 @@
+# dex gapless loop player.
+#
+# Install: /etc/systemd/system/dex-loop.service
+#   sudo systemctl set-default multi-user.target   # no desktop; nothing else may own DRM
+#   sudo systemctl enable --now dex-loop
+#
+# The player is useless without supervision: it runs unattended for weeks with
+# no operator, and its only shutdown path is someone switching off the mains.
+# Every design choice below follows from that.
+
+[Unit]
+Description=dex gapless loop player
+Documentation=https://github.com/KTE/dex
+# A getty on tty1 holds DRM master and would prevent the player taking the
+# display. Conflicting it away is what stops "device busy" ever happening,
+# rather than handling it after the fact.
+Conflicts=getty@tty1.service
+After=multi-user.target
+
+[Service]
+Type=simple
+# The display may not be awake when the Pi boots -- a projector can take 30-90s
+# to present EDID while the Pi boots in ~15. Wait for the connector rather than
+# starting into a fallback mode that never corrects itself.
+ExecStartPre=/usr/local/bin/dex-wait-hdmi
+ExecStart=/usr/local/bin/dex-loop /opt/dex/loop.265 --fps 30 --mode 3840x2160@30
+
+Restart=always
+RestartSec=2
+# LOAD-BEARING. The default rate limit (5 starts / 10 s) would put the unit into
+# a permanent `failed` state after a burst of crashes -- i.e. exactly the
+# unattended disaster this exists to prevent. A restart loop is always better
+# than a dead screen: never give up.
+StartLimitIntervalSec=0
+
+User=dex
+SupplementaryGroups=video render
+
+# The player only ever reads one file.
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/dex
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# No graceful shutdown is implemented, deliberately: the mains switch IS the
+# shutdown path, so abrupt death must be safe rather than avoidable. The kernel
+# releases DRM master on exit, so the next start acquires it cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
