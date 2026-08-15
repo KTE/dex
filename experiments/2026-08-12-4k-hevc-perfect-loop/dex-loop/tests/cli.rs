@@ -21,9 +21,17 @@ const GATE_EXIT: i32 = 2;
 const RUNTIME_EXIT: i32 = 1;
 
 /// Outcome of one run. `exit_code` is None when the process had to be killed
-/// at the deadline OR died by signal — both are failures the assertions catch.
+/// at the deadline OR died by signal. For the exit-code tests both are
+/// failures the `Some(..)` assertions catch — but for the live-fire survival
+/// test the polarity flips (None is the PASS), so the two None causes must be
+/// distinguishable: `deadline_killed` is true only when THIS HARNESS killed
+/// the child at the deadline. A child that died by signal on its own
+/// (SIGSEGV/SIGABRT) has `exit_code: None` with `deadline_killed: false`,
+/// and conflating that with survival would let a crashing recovery pass a
+/// survival assertion.
 struct Run {
     exit_code: Option<i32>,
+    deadline_killed: bool,
     stderr: String,
 }
 
@@ -47,19 +55,23 @@ fn run_with_deadline(args: &[&str], deadline: Duration) -> Run {
         s
     });
     let start = Instant::now();
-    let exit_code = loop {
+    let (exit_code, deadline_killed) = loop {
         match child.try_wait().expect("try_wait") {
-            Some(status) => break status.code(),
+            Some(status) => break (status.code(), false),
             None if start.elapsed() > deadline => {
                 child.kill().ok();
                 child.wait().ok();
-                break None;
+                break (None, true);
             }
             None => std::thread::sleep(Duration::from_millis(50)),
         }
     };
     let stderr = reader.join().expect("stderr reader");
-    Run { exit_code, stderr }
+    Run {
+        exit_code,
+        deadline_killed,
+        stderr,
+    }
 }
 
 /// Unique-per-test scratch path (std::env::temp_dir; no cleanup needed).
@@ -842,12 +854,19 @@ fn force_recovery_survives_against_real_mpv() {
         ],
         Duration::from_secs(30),
     );
-    assert_eq!(
-        r.exit_code, None,
+    // Survival means "still running when THIS TEST killed it at the deadline"
+    // -- asserted via `deadline_killed`, not via `exit_code == None`, because
+    // death by signal (SIGSEGV/SIGABRT) also yields `exit_code: None`. A
+    // C1-class regression that crashed via signal AFTER printing the absorb
+    // line would pass an exit_code-shaped assertion; it cannot pass this one.
+    assert!(
+        r.deadline_killed,
         "process must SURVIVE the forced recovery (still running when killed \
-         at the deadline); an exit here means the recovery's own \
-         END_FILE(reason=stop) was NOT absorbed -- C1 has regressed. stderr: {}",
-        r.stderr
+         at the deadline); it ended on its own with exit_code {:?} -- an exit \
+         means the recovery's own END_FILE(reason=stop) was NOT absorbed, and \
+         exit_code None here means death by signal -- either way C1 has \
+         regressed. stderr: {}",
+        r.exit_code, r.stderr
     );
     assert!(
         r.stderr.contains("attempting in-place recovery 1/"),
