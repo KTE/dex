@@ -71,9 +71,15 @@ fn queue_overflow_id_matches_the_live_library() {
 }
 
 #[test]
-fn the_exact_bug_that_shipped_cannot_recur() {
-    // The historical defect: LOG_MESSAGE transcribed as 6, which is
-    // START_FILE. Pin the two apart, in both directions.
+fn log_message_and_start_file_ids_are_distinct() {
+    // These two ids must never collide, because the event loop uses the id to
+    // decide which struct to cast `mpv_event.data` to. Getting them confused
+    // dereferences a start-file payload as a log-message struct -- i.e. reads
+    // two unrelated integers as string pointers.
+    //
+    // Not hypothetical: LOG_MESSAGE was once transcribed as 6, which is
+    // START_FILE, and the player segfaulted on the first frame. Pinned in both
+    // directions, and against the live library rather than the transcription.
     assert_ne!(MPV_EVENT_LOG_MESSAGE, MPV_EVENT_START_FILE);
     assert_ne!(
         event_name(MPV_EVENT_LOG_MESSAGE),

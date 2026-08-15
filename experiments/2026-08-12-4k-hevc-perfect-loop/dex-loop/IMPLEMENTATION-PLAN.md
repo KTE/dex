@@ -700,7 +700,7 @@ fn event_ids_match_the_live_library() {
 }
 
 #[test]
-fn the_exact_bug_that_shipped_cannot_recur() {
+fn log_message_and_start_file_ids_are_distinct() {
     // The historical defect: LOG_MESSAGE transcribed as 6, which is
     // START_FILE. Pin the two apart, in both directions.
     assert_ne!(MPV_EVENT_LOG_MESSAGE, MPV_EVENT_START_FILE);
@@ -733,7 +733,7 @@ including the three new tests.
 **Step 7 (4 min).** Prove the test bites (regression tests get their red phase by
 re-introducing the bug): in `src/ffi_consts.rs` temporarily change
 `pub const MPV_EVENT_LOG_MESSAGE: c_int = 2;` to `= 6;`, rsync, run on the Pi — expect
-`event_ids_match_the_live_library` and `the_exact_bug_that_shipped_cannot_recur` to FAIL.
+`event_ids_match_the_live_library` and `log_message_and_start_file_ids_are_distinct` to FAIL.
 Revert to `= 2;`, rsync, green again.
 
 **Step 8 (1 min).** Commit:
