@@ -49,6 +49,7 @@ use dex_loop::ffi_consts::{
     MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
     MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
 };
+use dex_loop::sidecar::{resolve_fps, verify_payload, FpsSource, Sidecar};
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs;
@@ -240,13 +241,19 @@ fn set_opt(ctx: *mut MpvHandle, name: &str, value: &str) -> Result<(), String> {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: dex-loop <stream.265> --fps <F> [--mode WxH@R] [--no-defaults] [--opt K=V ...]
+        "usage: dex-loop <stream.265> [--fps <F>] [--mode WxH@R] [--bench-no-sidecar] [--no-defaults] [--opt K=V ...]
 
-  <stream.265>   raw Annex-B HEVC elementary stream, looped endlessly
-  --fps F        frame rate; a raw stream carries no timestamps, so this is required
-  --mode WxH@R   force a DRM mode, e.g. 3840x2160@30 (default: connector preferred)
-  --opt K=V      pass an extra mpv option (repeatable)
-  --no-defaults  omit the built-in Pi 4 zero-copy option set"
+  <stream.265>        raw Annex-B HEVC elementary stream, looped endlessly
+  <stream.265>.json   ingest sidecar, REQUIRED: {{\"fps\":\"30\",\"sha256\":\"<64 hex>\"}}
+                      fps comes from it; the sha256 must match the asset bytes
+  --fps F             optional cross-check; must equal the sidecar fps exactly
+  --mode WxH@R        force a DRM mode, e.g. 3840x2160@30 (default: connector preferred)
+  --bench-no-sidecar  BENCH ONLY: skip the sidecar, take --fps as given
+  --opt K=V           pass an extra mpv option (repeatable)
+  --no-defaults       omit the built-in Pi 4 zero-copy option set
+
+exit codes: 2 = refused before playback (bad invocation/asset/sidecar; fix and redeploy)
+            1 = playback/runtime failure (the supervisor restarts)"
     );
     std::process::exit(2)
 }
@@ -258,23 +265,25 @@ fn main() -> ExitCode {
     }
 
     let mut path: Option<String> = None;
-    let mut fps: Option<String> = None;
+    let mut cli_fps: Option<String> = None;
     let mut mode: Option<String> = None;
     let mut extra: Vec<(String, String)> = Vec::new();
     let mut defaults = true;
+    let mut bench_no_sidecar = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fps" => {
                 i += 1;
-                fps = args.get(i).cloned();
+                cli_fps = args.get(i).cloned();
             }
             "--mode" => {
                 i += 1;
                 mode = args.get(i).cloned();
             }
             "--no-defaults" => defaults = false,
+            "--bench-no-sidecar" => bench_no_sidecar = true,
             "--opt" => {
                 i += 1;
                 let kv = args.get(i).cloned().unwrap_or_default();
@@ -290,9 +299,7 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    let (Some(path), Some(fps)) = (path, fps) else {
-        usage()
-    };
+    let Some(path) = path else { usage() };
 
     // Read the loop once. These are small (1.3 MB at 1080p, 14.8 MB at 4K for a
     // 3 s card) and holding it in memory removes the filesystem from the hot
@@ -309,7 +316,64 @@ fn main() -> ExitCode {
         }
     };
     let leaked: &'static [u8] = Box::leak(payload.into_boxed_slice());
-    eprintln!("dex-loop: {} bytes, looping endlessly", leaked.len());
+
+    // F3 — bind the asset to its ingest sidecar. A raw Annex-B stream has no
+    // timestamps: a WRONG --fps plays slow/fast forever with zero errors and
+    // every metric nominal — the one failure that is undetectable by
+    // construction. So the frame rate travels WITH the asset, bound by a
+    // sha256, and an unbound asset is refused. `--bench-no-sidecar --fps F`
+    // is the deliberate two-flag bench escape hatch.
+    let sidecar_path = format!("{path}.json");
+    let sidecar: Option<Sidecar> = if bench_no_sidecar {
+        None
+    } else {
+        match fs::read_to_string(&sidecar_path) {
+            Ok(text) => match Sidecar::from_json(&text) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    eprintln!("error: {sidecar_path}: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "error: cannot read sidecar {sidecar_path}: {e}\n\
+                     an asset without its ingest sidecar is unbound (fps would be a \
+                     guess); re-ingest to produce it, or use --bench-no-sidecar \
+                     --fps <F> on a bench"
+                );
+                return ExitCode::from(2);
+            }
+        }
+    };
+
+    let (fps, fps_source) = match resolve_fps(
+        sidecar.as_ref().map(|s| s.fps.as_str()),
+        cli_fps.as_deref(),
+        bench_no_sidecar,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if let Some(s) = &sidecar {
+        if let Err(e) = verify_payload(leaked, s) {
+            eprintln!("error: {path}: {e}");
+            return ExitCode::from(2);
+        }
+    }
+
+    eprintln!(
+        "dex-loop: {} bytes, fps {fps} ({}), looping endlessly",
+        leaked.len(),
+        match fps_source {
+            FpsSource::Sidecar => "sidecar",
+            FpsSource::BenchOverride => "BENCH OVERRIDE, unbound",
+        }
+    );
 
     let ctx = unsafe { mpv_create() };
     if ctx.is_null() {

@@ -236,3 +236,157 @@ fn garbage_bytes_exit_nonzero_within_deadline() {
     );
     assert_ne!(r.exit_code, Some(0), "stderr: {}", r.stderr);
 }
+
+// ---- F3: sidecar binding (task 6) ---------------------------------------
+
+#[test]
+fn missing_sidecar_refused_exit_2_naming_the_sidecar_path() {
+    let p = temp_path("nosidecar.265");
+    std::fs::write(&p, stub_annexb()).unwrap();
+    let _ = std::fs::remove_file(format!("{}.json", p.display()));
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains(&format!("{}.json", p.display())),
+        "stderr must name the sidecar path: {}",
+        r.stderr
+    );
+}
+
+/// The truncated-copy case F4 can NEVER catch: leading NALs intact, tail
+/// missing. Only the hash sees it. The sidecar binds the FULL bytes; the
+/// file on disk is truncated.
+#[test]
+fn truncated_asset_vs_full_hash_refused_exit_2() {
+    let p = temp_path("truncated.265");
+    let full = stub_annexb();
+    write_sidecar(&p, &full, "30");
+    std::fs::write(&p, &full[..full.len() - 20]).unwrap();
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("sha256"), "stderr: {}", r.stderr);
+}
+
+#[test]
+fn fps_contradicting_sidecar_refused_exit_2_naming_both() {
+    let p = temp_path("fpsconflict.265");
+    let bytes = stub_annexb();
+    std::fs::write(&p, &bytes).unwrap();
+    write_sidecar(&p, &bytes, "30");
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--fps",
+            "25",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("25") && r.stderr.contains("30"),
+        "stderr must name both rates: {}",
+        r.stderr
+    );
+}
+
+/// Exit 1 — the mpv path — proves the gates PASSED with an agreeing --fps.
+#[test]
+fn agreeing_fps_and_sidecar_reach_playback() {
+    let p = temp_path("fpsagree.265");
+    let bytes = stub_annexb();
+    std::fs::write(&p, &bytes).unwrap();
+    write_sidecar(&p, &bytes, "30");
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--fps",
+            "30",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+}
+
+/// Exit 1, not 2: the two-flag bench escape hatch bypasses the sidecar gate
+/// and reaches playback with no sidecar on disk.
+#[test]
+fn bench_escape_hatch_bypasses_sidecar() {
+    let p = temp_path("bench.265");
+    std::fs::write(&p, stub_annexb()).unwrap(); // deliberately no sidecar
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--bench-no-sidecar",
+            "--fps",
+            "30",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+}
+
+#[test]
+fn bench_flag_without_fps_refused_exit_2() {
+    let p = temp_path("benchnofps.265");
+    std::fs::write(&p, stub_annexb()).unwrap();
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--bench-no-sidecar",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+}
