@@ -7,10 +7,12 @@
 # Trust model: this script does NOT reimplement the sidecar grammar. Every
 # sidecar it writes -- and every one passed to --check -- is round-tripped
 # through the crate's REAL parser (Sidecar::from_json + verify_payload) via
-# scripts/sidecar-check.rs, a standalone program built with plain rustc that
-# pulls in dex-loop/src/sidecar.rs and sha256.rs verbatim (#[path]). A bash/jq
-# reimplementation could silently drift from the parser it is meant to feed;
-# this can't, because it never contains a second copy of the grammar.
+# dex-loop/src/bin/sidecar-check.rs, a cargo bin that imports the very modules
+# the player uses. A bash/jq reimplementation could silently drift from the
+# parser it is meant to feed; this can't, because it never contains a second
+# copy of the grammar. (It was a standalone rustc file until sidecar.rs and
+# sha256.rs took on serde_json/sha2 -- SPEC 5c -- which rustc alone cannot
+# resolve; it joined the crate rather than give up that property.)
 #
 # fps honesty: a raw Annex-B stream carries no container timestamps, so
 # ffprobe's avg_frame_rate is a hardcoded 25/1 guess whenever it can't compute
@@ -24,7 +26,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHECKER_SRC="$HERE/sidecar-check.rs"
+CRATE_DIR="$HERE/../dex-loop"
 
 usage() {
   cat >&2 <<'EOF'
@@ -106,29 +108,40 @@ sha256_of() {
   fi
 }
 
-# --- build the real-parser round-trip checker once, into a scratch dir ------
+# --- build the real-parser round-trip checker once ---------------------------
+# Built by cargo, not rustc: the checker moved into the crate (as
+# dex-loop/src/bin/sidecar-check.rs) when sidecar.rs and sha256.rs gained
+# serde_json/sha2 dependencies that plain rustc cannot resolve -- SPEC 5c. It
+# still links the player's OWN parser and hash, which is the only reason this
+# check means anything.
 CHECKER_BIN=""
 build_checker() {
   [ -n "$CHECKER_BIN" ] && return 0
-  command -v rustc >/dev/null 2>&1 || {
-    echo "error: rustc not found -- required to round-trip sidecars through" >&2
-    echo "       the real dex-loop parser (scripts/sidecar-check.rs); this" >&2
-    echo "       script deliberately has no bash reimplementation of the" >&2
+  command -v cargo >/dev/null 2>&1 || {
+    echo "error: cargo not found -- required to round-trip sidecars through" >&2
+    echo "       the real dex-loop parser (dex-loop/src/bin/sidecar-check.rs);" >&2
+    echo "       this script deliberately has no bash reimplementation of the" >&2
     echo "       sidecar grammar to fall back to." >&2
     exit 1
   }
-  local dir
-  dir="$(mktemp -d "${TMPDIR:-/tmp}/dex-sidecar-check.XXXXXX")"
-  TMP_DIRS+=("$dir")
-  if ! rustc --edition 2021 -O -o "$dir/sidecar-check" "$CHECKER_SRC" 2>"$dir/build.log"; then
+  local log
+  log="$(mktemp "${TMPDIR:-/tmp}/dex-sidecar-check.XXXXXX")"
+  TMP_FILES+=("$log")
+  if ! cargo build --quiet --release --manifest-path "$CRATE_DIR/Cargo.toml" \
+       --bin sidecar-check >"$log" 2>&1; then
     echo "error: failed to build the sidecar round-trip checker:" >&2
-    cat "$dir/build.log" >&2
+    cat "$log" >&2
     exit 1
   fi
-  CHECKER_BIN="$dir/sidecar-check"
+  CHECKER_BIN="$CRATE_DIR/target/release/sidecar-check"
+  [ -x "$CHECKER_BIN" ] || {
+    echo "error: cargo reported success but $CHECKER_BIN is not executable" >&2
+    exit 1
+  }
 }
 
 TMP_DIRS=()
+TMP_FILES=()
 cleanup() {
   # Must always return 0: under `set -e`, an EXIT trap whose own last
   # command fails clobbers the script's real exit code (e.g. a deliberate
@@ -138,9 +151,12 @@ cleanup() {
   # `${arr[@]-default}`, which is why this loop is written with an
   # explicit `if`/`fi` rather than `[ ... ] && rm ...`: the latter's own
   # exit status, on the resulting empty-string iteration, is what leaked.)
-  local d
+  local d f
   for d in "${TMP_DIRS[@]-}"; do
     if [ -n "$d" ]; then rm -rf "$d"; fi
+  done
+  for f in "${TMP_FILES[@]-}"; do
+    if [ -n "$f" ]; then rm -f "$f"; fi
   done
   return 0
 }

@@ -22,19 +22,24 @@
 //! integer, never an array/bool/null/nested object). Anything else is a
 //! parse error, and a parse error refuses startup. Fail-closed IS the F3
 //! semantics: an unparseable sidecar and a missing one are the same
-//! operational fact. Hand-rolled because the crate has a zero-dependency rule
-//! and must build offline on the Pi.
+//! operational fact.
 //!
-//! String escapes: \" \\ \/ \n \r \t, plus \uXXXX (standard JSON, including
-//! UTF-16 surrogate pairs for code points above U+FFFF). \uXXXX support
-//! matters beyond ordinary correctness: it is what every "safe by default"
-//! JSON serializer reaches for on non-ASCII bytes -- Python's `json.dumps`
-//! (default `ensure_ascii=True`) turns ANY non-ASCII character into \uXXXX,
-//! and Go's `encoding/json` does the same for `<`, `>`, `&`. That includes
-//! inside informational keys like `source`/`encoder_cmd` that this parser
-//! does not even interpret -- refusing \uXXXX there refused otherwise
-//! byte-perfect, correctly-hashed assets on nothing but a plausible ingest
-//! tool's default serializer settings.
+//! The subset is enforced by a serde visitor over `serde_json` (SPEC §5c); it
+//! was hand-rolled while the crate had a zero-dependency rule. Exactly ONE
+//! rule survives as our own code, because it is the one a `Map` cannot state:
+//! **duplicate keys are rejected** rather than silently last-wins.
+//!
+//! String escapes (\" \\ \/ \n \r \t, and \uXXXX including UTF-16 surrogate
+//! pairs) are serde_json's problem now — but they are recorded here as a
+//! REQUIREMENT, because the tempting "simplification" is to ban non-ASCII and
+//! it would be wrong. \uXXXX is what every "safe by default" JSON serializer
+//! reaches for: Python's `json.dumps` (default `ensure_ascii=True`) turns ANY
+//! non-ASCII character into \uXXXX, and Go's `encoding/json` does the same for
+//! `<`, `>`, `&`. That includes informational keys like `source`/`encoder_cmd`
+//! which are never interpreted here — a `source` filename may legitimately be
+//! "Karte–Süd.mp4". Refusing escapes would refuse byte-perfect, correctly
+//! hashed assets over nothing but an ingest tool's serializer settings.
+//! (`fps` and `sha256` are ASCII by their own grammars, validated below.)
 
 /// A parsed JSON value, restricted to the sidecar subset: strings and
 /// unsigned integers only.
@@ -47,180 +52,91 @@ pub enum Value {
 /// Parse `text` as a single flat JSON object under the sidecar subset grammar
 /// (see module docs), returning its key/value pairs in source order.
 pub fn parse_flat_json(text: &str) -> Result<Vec<(String, Value)>, String> {
-    let mut p = Parser {
-        b: text.as_bytes(),
-        i: 0,
-    };
-    p.skip_ws();
-    p.expect(b'{')?;
-    let mut out: Vec<(String, Value)> = Vec::new();
-    p.skip_ws();
-    if p.peek() == Some(b'}') {
-        p.i += 1;
-    } else {
-        loop {
-            p.skip_ws();
-            let key = p.string()?;
+    serde_json::from_str::<FlatObject>(text)
+        .map(|f| f.0)
+        .map_err(|e| e.to_string())
+}
+
+/// A newtype whose `Deserialize` impl *is* the subset grammar.
+///
+/// Hand-written visitor rather than `#[derive]` or `serde_json::Map`, for one
+/// reason: **the grammar rejects duplicate keys and a Map cannot express
+/// that** — it silently keeps the last. `{"fps":"30","fps":"25"}` has to be an
+/// error rather than a coin flip decided by which parser reads it, because F3
+/// is a fail-closed gate: an ambiguous sidecar and a missing one are the same
+/// operational fact. Everything else the old hand-rolled parser did — lexing,
+/// escapes, surrogate pairs, trailing-data and structural errors — is
+/// serde_json's now.
+struct FlatObject(Vec<(String, Value)>);
+
+impl<'de> serde::Deserialize<'de> for FlatObject {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // deserialize_map, not deserialize_any: a top-level array or scalar is
+        // rejected by serde_json with a type error before we see it.
+        d.deserialize_map(FlatObjectVisitor)
+    }
+}
+
+struct FlatObjectVisitor;
+
+/// Name a rejected value's type for the error message. Kept exhaustive rather
+/// than `_ =>` so a future serde_json variant is a compile error here.
+fn type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "a nested object",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Number(_) => "a number",
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for FlatObjectVisitor {
+    type Value = FlatObject;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a flat JSON object whose values are strings or unsigned integers")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<FlatObject, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        use serde::de::Error as _;
+        let mut out: Vec<(String, Value)> = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
             if out.iter().any(|(k, _)| *k == key) {
-                return Err(format!("duplicate key {key:?}"));
+                return Err(A::Error::custom(format!("duplicate key {key:?}")));
             }
-            p.skip_ws();
-            p.expect(b':')?;
-            p.skip_ws();
-            let val = match p.peek() {
-                Some(b'"') => Value::Str(p.string()?),
-                Some(c) if c.is_ascii_digit() => Value::Num(p.number()?),
-                Some(c) => {
-                    return Err(format!(
-                        "unsupported value starting with {:?} (subset: strings and unsigned integers only)",
-                        c as char
+            // The subset applies UNIFORMLY, to unknown keys too: an ignored
+            // key's value must still be a string or unsigned integer. Reading
+            // into serde_json::Value first is what lets us say so — and lets
+            // an informational key like `source` hold any text, escapes and
+            // all, which is the behaviour the format actually needs.
+            let value = match map.next_value::<serde_json::Value>()? {
+                serde_json::Value::String(s) => Value::Str(s),
+                serde_json::Value::Number(n) => Value::Num(n.as_u64().ok_or_else(|| {
+                    A::Error::custom(format!(
+                        "value for {key:?} must be an unsigned integer, got {n} \
+                         (floats and negatives are outside the sidecar subset; \
+                         write fps as a string)"
                     ))
+                })?),
+                other => {
+                    return Err(A::Error::custom(format!(
+                        "unsupported value for {key:?}: {} (subset: strings and \
+                         unsigned integers only)",
+                        type_name(&other)
+                    )))
                 }
-                None => return Err("unexpected end of input".into()),
             };
-            out.push((key, val));
-            p.skip_ws();
-            match p.next_byte() {
-                Some(b',') => continue,
-                Some(b'}') => break,
-                other => return Err(format!("expected ',' or '}}', got {other:?}")),
-            }
+            out.push((key, value));
         }
+        Ok(FlatObject(out))
     }
-    p.skip_ws();
-    if p.i != p.b.len() {
-        return Err("trailing data after closing '}'".into());
-    }
-    Ok(out)
 }
 
-struct Parser<'a> {
-    b: &'a [u8],
-    i: usize,
-}
-
-impl Parser<'_> {
-    fn peek(&self) -> Option<u8> {
-        self.b.get(self.i).copied()
-    }
-    fn next_byte(&mut self) -> Option<u8> {
-        let c = self.peek();
-        if c.is_some() {
-            self.i += 1;
-        }
-        c
-    }
-    fn skip_ws(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.i += 1;
-        }
-    }
-    fn expect(&mut self, c: u8) -> Result<(), String> {
-        match self.next_byte() {
-            Some(g) if g == c => Ok(()),
-            g => Err(format!("expected {:?}, got {g:?}", c as char)),
-        }
-    }
-    fn string(&mut self) -> Result<String, String> {
-        self.expect(b'"')?;
-        let mut s: Vec<u8> = Vec::new();
-        loop {
-            match self.next_byte() {
-                None => return Err("unterminated string".into()),
-                Some(b'"') => {
-                    return String::from_utf8(s)
-                        .map_err(|_| String::from("invalid UTF-8 in string"))
-                }
-                Some(b'\\') => match self.next_byte() {
-                    Some(b'"') => s.push(b'"'),
-                    Some(b'\\') => s.push(b'\\'),
-                    Some(b'/') => s.push(b'/'),
-                    Some(b'n') => s.push(b'\n'),
-                    Some(b'r') => s.push(b'\r'),
-                    Some(b't') => s.push(b'\t'),
-                    Some(b'u') => {
-                        let ch = self.unicode_escape()?;
-                        let mut buf = [0u8; 4];
-                        s.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                    }
-                    e => {
-                        return Err(format!(
-                            r#"unsupported escape {e:?} (subset: \" \\ \/ \n \r \t \uXXXX)"#
-                        ))
-                    }
-                },
-                Some(c) if c < 0x20 => return Err("raw control character in string".into()),
-                // Multibyte UTF-8 passes through byte-wise: continuation bytes
-                // are >= 0x80, so they can never be mistaken for '"' or '\\'.
-                Some(c) => s.push(c),
-            }
-        }
-    }
-    /// Decode a `\uXXXX` escape (the `u` is already consumed). JSON strings
-    /// are UTF-16 code UNITS, so a code point above U+FFFF (most emoji, for
-    /// instance) is always written as a surrogate PAIR -- two consecutive
-    /// `\uXXXX` escapes -- per the JSON spec itself, not a sidecar-specific
-    /// extension.
-    fn unicode_escape(&mut self) -> Result<char, String> {
-        let unit = self.hex4()?;
-        if (0xDC00..=0xDFFF).contains(&unit) {
-            return Err(format!("lone low surrogate \\u{unit:04x} in string"));
-        }
-        if !(0xD800..=0xDBFF).contains(&unit) {
-            // Not a surrogate: this code unit IS the code point, and every
-            // non-surrogate u16 is a valid Unicode scalar value.
-            return char::from_u32(u32::from(unit))
-                .ok_or_else(|| format!("invalid \\u{unit:04x} escape"));
-        }
-        // High surrogate: must be immediately followed by a low surrogate.
-        if self.next_byte() != Some(b'\\') || self.next_byte() != Some(b'u') {
-            return Err(format!(
-                "high surrogate \\u{unit:04x} not immediately followed by a low surrogate"
-            ));
-        }
-        let low = self.hex4()?;
-        if !(0xDC00..=0xDFFF).contains(&low) {
-            return Err(format!(
-                "high surrogate \\u{unit:04x} followed by \\u{low:04x}, which is not a low \
-                 surrogate"
-            ));
-        }
-        let c = 0x10000u32 + ((u32::from(unit) - 0xD800) << 10) + (u32::from(low) - 0xDC00);
-        char::from_u32(c)
-            .ok_or_else(|| format!("invalid surrogate pair \\u{unit:04x}\\u{low:04x}"))
-    }
-    fn hex4(&mut self) -> Result<u16, String> {
-        let mut v: u16 = 0;
-        for _ in 0..4 {
-            let c = self
-                .next_byte()
-                .ok_or("unterminated \\u escape (need 4 hex digits)")?;
-            let d = (c as char)
-                .to_digit(16)
-                .ok_or_else(|| format!("invalid hex digit {:?} in \\u escape", c as char))?;
-            v = v * 16 + d as u16;
-        }
-        Ok(v)
-    }
-    fn number(&mut self) -> Result<u64, String> {
-        let start = self.i;
-        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-            self.i += 1;
-        }
-        if self.i == start {
-            return Err("expected digits".into());
-        }
-        // Reject the rest of JSON's number grammar explicitly: the subset is
-        // unsigned integers only (write fps as a string).
-        if matches!(self.peek(), Some(b'.' | b'e' | b'E')) {
-            return Err("floats are outside the sidecar subset (write fps as a string)".into());
-        }
-        std::str::from_utf8(&self.b[start..self.i])
-            .unwrap()
-            .parse::<u64>()
-            .map_err(|e| format!("number out of range: {e}"))
-    }
-}
 
 /// Is `s` a well-formed frame rate string: a positive integer ("30"), a
 /// positive decimal ("29.97"), or a positive rational ("30000/1001")?
@@ -480,6 +396,54 @@ mod tests {
         let json = format!(r#"{{"a":"caf\{}00e9\nmore"}}"#, 'u');
         let kv = parse_flat_json(&json).unwrap();
         assert_eq!(kv[0].1, Value::Str("caf\u{e9}\nmore".to_string()));
+    }
+
+    // The other half of the escape requirement, and the half that is easier to
+    // lose: a serializer that does NOT escape (jq, Rust's own serde_json,
+    // Python with ensure_ascii=False) writes the character as raw UTF-8 bytes.
+    // Both spellings mean the same sidecar and both must parse.
+    //
+    // This exists because "no sidecar value can hold a non-ASCII byte, so
+    // reject non-ASCII at the door" was proposed during the SPEC §5c work and
+    // is WRONG: it is true of `fps` and `sha256`, and false of `source` --
+    // asset filenames are routinely not ASCII. Narrowing the contract there
+    // would have refused correctly-hashed assets over their filename.
+    #[test]
+    fn raw_utf8_in_an_informational_key_parses_like_its_escaped_form() {
+        // Built with char escapes so this file's source stays plain ASCII.
+        let raw = "Z\u{fc}rich.mp4".to_string();
+        let json = format!(r#"{{"source":"{raw}"}}"#);
+        let kv = parse_flat_json(&json).unwrap();
+        assert_eq!(kv[0].1, Value::Str(raw.clone()));
+
+        // ... and is indistinguishable from the \u-escaped spelling.
+        let escaped = format!(r#"{{"source":"Z\{}00fcrich.mp4"}}"#, 'u');
+        assert_eq!(parse_flat_json(&escaped).unwrap(), kv);
+
+        // A full sidecar with a non-ASCII source must still bind normally --
+        // `source` is informational and never interpreted.
+        let text = format!(
+            r#"{{"fps":"30","sha256":"{GOOD_SHA}","source":"{raw}"}}"#
+        );
+        let s = Sidecar::from_json(&text).unwrap();
+        assert_eq!(s.fps, "30");
+    }
+
+    // Duplicate rejection is the ONE grammar rule still implemented by hand
+    // (SPEC §5c): serde_json's Map silently keeps the last value, so the
+    // visitor has to say so itself. Tested by name rather than only inside the
+    // reject-everything batch, because a refactor that dropped the visitor for
+    // a plain Map would still pass every other test in this file.
+    #[test]
+    fn duplicate_keys_are_refused_and_named() {
+        let e = parse_flat_json(r#"{"fps":"30","fps":"25"}"#).unwrap_err();
+        assert!(e.contains("duplicate"), "{e}");
+        assert!(e.contains("fps"), "{e}");
+
+        // Including a duplicated key the sidecar does not interpret: the rule
+        // is about the document being unambiguous, not about which keys matter.
+        let e = parse_flat_json(r#"{"source":"a","source":"b"}"#).unwrap_err();
+        assert!(e.contains("duplicate"), "{e}");
     }
 
     #[test]

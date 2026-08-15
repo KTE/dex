@@ -4,9 +4,28 @@ version = "0.1.0"
 edition = "2021"
 description = "Gapless HEVC looper: libmpv fed by an endless in-process byte stream"
 
-# No dependencies on purpose. The whole program is one libmpv stream callback,
-# and a dex player should not carry a dependency tree it does not need.
+# Dependencies are DECLARED, not avoided — SPEC §5c. This binary links libmpv
+# and, transitively, 228 shared objects; a rule that forbade three small cargo
+# crates while linking that was bookkeeping, not restraint. The requirement is
+# that the set stays small enough to read: 16 crates, no proc macros.
+#
+#   serde_json  Replaces a 585-line hand-rolled JSON subset parser. Its \uXXXX
+#               and UTF-16 surrogate-pair handling is load-bearing, not
+#               decoration: Python's json.dumps escapes ALL non-ASCII by
+#               default, and a sidecar's informational `source` key can hold
+#               any filename, so refusing escapes would refuse byte-perfect
+#               assets over an ingest tool's serializer settings.
+#   serde       For the map visitor ONLY — no `derive` feature, so no
+#               syn/quote/proc-macro2 on the build's critical path. Needed
+#               because the sidecar grammar REJECTS duplicate keys, which
+#               serde_json's last-wins Map cannot express.
+#   sha2        Replaces a hand-rolled SHA-256. Confirmed byte-identical on the
+#               real bench assets before the swap, so sidecars already in the
+#               field stay valid — a hash change is a data-format change.
 [dependencies]
+serde = "1.0.229"
+serde_json = "1.0.151"
+sha2 = "0.11.0"
 
 # Match release: an unwind crossing the FFI boundary, or main unwinding while
 # mpv threads are live, is UB territory. rustc >= 1.81 aborts at the extern "C"

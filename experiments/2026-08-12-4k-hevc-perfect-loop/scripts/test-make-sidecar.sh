@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests make-sidecar.sh against a synthetic raw HEVC stream (not a bench
 # asset -- this must run standalone on either the Mac or the Pi with nothing
-# more than ffmpeg + rustc). Covers the two properties the task called out
+# more than ffmpeg + cargo). Covers the two properties the task called out
 # explicitly: a generator that has only ever seen success is untested, so
 # this proves --check both passes on a good pairing AND fails on a corrupted
 # one, plus the overwrite-refusal gate make-sidecar.sh is required to have.
