@@ -206,3 +206,64 @@ jobs:
       - name: Shellcheck the bench harness
         working-directory: experiments/2026-08-12-4k-hevc-perfect-loop
         run: shellcheck scripts/*.sh
+
+  # Turns SPEC §5c's dependency policy into a gate: advisories, a trimmed
+  # licence allow-list, and a ban on the proc-macro toolchain (see deny.toml —
+  # the "serde without derive" decision is otherwise only a comment).
+  #
+  # Runs on the bare runner with rustup, NOT in the trixie container. That is
+  # consistent with the toolchain rule rather than an exception to it: the rule
+  # binds what BUILDS THE SHIPPED ARTIFACT, so it stays inside the container.
+  # cargo-deny produces nothing that ships and needs a newer rustc than trixie
+  # has, exactly like cargo-deb — the difference is that cargo-deb builds the
+  # package, so it had to be pinned instead.
+  deny:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-deny
+        run: |
+          set -eux
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: cargo deny check
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo install --locked cargo-deny
+          cargo deny check
+
+  # piuparts: install / upgrade / purge in a throwaway chroot. This is the
+  # automated version of the manual lifecycle check that found the package's
+  # real behaviour (remove leaves the unit masked so a reinstall restores its
+  # enabled state; purge cleans it) — a class of bug that only appears when a
+  # package is actually installed and removed, which no static linter reaches.
+  #
+  # Runs on the bare runner because piuparts needs Docker, which is not
+  # available inside a container job.
+  #
+  # --warn-on-leftovers-after-purge is REQUIRED and is not a blanket excuse.
+  # Exactly two leftovers are intended, both by design in postrm: /opt/dex holds
+  # the artwork, which the package never shipped and must not delete, and the
+  # `dex` user may be referenced by anything an operator wrote themselves. If
+  # this flag ever hides a THIRD leftover, that is a bug — read the log, do not
+  # just look at the exit code.
+  piuparts:
+    runs-on: ubuntu-24.04-arm
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dex-loop-deb
+      - name: Install piuparts
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends piuparts
+      - name: Install / purge lifecycle test
+        run: |
+          set -eux
+          deb=$(find . -name '*.deb' -print -quit)
+          test -n "$deb"
+          sudo piuparts \
+            --docker-image debian:trixie \
+            --warn-on-leftovers-after-purge \
+            "$deb"
