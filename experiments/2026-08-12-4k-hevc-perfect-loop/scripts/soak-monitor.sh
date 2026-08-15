@@ -59,7 +59,29 @@ mkdir -p "$(dirname "$OUT")"
 # documents as this instrument's noise floor. Logging only a COUNT (as the first
 # version of this script did) makes the two indistinguishable after the fact --
 # which is exactly what happened to the single held frame in the 2026-08-14 soak.
-[ -s "$OUT" ] || printf 'iso_time\telapsed_s\tframes\tnulls\twraps\theld\tmax_dwell\theld_at\tplayer\ttemp_c\tthrottled\n' >"$OUT"
+#
+# One identity per invocation. Date alone is not enough: two runs can start in the
+# same second, and then the merge this exists to expose would be invisible again.
+RUN_ID="$(date +%Y%m%dT%H%M%S)-$$"
+
+HEADER=$'run_id\tiso_time\telapsed_s\tframes\tnulls\twraps\theld\tmax_dwell\theld_at\tplayer\ttemp_c\tthrottled'
+
+# Appending is only safe if the file already has THIS schema. The header was
+# previously written only when the file was empty, so a schema change appended
+# differently-shaped rows to an old file in silence -- which happened once, when
+# held_at took the column count from 10 to 11.
+if [ -s "$OUT" ]; then
+  existing="$(head -1 "$OUT")"
+  if [ "$existing" != "$HEADER" ]; then
+    echo "soak-monitor: $OUT was written by a different schema; refusing to append." >&2
+    echo "  expected: $HEADER" >&2
+    echo "  found:    $existing" >&2
+    echo "  move it aside or pass a different --out." >&2
+    exit 3
+  fi
+else
+  printf '%s\n' "$HEADER" >"$OUT"
+fi
 
 start=$(date +%s)
 while :; do
@@ -69,7 +91,7 @@ while :; do
   # The USB link must be SuperSpeed or the capture silently returns zeroed
   # frames; a soak that lost the link would otherwise log hours of "clean".
   if ! ./scripts/check-capture-link.sh >/dev/null 2>&1; then
-    printf '%s\t%s\tLINK-FAIL\n' "$(date -Iseconds)" "$((now - start))" >>"$OUT"
+    printf '%s\t%s\t%s\tLINK-FAIL\n' "$RUN_ID" "$(date -Iseconds)" "$((now - start))" >>"$OUT"
     sleep "$INTERVAL"
     continue
   fi
@@ -107,8 +129,8 @@ while :; do
   read -r player temp thr < <(ssh -i "$KEY" -o ConnectTimeout=10 "$HOST" \
     "c=\$(pgrep -c -x '$PLAYER_PROC' 2>/dev/null); printf '%s %s %s\\n' \"\${c:-0}\" \"\$(vcgencmd measure_temp | tr -dc '0-9.')\" \"\$(vcgencmd get_throttled | cut -d= -f2)\"" 2>/dev/null || echo "? ? ?")
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$(date -Iseconds)" "$((now - start))" "$frames" "$nulls" "$wraps" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$RUN_ID" "$(date -Iseconds)" "$((now - start))" "$frames" "$nulls" "$wraps" \
     "$held" "$maxd" "$heldat" "$player" "$temp" "$thr" >>"$OUT"
 
   sleep "$INTERVAL"
