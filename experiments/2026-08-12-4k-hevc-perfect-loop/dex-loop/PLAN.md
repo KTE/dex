@@ -216,7 +216,7 @@ kernel-version-dependent claims that need verifying on the actual Pi + projector
 something to land blind in a code-review pass. A cheap partial mitigation (the
 `journalctl -u dex-loop -n 20` triage line) was added to the README in the meantime.
 
-### F9 — Heartbeat's property read is the first synchronous mpv-core call from the event thread (deferred — suspected, needs on-device verification)
+### F9 — Heartbeat's property read is the first synchronous mpv-core call from the event thread
 **Why (gallery-ops review, 2026-08-15, SUSPECTED):** `emit_heartbeat` calls
 `mpv_get_property_string` from the event loop thread. If the mpv core is ever wedged
 (e.g. the VO thread stuck in a DRM ioctl against a dying projector, holding the core
@@ -249,14 +249,38 @@ closed "by construction". The claim is feature-locally true (F1 itself adds
 no new synchronous call) but doesn't hold once F7's pre-existing heartbeat is
 accounted for.
 
-**Still deliberately not implemented in this pass**, for the same reason as
-above: this is a concurrency-sensitive change (converting to
-`mpv_get_property_async` + tracking last-known values across ticks, or
-skipping the heartbeat's reads while a recovery is in flight, or landing
-`WatchdogSec=`/`sd_notify`) that deserves its own design and on-device soak
-rather than a same-pass addition alongside three other structural fixes to
-the same event loop. Recorded here with the sharpened risk so it is not lost
-track of, not because the risk is considered acceptable long-term.
+**2026-08-15, resolved.** The heartbeat no longer calls into the mpv core at all.
+`mpv_get_property_string` and `mpv_free` are gone from the FFI surface entirely, and
+`emit_heartbeat` no longer takes an `mpv_handle` — so the blocking read is not merely
+avoided, it is unreachable. `frame-drop-count` and `vo-delayed-frame-count` are now
+`mpv_observe_property(MPV_FORMAT_INT64)` subscriptions read out of
+`MPV_EVENT_PROPERTY_CHANGE`, the same door F1 uses. Verified against mpv v0.40.0
+source: both counters sit in `mp_event_property_change[MPV_EVENT_TICK]`
+(`player/command.c:4484-4492`) beside `time-pos`; change events fire only on an
+actual value change (`player/client.c:1715-1717`) so a clean run costs one event per
+counter for the whole run; property-change events are never queued
+(`player/client.c:942-943`) so they cannot contribute to the fatal `QUEUE_OVERFLOW`
+path; and the getter runs on the core thread with the client lock dropped
+(`player/client.c:1694-1699`), so a wedged core produces silence rather than a
+blocked caller. The suspicion itself was upgraded to confirmed on the way:
+`mpv_get_property_string` → `run_locked` → `mp_dispatch_lock`
+(`misc/dispatch.c:364-394`) waits on a condition variable with **no timeout** until
+the core thread is trapped in its dispatch loop. The line also gained
+`pos=`/`pos-age=` — after removing the synchronous read, that freshness field is the
+only honest liveness statement the heartbeat can make — and the counters now
+accumulate across the per-file resets a tier-0 recovery causes, so `frame-drops=0`
+can no longer be a false all-clear. **On-device verification still owed:** within
+~1 minute of playback the counters must read numbers, not `n/a` — if they do not,
+`MPV_FORMAT_INT64`'s transcription is wrong (it fails safe, but it fails).
+
+**F10 — systemd `WatchdogSec=` + `sd_notify` (new, deferred).** Not a substitute for
+the above and deliberately not bundled with it. It remains worth doing for the one
+risk F9 does not touch: a hang in our own event-thread code that is not an mpv call
+(`eprintln!` against a wedged journald). Constraints if it lands: keep `Type=simple`
+and add `NotifyAccess=main` — never `Type=notify`, which can leave the unit inactive
+forever if `READY=1` is not sent; `WatchdogSec` ≥ 180 s so it cannot preempt tier-0's
+worst-case ~2-minute episode and turn every recoverable HDMI blink into a process
+restart; ping `WATCHDOG=1` from the 10 s health-check tick, not the 600 s heartbeat.
 
 ### F3 addendum — sidecar JSON subset: deliberately NOT widened to arbitrary JSON types
 **2026-08-15:** two reviews independently flagged that a non-subset *value* under

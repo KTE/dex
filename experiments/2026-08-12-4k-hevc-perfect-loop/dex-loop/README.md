@@ -224,7 +224,11 @@ the wrap premise is "IDR at frame 0") → every `--opt`/default/`--mode` mpv opt
 accepted. Exit codes: **2** = refused before playback (fix the asset/invocation —
 including a rejected mpv option; restarting cannot help), **1** = playback/runtime
 failure (the supervisor restarts). Every start logs `dex-loop <version> (<git hash>)`
-and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`) at boot and every 10 minutes.
+and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`, `pos-age=`) at boot and every
+10 minutes. The drop counters (`frame-drops=`, `vo-delayed=`) are cumulative since
+process start and read `n/a` until the first value arrives from mpv, or `off` if the
+subscription failed at startup — never a direct property read, so the heartbeat
+itself can never block on a wedged mpv core.
 
 The defaults encode the measured zero-copy path: the Pi's decoder emits
 Broadcom SAND-tiled NV12, and the display scans SAND out natively **only**
