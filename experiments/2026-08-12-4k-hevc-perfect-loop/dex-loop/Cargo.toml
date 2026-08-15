@@ -58,7 +58,7 @@ copyright = "Max Albrecht"
 # emits `License: CC0-1.0` alone — true of the source and misleading about the
 # binary, which is a GPL-3+ combined work. A package that understates its own
 # obligations is the one licensing bug worth going out of the way to avoid.
-license-file = ["LICENSE", 0]
+license-file = "LICENSE"
 extended-description = """
 Gapless 4K HEVC loop player for Raspberry Pi gallery installations. Feeds
 libmpv an endless in-process byte stream so the decoder never sees EOF and
