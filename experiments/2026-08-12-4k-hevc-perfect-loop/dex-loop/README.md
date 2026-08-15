@@ -301,6 +301,15 @@ using the CPU:
 cargo test --test cli force_recovery_survives_against_real_mpv -- --ignored --nocapture
 ```
 
+**CI runs this test too**, as its own step in `.github/workflows/dex-loop-deb.yml`
+(after `Test`, before `Build package`), by exact name — `debian:trixie`'s software
+HEVC decoder makes real decode available with no device, DRM or display needed. It
+stays `#[ignore]`d (so a Pi mid-soak's plain `cargo test` still never picks it up);
+the CI step is what runs it automatically instead. What this proves: the process
+survives its own recovery under software decode with no display. What it does not
+prove: the picture actually comes back with `hwdec=drm` / `drmprime-overlay` / the
+DRM plane swap on real hardware — that is still the manual on-Pi run's job.
+
 ## Reviewed 2026-08-15
 
 Three adversarial reviews (Rust/unsafe soundness, libmpv API contract, gallery

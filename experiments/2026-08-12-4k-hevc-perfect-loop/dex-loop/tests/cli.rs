@@ -806,6 +806,22 @@ fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
 /// (this test's invocation above, minus `--no-defaults`/`vo=null`, against
 /// the actual exhibition display) closes that gap -- CI proves survival,
 /// only the bench proves the picture.
+///
+/// **Residual gap even within what CI can see, stated rather than papered
+/// over:** the recovery-2/-absence assertion below proves "no SECOND
+/// recovery fired organically", which requires the event loop to still be
+/// alive and ticking (mpv_wait_event waking on its timeout, HealthMonitor
+/// still being ticked) even if it never got a second STALL to react to. A
+/// process whose event loop wedged COMPLETELY right after the absorb --
+/// mpv_wait_event itself never returning again, no further ticks at all --
+/// would produce neither a second "attempting in-place recovery" line NOR
+/// an exit, and every assertion here (still alive, attempt 1/, absorption,
+/// no attempt 2/) would pass vacuously. Closing that fully would need a
+/// positive post-recovery signal (e.g. a bench-only per-tick "healthy" log
+/// line while T7 is armed, asserted present at least once after the
+/// absorb) -- not implemented here; this comment exists so that gap is
+/// recorded rather than silently assumed covered.
+/// only the bench proves the picture.
 #[test]
 #[ignore]
 fn force_recovery_survives_against_real_mpv() {

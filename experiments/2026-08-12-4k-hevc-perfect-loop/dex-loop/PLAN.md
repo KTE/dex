@@ -543,10 +543,82 @@ the forced recovery firing and being survived -- needs exactly the real,
 unbounded decode that rule keeps out of the automated suite, so it is a fifth
 test, `force_recovery_survives_against_real_mpv`, marked `#[ignore]` with the
 exact command and expected stderr sequence to run manually on a Pi with
-libmpv. **Not yet run** -- dexpi4.local is mid-thermal-soak (this task's hard
-constraint forbade touching it); the whole live-fire behaviour this task set
-out to prove is therefore still unverified against a real mpv until someone
-runs that ignored test on an idle device.
+libmpv.
+
+**2026-08-15, wired into CI as its own gate.** The test above sat `#[ignore]`d
+and manual-only since it landed, which meant the C1 fix had zero automated
+protection -- nothing would have caught a regression short of someone
+choosing to run it by hand. `debian:trixie`'s software HEVC decoder turned
+out to make the test's one environment-dependent ingredient (real decode)
+available in the *existing* build container: no device, no DRM, no GPU
+needed, because `--no-defaults` already skips the whole Pi hwdec/DRM option
+set. A new CI step in `.github/workflows/dex-loop-deb.yml` (`build` job,
+after `Test`, before `Build package`) now runs the ignored test by exact
+name (`cargo test --release --test cli -- --ignored --exact
+force_recovery_survives_against_real_mpv`), and asserts `1 passed` in the
+output so a renamed/deleted test fails loud instead of leaving the step
+green on "0 passed" (libtest's exit code for a filter matching nothing).
+`#[ignore]` itself was kept, not removed -- a Pi mid-soak's plain
+`cargo test` must never pick up a full real-decode run.
+
+The test was hardened at the same time: deadline raised 15s -> 30s, and a
+new assertion added that no organic *second* "attempting in-place recovery"
+fires -- the three original assertions (still alive, attempt 1/ logged,
+absorption logged) are all satisfiable by a process whose event loop wedged
+solid right after absorbing the stop, alive but not actually playing. If
+time-pos genuinely resumes advancing post-recovery, the health monitor never
+sees a second qualifying stall inside the deadline; if it does not, a wedge
+would produce an organic attempt 2/ around t=23s (trigger at 3s, ~10s tick
+cadence) -- inside the new 30s deadline, outside the old 15s one.
+
+**Non-vacuity proven, not just asserted (both runs are in Actions history):**
+- **Green, the gate as shipped:** run
+  [31909711165](https://github.com/KTE/dex/actions/runs/31909711165) --
+  `build` job, step "C1 live-fire (forced recovery vs real mpv)":
+  `test force_recovery_survives_against_real_mpv ... ok`,
+  `test result: ok. 1 passed; ... finished in 30.01s` (ran the full
+  deadline, i.e. the process was still alive when killed -- the success
+  shape). Whole workflow green.
+- **Red, mutation-kill (scratch commit `aa76e0b`, reverted by `74a4e6a`):**
+  disabled the `recovery_stops_pending` increment in `act_on_health_action`
+  -- the actual C1 fix -- while keeping the parameter formally "used" (`let
+  _ = *recovery_stops_pending;`) so Clippy's `-D warnings` gate would not
+  fail the build for an unrelated reason first. Run
+  [31910026512](https://github.com/KTE/dex/actions/runs/31910026512): the
+  `Clippy` and `Test` steps both stayed **green** (this mutation is invisible
+  to the pure-logic suite -- `act_on_health_action` is never unit-tested
+  directly), and the new "C1 live-fire" step went **red**, in 3.11s, with:
+  `attempting in-place recovery 1/3` immediately followed by `dex-loop:
+  FATAL: playback ended (reason=2, error=success) -- an endless stream must
+  never end; exiting so the supervisor restarts`, and the test's own
+  assertion failure `left: Some(1) right: None`. That is C1's exact death,
+  reproduced in CI, on CI hardware, caught by nothing except the new step.
+  Reverted immediately after in `74a4e6a`; the revert re-ran green
+  ([31910191758](https://github.com/KTE/dex/actions/runs/31910191758)).
+
+**What this closes and what it does not.** CI now proves, on every push,
+that the process survives its own tier-0 recovery and that time-pos resumes
+advancing afterwards -- under software decode with `vo=null`, no display. It
+does **not** prove the picture comes back on real hardware: `hwdec=drm`,
+`gpu-hwdec-interop=drmprime-overlay`, and the swapped DRM plane assignment
+are all skipped via `--no-defaults` and none of them are exercised by a
+container with no DRM and no GPU. That claim is still the on-Pi bench
+checklist item's job (below), unchanged by this addendum.
+
+**A narrower residual gap even within what CI can see, stated rather than
+assumed closed:** the recovery-2/-absence assertion needs the event loop to
+still be alive and ticking (`mpv_wait_event` waking on its timeout,
+`HealthMonitor` still being ticked) even where it never observes a second
+stall. A process whose event loop wedged COMPLETELY right after the absorb
+-- `mpv_wait_event` itself never returning again -- would produce neither a
+second `attempting in-place recovery` line nor an exit, and every assertion
+in the test would pass vacuously. Closing that fully needs a positive
+post-recovery signal (e.g. a bench-only per-tick "healthy" log line while T7
+is armed, asserted present at least once after the absorb); this is a small,
+plausibly cheap follow-up, deliberately not implemented in this pass so it
+does not get silently claimed as already covered. See `tests/cli.rs`'s doc
+comment on `force_recovery_survives_against_real_mpv` for the same note in
+context.
 
 ### T6 — `run_id` column, and a header guard
 **Observed 2026-08-15.** The soak was restarted against the same output file
