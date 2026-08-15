@@ -362,8 +362,16 @@ jobs:
           # artwork the package never shipped, and `dex` may be referenced by
           # anything the operator wrote. A THIRD leftover is a bug, so this
           # diffs rather than trusting the exit code.
+          #
+          # Filtered to temp files rather than `diff <(...) <(...)`: run steps
+          # in a `container:` job execute under /bin/sh (dash on trixie), not
+          # bash, and process substitution is a bashism dash does not have --
+          # confirmed by CI itself once the group-membership fix above let the
+          # job reach this far for the first time ("Syntax error: ( unexpected").
           snap > /after.txt
-          if ! diff <(grep -v '^/opt/dex' /before.txt) <(grep -v '^/opt/dex' /after.txt) > /leftovers.diff; then
+          grep -v '^/opt/dex' /before.txt > /before.filtered.txt
+          grep -v '^/opt/dex' /after.txt > /after.filtered.txt
+          if ! diff /before.filtered.txt /after.filtered.txt > /leftovers.diff; then
             echo "::error::purge left files behind beyond the two intended:"
             cat /leftovers.diff
             exit 1
