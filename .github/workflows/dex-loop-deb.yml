@@ -132,6 +132,36 @@ jobs:
         working-directory: ${{ env.CRATE_DIR }}
         run: cargo test --release
 
+      # C1 live-fire regression gate: forces a tier-0 in-place recovery
+      # against a REAL mpv core (software HEVC decode, vo=null, no display)
+      # and asserts the process SURVIVES its own recovery's
+      # END_FILE(reason=stop) -- the exact event-shape that killed every
+      # recovery attempt before the C1 fix. #[ignore]d in tests/cli.rs so it
+      # never runs in a default `cargo test` (a Pi mid-soak must not pick it
+      # up); this step is the one place it runs automatically.
+      #
+      # THE GREP IS THE GATE: libtest exits 0 when a filter matches NOTHING
+      # ("0 passed; 0 failed"), so a renamed/deleted test would leave this
+      # step green while running nothing. Asserting "1 passed" makes that
+      # loud instead of silent.
+      #
+      # What this proves and what it does not: the process survives its own
+      # recovery and time-pos resumes advancing, under software decode with
+      # no display. It does NOT prove the picture comes back on real
+      # hardware -- that needs hwdec=drm / drmprime-overlay / the DRM plane
+      # swap, none of which this container can exercise (no DRM, no GPU).
+      # That claim is still the on-Pi bench checklist item's job; see the
+      # test's own doc comment in tests/cli.rs.
+      - name: C1 live-fire (forced recovery vs real mpv)
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          out=$(cargo test --release --test cli -- --ignored --exact \
+                force_recovery_survives_against_real_mpv 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q '1 passed' \
+            || { echo "::error::C1 gate did not actually run (filter matched nothing?)"; exit 1; }
+
       - name: Build package
         working-directory: ${{ env.CRATE_DIR }}
         run: cargo deb

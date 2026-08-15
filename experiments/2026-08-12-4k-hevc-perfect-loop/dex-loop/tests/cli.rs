@@ -748,24 +748,34 @@ fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
 /// this test is the live-fire check that a REAL mpv event stream actually
 /// produces the shape that condition expects.
 ///
-/// Deliberately NOT part of the automated suite: unlike every other test in
-/// this file, it does NOT pass `--opt vid=no` -- it needs the real video
-/// track selected so time-pos actually advances and a health-check tick can
-/// observe "healthy" before the forced trigger fires. `--opt vo=null` keeps
-/// it headless (no DRM, no display touched) but does NOT bound the decode:
-/// only killing at run_with_deadline's deadline does, same as it would for
-/// any endless-stream real-decode run. This is exactly the deviation this
-/// file's module doc says the mandatory vid=no/aid=no rule exists to keep
-/// out of the AUTOMATED suite -- hence #[ignore], not a relaxation of that
-/// rule for anything else here.
+/// Deliberately NOT part of the automated (default) suite: unlike every
+/// other test in this file, it does NOT pass `--opt vid=no` -- it needs the
+/// real video track selected so time-pos actually advances and a
+/// health-check tick can observe "healthy" before the forced trigger fires.
+/// `--opt vo=null` keeps it headless (no DRM, no display touched) but does
+/// NOT bound the decode: only killing at run_with_deadline's deadline does,
+/// same as it would for any endless-stream real-decode run. This is exactly
+/// the deviation this file's module doc says the mandatory vid=no/aid=no
+/// rule exists to keep out of the automated suite -- hence `#[ignore]`, not
+/// a relaxation of that rule for anything else here. `#[ignore]` also keeps
+/// this out of a Pi mid-soak's plain `cargo test`, which must not add
+/// unrelated CPU load to a thermal measurement.
 ///
-/// DO NOT RUN THIS on dexpi4.local while its thermal soak is active (its
-/// tmux sessions "dexeye"/"thermal" own the display and the CPU is being
-/// measured -- see this task's hard constraint). Once the soak has
-/// concluded, or on any OTHER Pi 4 (or dev machine) with libmpv 0.40+
-/// installed and nothing else on the display, run:
+/// **CI now runs this test deliberately**, by exact name, as its own step
+/// in `.github/workflows/dex-loop-deb.yml` (after `Test`, before
+/// `Build package`) -- the debian:trixie container has no display and no
+/// DRM, so it exercises the same headless `vo=null` + software-HEVC-decode
+/// path this doc comment describes, with no code path skipped. Manual
+/// invocation (e.g. on the Pi, against `dexpi4.local`) still works exactly
+/// as before:
 ///
 ///   cargo test --test cli force_recovery_survives_against_real_mpv -- --ignored --nocapture
+///
+/// DO NOT manually run this on dexpi4.local while its thermal soak is
+/// active (its tmux sessions "dexeye"/"thermal" own the display and the CPU
+/// is being measured -- see this task's hard constraint). Once the soak has
+/// concluded, or on any OTHER Pi 4 (or dev machine) with libmpv 0.40+
+/// installed and nothing else on the display, the command above is safe.
 ///
 /// Expected stderr, in order:
 ///   1. "dex-loop 0.1.0 (...)"                                -- normal startup
@@ -775,11 +785,27 @@ fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
 ///      recovery 1/3 ..."
 ///   5. "dex-loop: health check: in-place recovery's loadfile replaced the
 ///      stream; absorbing the expected END_FILE(reason=stop) ..."
-///   6. process is STILL RUNNING when this test kills it at its deadline.
+///   6. process is STILL RUNNING when this test kills it at its deadline,
+///      and never printed a SECOND "attempting in-place recovery 2/" (see
+///      the assertion below for why that matters at this deadline).
 ///
 /// If C1 has regressed: step 5 never appears, and the process exits 1 right
 /// after step 4 instead (the recovery's own END_FILE(reason=stop) treated
-/// as fatal) -- well before the 15s deadline.
+/// as fatal) -- well before the deadline.
+///
+/// **What this test does (and does not) prove.** It proves the process
+/// survives its own recovery and that time-pos resumes advancing afterwards
+/// (the recovery-2/-absence check below), under software decode and
+/// `vo=null`, with no display. It does NOT prove the picture actually comes
+/// back on real hardware: that claim lives entirely in the option set this
+/// test never exercises -- `hwdec=drm`, `gpu-hwdec-interop=drmprime-overlay`,
+/// the swapped DRM plane assignment -- all skipped here via `--no-defaults`.
+/// A recovery whose `loadfile replace` tears down and rebuilds the
+/// DRM/hwdec chain incorrectly could leave a black screen with a perfectly
+/// alive, CI-green process. Only the on-Pi bench run with a real display
+/// (this test's invocation above, minus `--no-defaults`/`vo=null`, against
+/// the actual exhibition display) closes that gap -- CI proves survival,
+/// only the bench proves the picture.
 #[test]
 #[ignore]
 fn force_recovery_survives_against_real_mpv() {
@@ -799,7 +825,7 @@ fn force_recovery_survives_against_real_mpv() {
             "--opt",
             "aid=no",
         ],
-        Duration::from_secs(15),
+        Duration::from_secs(30),
     );
     assert_eq!(
         r.exit_code, None,
@@ -817,6 +843,24 @@ fn force_recovery_survives_against_real_mpv() {
         r.stderr
             .contains("absorbing the expected END_FILE(reason=stop)"),
         "recovery's own END_FILE was not absorbed -- this is exactly C1: {}",
+        r.stderr
+    );
+    // The three assertions above are satisfiable by a process that
+    // "survives" only because its event loop wedged solid right after
+    // absorbing the stop -- alive, but not actually playing. A genuine
+    // recovery lets time-pos resume advancing, which feeds the health
+    // monitor a fresh "healthy" sample and means NO second recovery gets
+    // triggered organically. At a 30s deadline (trigger at 3s, health-check
+    // ticks every ~10s) a wedged-but-alive process would reach a second
+    // organic attempt at roughly trigger+20s =~ 23s -- comfortably inside
+    // this deadline -- so this string's ABSENCE is a real "playback
+    // actually resumed" proxy, not decoration. (It would be vacuously true
+    // at the old 15s deadline, which is why the deadline was raised.)
+    assert!(
+        !r.stderr.contains("attempting in-place recovery 2/"),
+        "a second recovery fired organically after the forced one -- time-pos \
+         likely never resumed advancing post-recovery (event loop wedged \
+         rather than truly recovered): {}",
         r.stderr
     );
 }
