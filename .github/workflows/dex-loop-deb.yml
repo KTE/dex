@@ -263,36 +263,74 @@ jobs:
           cargo install --locked cargo-deny
           cargo deny check
 
-  # piuparts: install / upgrade / purge in a throwaway chroot. This is the
-  # automated version of the manual lifecycle check that found the package's
-  # real behaviour (remove leaves the unit masked so a reinstall restores its
-  # enabled state; purge cleans it) — a class of bug that only appears when a
-  # package is actually installed and removed, which no static linter reaches.
+  # Install / remove / purge lifecycle. This is the class of bug that only
+  # appears when a package is really installed and removed — maintainer scripts
+  # that fail, files that outlive a purge, users never created — and no static
+  # linter reaches it.
   #
-  # Runs on the bare runner because piuparts needs Docker, which is not
-  # available inside a container job.
+  # This started as piuparts and is not, because piuparts has no installation
+  # candidate on Ubuntu noble/arm64 (it is simply not published for that arch),
+  # and inside a container it could not have used --docker-image anyway. The
+  # container IS a throwaway environment, which is the only thing piuparts's
+  # chroot was providing here, so the test runs directly.
   #
-  # --warn-on-leftovers-after-purge is REQUIRED and is not a blanket excuse.
-  # Exactly two leftovers are intended, both by design in postrm: /opt/dex holds
-  # the artwork, which the package never shipped and must not delete, and the
-  # `dex` user may be referenced by anything an operator wrote themselves. If
-  # this flag ever hides a THIRD leftover, that is a bug — read the log, do not
-  # just look at the exit code.
-  piuparts:
+  # What is genuinely lost by not using piuparts: upgrade testing from a
+  # previous version (there is none yet) and its much broader leftover
+  # heuristics. The filesystem diff below is a deliberately narrow substitute.
+  lifecycle:
     runs-on: ubuntu-24.04-arm
+    container: debian:trixie
     needs: build
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: dex-loop-deb
-      - name: Install piuparts
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends piuparts
-      - name: Install / purge lifecycle test
+
+      - name: Install / remove / purge
         run: |
           set -eux
-          deb=$(find . -name '*.deb' -print -quit)
-          test -n "$deb"
-          sudo piuparts \
-            --docker-image debian:trixie \
-            --warn-on-leftovers-after-purge \
-            "$deb"
+          apt-get update
+          deb=$(find . -name '*.deb' -print -quit); test -n "$deb"
+
+          # Snapshot the filesystem so a purge can be checked for leftovers.
+          snap() { find / -xdev \( -path /proc -o -path /sys -o -path /run -o -path /tmp \
+                     -o -path /var/log -o -path /var/lib/apt -o -path /var/cache \
+                     -o -path /var/lib/dpkg -o -path /github \) -prune -o -print 2>/dev/null | sort; }
+          snap > /before.txt
+
+          apt-get install -y "./${deb#./}"
+
+          # --- postinst did what it promises ---
+          test -x /usr/bin/dex-loop
+          test -x /usr/bin/dex-wait-hdmi
+          getent passwd dex                       # the service user exists
+          id -nG dex | grep -qw video             # ...and can open /dev/dri
+          id -nG dex | grep -qw render
+          test -d /opt/dex                        # asset directory created
+          test -f /lib/systemd/system/dex-loop.service
+          test -f /usr/share/man/man1/dex-loop.1.gz
+          # The package must NOT ship an asset: artwork is content, not software.
+          test ! -e /opt/dex/loop.265
+
+          apt-get remove -y dex-loop
+          test ! -e /usr/bin/dex-loop             # binary gone
+          getent passwd dex                       # user RETAINED, by design
+          test -d /opt/dex                        # artwork RETAINED, by design
+
+          apt-get purge -y dex-loop
+          test ! -e /lib/systemd/system/dex-loop.service
+          getent passwd dex                       # still retained after purge
+          test -d /opt/dex
+
+          # --- leftovers ---
+          # Exactly two are intended, both deliberate in postrm: /opt/dex holds
+          # artwork the package never shipped, and `dex` may be referenced by
+          # anything the operator wrote. A THIRD leftover is a bug, so this
+          # diffs rather than trusting the exit code.
+          snap > /after.txt
+          if ! diff <(grep -v '^/opt/dex' /before.txt) <(grep -v '^/opt/dex' /after.txt) > /leftovers.diff; then
+            echo "::error::purge left files behind beyond the two intended:"
+            cat /leftovers.diff
+            exit 1
+          fi
+          echo "lifecycle OK — install, remove and purge all behave as designed"
