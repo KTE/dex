@@ -316,6 +316,42 @@ Pi build is an rsync mirror, not a checkout, and `git rev-parse` there always fa
 
 ## Deployment
 
+Ship a **`.deb`**, don't build on the device.
+
+```bash
+cargo deb                                     # -> target/debian/dex-loop_0.1.0_arm64.deb
+sudo apt install ./dex-loop_0.1.0_arm64.deb   # apt, not dpkg -i: it resolves Depends
+```
+
+The package installs the binary and `dex-wait-hdmi` to `/usr/bin`, installs and
+enables the unit, creates the unprivileged `dex` user with `video`/`render`,
+and creates `/opt/dex`. It does **not** start the unit (that takes DRM master,
+which an operator on an SSH console should time themselves) and it ships **no
+asset** — the video and its sidecar are content, and baking one in would mean
+rebuilding the software to change the artwork:
+
+```bash
+scp loop.265 loop.265.json <host>:/opt/dex/
+sudo systemctl set-default multi-user.target   # no desktop; nothing else may own DRM
+sudo systemctl start dex-loop
+```
+
+**Why a package rather than `cargo build` on the Pi** (SPEC §5c): `Depends:` is
+derived by `dpkg-shlibdeps` from the sonames the binary actually links, so a
+libmpv ABI mismatch is refused by apt at install time, on a bench. Before, it
+was checked nowhere — a black screen in a gallery was the first symptom. The
+declaration cannot drift from reality because nobody writes it.
+
+Two consequences worth knowing:
+
+* **Build environment must equal target environment.** CI
+  (`.github/workflows/dex-loop-deb.yml`) builds on an `ubuntu-24.04-arm` runner
+  *inside a `debian:trixie` container* — the runner for native arm64, the
+  container for the ABI. Linking against Ubuntu's libmpv and installing on
+  Debian would manufacture the exact mismatch the package prevents.
+* **`/usr/bin`, not `/usr/local/bin`.** Debian policy reserves `/usr/local` for
+  the local administrator; the unit was repointed accordingly.
+
 `deploy/` carries the systemd unit and the HDMI connector wait. The unit's
 `StartLimitIntervalSec=0` is load-bearing: the default rate limit would put the
 service into a permanent `failed` state after a burst of crashes, which is the

@@ -549,7 +549,16 @@ smaller question.
 - **`Depends:` is computed, not hand-written.** `dpkg-shlibdeps` derives it from
   the binary's linked sonames, so the declaration cannot drift from what the
   binary actually needs — which is the whole point of the change.
-- **Contents:** the binary, the systemd unit, and `dex-wait-hdmi`.
+- **Contents:** the binary, the systemd unit, and `dex-wait-hdmi` — built with
+  `cargo deb`, whose config lives in the crate's own `Cargo.toml`.
+- **The package ships NO asset.** The video and its sidecar are *content*: they
+  change per installation and per exhibition, and baking one into the package
+  would mean rebuilding the software to change the artwork. The package creates
+  `/opt/dex` and the `dex` user; the asset is deployed into it separately. This
+  is also why install *enables* the unit but does not *start* it.
+- **`/usr/bin`, not `/usr/local/bin`.** Debian policy reserves `/usr/local` for
+  the local administrator, so the unit's paths moved. A package that ignores
+  this works fine and is wrong; the point of packaging is to stop improvising.
 - **Built in CI** (GitHub Actions). `dex` is a public repo, so the free
   `ubuntu-24.04-arm` runners apply — native arm64, no qemu.
 - **Built inside a `debian:trixie` container on that runner.** The runner image

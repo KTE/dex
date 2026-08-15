@@ -1,0 +1,47 @@
+#!/bin/sh
+# Create the two things dex-loop.service requires but cannot create itself:
+# the unprivileged `dex` user it runs as, and the asset directory it reads.
+#
+# Both were manual steps in the pre-package install recipe, which is precisely
+# why they belong here: an unattended gallery device should not depend on
+# whether whoever imaged the SD card remembered a chmod.
+set -e
+
+case "$1" in
+configure)
+  # A system user with no login, no home, and no password. It needs `video`
+  # and `render` only to open /dev/dri -- everything else is denied by the
+  # unit's own sandboxing (ProtectSystem=strict, ProtectHome, NoNewPrivileges).
+  if ! getent passwd dex >/dev/null; then
+    adduser --system --group --no-create-home --shell /usr/sbin/nologin dex
+  fi
+  # Idempotent: adduser to a group the user is already in is a no-op, so this
+  # also repairs an install where the groups were dropped.
+  for g in video render; do
+    if getent group "$g" >/dev/null; then
+      adduser dex "$g" >/dev/null || true
+    fi
+  done
+
+  # The asset directory. The package deliberately ships NO asset: the video and
+  # its sidecar are content, they change per installation, and baking one into
+  # the package would mean rebuilding the software to change the artwork.
+  # Root-owned and world-readable — the unit mounts it ReadOnlyPaths anyway,
+  # and the player only ever reads.
+  mkdir -p /opt/dex
+  chmod 0755 /opt/dex
+
+  if [ ! -e /opt/dex/loop.265 ]; then
+    echo "dex-loop: installed, but /opt/dex/loop.265 is missing." >&2
+    echo "  Deploy BOTH the asset and its sidecar, then start the unit:" >&2
+    echo "    scp loop.265 loop.265.json <host>:/opt/dex/" >&2
+    echo "    sudo systemctl start dex-loop" >&2
+    echo "  The player refuses to start without the sidecar, on purpose: a" >&2
+    echo "  guessed frame rate plays wrong forever with every metric green." >&2
+  fi
+  ;;
+esac
+
+#DEBHELPER#
+
+exit 0

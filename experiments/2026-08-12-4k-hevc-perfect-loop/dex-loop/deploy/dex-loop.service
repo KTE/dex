@@ -1,8 +1,11 @@
 # dex gapless loop player.
 #
-# Install: /etc/systemd/system/dex-loop.service
+# Installed by the dex-loop .deb (SPEC 5c), which also creates the `dex` user
+# and /opt/dex, and enables this unit. Remaining manual step:
 #   sudo systemctl set-default multi-user.target   # no desktop; nothing else may own DRM
-#   sudo systemctl enable --now dex-loop
+#
+# Paths are /usr/bin, not /usr/local/bin: Debian policy reserves /usr/local for
+# the local administrator, so a package may not write there.
 #
 # The player is useless without supervision: it runs unattended for weeks with
 # no operator, and its only shutdown path is someone switching off the mains.
@@ -22,12 +25,12 @@ Type=simple
 # The display may not be awake when the Pi boots -- a projector can take 30-90s
 # to present EDID while the Pi boots in ~15. Wait for the connector rather than
 # starting into a fallback mode that never corrects itself.
-ExecStartPre=/usr/local/bin/dex-wait-hdmi
+ExecStartPre=/usr/bin/dex-wait-hdmi
 # No --fps here: the frame rate comes from /opt/dex/loop.265.json, written at
 # ingest and hash-bound to the asset. Deploy BOTH files. A missing or stale
 # sidecar makes the player refuse (exit 2) rather than guess a rate -- a
 # wrong guess would play slow forever with every metric green.
-ExecStart=/usr/local/bin/dex-loop /opt/dex/loop.265 --mode 3840x2160@30
+ExecStart=/usr/bin/dex-loop /opt/dex/loop.265 --mode 3840x2160@30
 
 Restart=always
 RestartSec=2

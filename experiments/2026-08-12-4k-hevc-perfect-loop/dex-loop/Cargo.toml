@@ -27,6 +27,53 @@ serde = "1.0.229"
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 
+# --- Debian package (SPEC §5c) ----------------------------------------------
+# `cargo deb` builds dex-loop_<version>_arm64.deb. The package exists to make
+# the dependency set CHECKED rather than merely written down: libmpv's version
+# is verified by apt at install time, on a bench, instead of surfacing as a
+# black screen in a gallery.
+#
+# Build:   cargo deb            (on arm64; CI does it in a debian:trixie container)
+# Install: sudo apt install ./dex-loop_0.1.0_arm64.deb
+[package.metadata.deb]
+maintainer = "Max Albrecht <1@178.is>"
+copyright = "Max Albrecht"
+extended-description = """
+Gapless 4K HEVC loop player for Raspberry Pi gallery installations. Feeds
+libmpv an endless in-process byte stream so the decoder never sees EOF and
+never seeks, which is what removes the seam at the loop point."""
+section = "video"
+priority = "optional"
+
+# THE POINT OF THE PACKAGE. "$auto" runs dpkg-shlibdeps over the built binary,
+# so Depends is DERIVED from the sonames it actually links -- libmpv2 and the
+# rest -- and cannot drift from reality the way a hand-written list would.
+# Never replace this with a literal list.
+depends = "$auto"
+
+assets = [
+    # /usr/bin, not /usr/local/bin: Debian policy reserves /usr/local for the
+    # local administrator, and a package that writes there is a policy
+    # violation. The systemd unit was updated to match.
+    ["target/release/dex-loop", "usr/bin/", "755"],
+    ["deploy/dex-wait-hdmi", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/dex-loop/", "644"],
+]
+
+# sidecar-check is deliberately NOT shipped: it is an INGEST tool (it validates
+# a sidecar against an asset while building one), and ingest happens on a
+# workstation, never on the gallery device.
+
+maintainer-scripts = "deploy/maintainer-scripts"
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "deploy"
+# Enable at install so a device that is only ever power-cycled comes back
+# playing, but do not start during install: the unit takes DRM master, and an
+# operator installing over SSH from a console session should choose the moment.
+enable = true
+start = false
+
 # Match release: an unwind crossing the FFI boundary, or main unwinding while
 # mpv threads are live, is UB territory. rustc >= 1.81 aborts at the extern "C"
 # boundary, but main() unwinding out from under a registered callback is a

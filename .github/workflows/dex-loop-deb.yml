@@ -1,0 +1,109 @@
+# Build the dex-loop Debian package for Raspberry Pi gallery devices.
+#
+# WHY A CONTAINER ON AN ARM RUNNER
+# --------------------------------
+# The package's whole purpose is that `Depends:` is derived from the sonames
+# the binary actually links (dpkg-shlibdeps, see Cargo.toml's `depends =
+# "$auto"`), so that apt refuses a libmpv ABI mismatch at install time on a
+# bench rather than letting it surface as a black screen in a gallery.
+#
+# That guarantee is only worth anything if the build environment IS the target
+# environment. `ubuntu-24.04-arm` gives us native arm64 (free on public repos,
+# no qemu), but it is Ubuntu -- linking against Ubuntu's libmpv and then
+# installing on Debian trixie would produce exactly the mismatch this package
+# exists to prevent. So: arm64 runner for the architecture, debian:trixie
+# container for the ABI.
+#
+# Verify the pairing whenever the fleet moves to a new Debian release:
+#   ssh <pi> '. /etc/os-release; echo $VERSION_CODENAME; dpkg -s libmpv2'
+name: dex-loop deb
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["dex-loop-v*"]
+    paths:
+      - "experiments/2026-08-12-4k-hevc-perfect-loop/dex-loop/**"
+      - ".github/workflows/dex-loop-deb.yml"
+
+permissions:
+  contents: read
+
+env:
+  CRATE_DIR: experiments/2026-08-12-4k-hevc-perfect-loop/dex-loop
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -eux
+          apt-get update
+          # libmpv-dev is what the crate links; dpkg-dev provides
+          # dpkg-shlibdeps, which is what turns those links into Depends.
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl ca-certificates git \
+            libmpv-dev dpkg-dev
+          # Record what we linked against. When a future .deb refuses to
+          # install on a device, this line in the log is the first thing to
+          # compare against the device's own `dpkg -s libmpv2`.
+          dpkg -s libmpv2 | grep -E '^(Package|Version):'
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          set -eux
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.CRATE_DIR }}/target
+          key: dex-loop-deb-${{ hashFiles('experiments/2026-08-12-4k-hevc-perfect-loop/dex-loop/Cargo.lock') }}
+          restore-keys: dex-loop-deb-
+
+      - name: Install cargo-deb
+        run: command -v cargo-deb || cargo install --locked cargo-deb
+
+      # The package is only worth shipping if the code it contains passes. The
+      # full suite runs here because this container HAS libmpv -- the Mac
+      # checkout cannot link the binary at all, so `cargo test --lib` is the
+      # most a developer machine can do.
+      - name: Test
+        working-directory: ${{ env.CRATE_DIR }}
+        run: cargo test --release
+
+      - name: Build package
+        working-directory: ${{ env.CRATE_DIR }}
+        run: cargo deb
+
+      # Print the derived Depends into the log. If dpkg-shlibdeps ever silently
+      # stops resolving libmpv, the package would still build and would still
+      # install -- onto a device with no libmpv, failing at runtime. Asserting
+      # it here keeps that from being a silent success.
+      - name: Verify derived dependencies
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          deb=$(find target/debian -name '*.deb' -print -quit)
+          test -n "$deb"
+          dpkg-deb --field "$deb" Package Version Architecture Depends
+          dpkg-deb --contents "$deb"
+          dpkg-deb --field "$deb" Depends | grep -q libmpv \
+            || { echo "::error::Depends does not mention libmpv — dpkg-shlibdeps did not resolve it"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dex-loop-deb
+          path: ${{ env.CRATE_DIR }}/target/debian/*.deb
+          if-no-files-found: error
