@@ -169,11 +169,39 @@ review finding, and it is a timeout, not an output check.
   pure logic, and the T2/T3 suites on the Pi where libmpv exists.
 
 ### T5 — Harness regression tests
-The monitoring has now produced two of its own bugs (a watcher whose condition
-could never fire; a liveness check for the wrong process name after libmpv was
-embedded). Add a self-test to `soak-monitor.sh`: run one sample against a
-deliberately-stopped player and assert it reports `player=0` and a full 11-field
-row. **A monitor that has only ever seen success is untested.**
+The monitoring has now produced **three** of its own bugs: a watcher whose
+condition could never fire; a liveness check for the wrong process name after
+libmpv was embedded; and silently merged runs (below). Add a self-test to
+`soak-monitor.sh`: run one sample against a deliberately-stopped player and
+assert it reports `player=0` and a full 11-field row. **A monitor that has only
+ever seen success is untested.**
+
+### T6 — `run_id` column, and a header guard
+**Observed 2026-08-15.** The soak was restarted against the same output file
+when its duration was changed from 12 h to 3 h. The monitor appends and only
+writes a header when the file is empty, so the second run's rows were appended
+to the first run's — and `elapsed_s` **restarts at 0 mid-file**. Every row is
+individually honest (`iso_time` is correct) while the series as a whole is not:
+anything plotting elapsed sees time run backwards. Nothing warns.
+
+Two defects, one cause — the file is append-only and carries no run identity:
+
+1. **No run identity.** Add a `run_id` column, set once at monitor start
+   (`date +%Y%m%dT%H%M%S`, or the PID — anything stable per invocation and
+   sortable). Prefer a column over a file-per-run: one file is far easier to
+   analyse across a campaign, and an explicit `run_id` makes the merge *visible*
+   rather than silent, which is the actual failure here.
+2. **No schema guard.** The header is written only when the file is empty, so a
+   *schema change* appends differently-shaped rows to an old file with no
+   complaint. This already happened once, when `held_at` took the column count
+   from 10 to 11. On startup: if the file exists and is non-empty, compare its
+   first line to the header this version writes; on mismatch, refuse and say so
+   (or rotate to `<name>.1`). Never append a row whose shape does not match the
+   header above it.
+
+Both are a few lines, and both matter more for the **multi-day** soak than they
+did here: a mid-run restart over days would be much harder to spot by eye than
+one obvious reset in a six-row table.
 
 ## Phasing
 
@@ -182,8 +210,10 @@ row. **A monitor that has only ever seen success is untested.**
 2. **F3 + F4** — asset binding and validation. Removes the undetectable failure.
 3. **T3** — failure-path integration tests, including "never hangs".
 4. **F1** — tier-0 self-healing. Design carefully against principle 1.
-5. **F5 + F6** — the device-level work (read-only root, baked EDID).
-6. **F2 tier 2** — reboot escalation. Future iteration.
-7. **Multi-day soak on the final build**, with the final asset, on the show
+5. **T5 + T6** — harness: monitor self-test, `run_id`, header guard. Cheap, and
+   the multi-day soak depends on the data it produces being trustworthy.
+6. **F5 + F6** — the device-level work (read-only root, baked EDID).
+7. **F2 tier 2** — reboot escalation. Future iteration.
+8. **Multi-day soak on the final build**, with the final asset, on the show
    hardware. Not before: soaking code that is about to change measures the wrong
    artifact.
