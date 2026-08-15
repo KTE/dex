@@ -1,6 +1,12 @@
 ---
 import { getCollection, render } from 'astro:content'
 
+// Order matters: cloud-docs.css defines the three colour custom properties,
+// dex.css overrides them. It is a git dependency pinned by commit hash in
+// package.json, so it cannot change under the page without a lockfile change.
+import '@eins78/styles/cloud-docs.css'
+import '../styles/dex.css'
+
 const blocks = await Promise.all(
   (await getCollection('blocks'))
     .sort((a, b) => a.id.localeCompare(b.id))
@@ -21,7 +27,15 @@ const meta = blocks.find((block) => block.data.title)
     <title>{meta?.data.title}</title>
     <meta name="description" content={meta?.data.description} />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./style.css" />
+    {/* Palette previews: ?theme=brand | brand-deep | brand-day, defined in
+        src/styles/dex.css. `is:inline` keeps Astro from bundling this into an
+        _astro/ chunk; with the CSS inlined too, the page then emits no
+        build-time assets at all and works at any base path. Runs during head
+        parsing, so the default palette never flashes. */}
+    <script is:inline>
+      const theme = new URLSearchParams(location.search).get('theme')
+      if (theme && /^[a-z-]{1,20}$/.test(theme)) document.documentElement.dataset.theme = theme
+    </script>
   </head>
   <body>
     <header>

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@eins78/styles':
+        specifier: github:eins78/styles#421dc0969409257e13e6370554e9a4a589b55bc5
+        version: https://codeload.github.com/eins78/styles/tar.gz/421dc0969409257e13e6370554e9a4a589b55bc5
       astro:
         specifier: ^7.2.2
         version: 7.2.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(yaml@2.9.0)
@@ -193,6 +196,10 @@ packages:
   '@clack/prompts@1.7.0':
     resolution: {integrity: sha512-y7/yvZ2TPAnR9+jnc00klvNNLkJiXFFrQA/hlLCcxA9a2A4zQIOimyFQ9XfwYKiGD1fb5GY8vbKIIgO8d5Tb2A==}
     engines: {node: '>= 20.12.0'}
+
+  '@eins78/styles@https://codeload.github.com/eins78/styles/tar.gz/421dc0969409257e13e6370554e9a4a589b55bc5':
+    resolution: {tarball: https://codeload.github.com/eins78/styles/tar.gz/421dc0969409257e13e6370554e9a4a589b55bc5}
+    version: 1.0.0
 
   '@emmetio/abbreviation@2.3.3':
     resolution: {integrity: sha512-mgv58UrU3rh4YgbE/TzgLQwJ3pFsHHhCLqY20aJq+9comytTXUDNGG/SMtSeMJdkpxgXSXunBGLD8Boka3JyVA==}
@@ -1896,6 +1903,8 @@ snapshots:
       fast-string-width: 3.0.2
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
+
+  '@eins78/styles@https://codeload.github.com/eins78/styles/tar.gz/421dc0969409257e13e6370554e9a4a589b55bc5': {}
 
   '@emmetio/abbreviation@2.3.3':
     dependencies:

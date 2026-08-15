@@ -1,0 +1,89 @@
+/* dex colours.
+ *
+ * Loaded after @eins78/styles/cloud-docs.css, which is a dependency pinned by
+ * commit in package.json. That stylesheet is dark-first: its :root block IS the
+ * dark theme and the light theme is a prefers-color-scheme override, so every
+ * palette here has to supply both halves.
+ *
+ * It exposes exactly three custom properties. Note the two hyphens in
+ * --color--link: an override spelled with one fails silently and falls back to
+ * upstream white/black.
+ */
+
+/* Amber on black: a dark room with a projector running.
+ * Contrast against its background, WCAG 2.1:
+ *   dark  body  9.27:1 (AAA)   link 18.34:1 (AAA)
+ *   light body 16.11:1 (AAA)   link  7.54:1 (AAA)
+ */
+
+:root {
+  color-scheme: dark light;
+  --color-bg: #0b0b0c;
+  --color-text: #e0a852;
+  --color--link: #fff6e6;
+}
+
+@media screen and (prefers-color-scheme: light) {
+  :root {
+    --color-bg: #f5f0e6;
+    --color-text: #1a1408;
+    --color--link: #743f00;
+  }
+}
+
+/* ── palette previews ─────────────────────────────────────────────────── */
+
+/* Alternatives, selectable with ?theme=<name>. A short inline script in the
+ * page head copies the query parameter onto <html data-theme>, before first
+ * paint, so the default palette never flashes.
+ *
+ * All three are the dex brand pair from packages/branding (KTE/dex-branding):
+ * a randoma11y result saved 2024-04-11, #8ed1de on #2922c8, and its inverse.
+ *
+ * To drop the previews, delete this section and the script in index.astro.
+ */
+
+/* ?theme=brand - the recorded pair, exactly as saved. The two colours are just
+ * swapped between modes, so both measure the same: body 5.71:1 (AA). */
+:root[data-theme="brand"] {
+  --color-bg: #2922c8;
+  --color-text: #8ed1de;
+  --color--link: #ffffff;
+}
+@media screen and (prefers-color-scheme: light) {
+  :root[data-theme="brand"] {
+    --color-bg: #8ed1de;
+    --color-text: #2922c8;
+    --color--link: #000000;
+  }
+}
+
+/* ?theme=brand-deep - same two hues, darker ground, less glare over a long
+ * read. body 9.60:1 dark, 11.41:1 light (both AAA). */
+:root[data-theme="brand-deep"] {
+  --color-bg: #141063;
+  --color-text: #8ed1de;
+  --color--link: #ffffff;
+}
+@media screen and (prefers-color-scheme: light) {
+  :root[data-theme="brand-deep"] {
+    --color-bg: #cfeaf1;
+    --color-text: #1a1580;
+    --color--link: #000000;
+  }
+}
+
+/* ?theme=brand-day - the recorded pair kept for daylight, with a deeper night
+ * behind it. body 12.39:1 dark (AAA), 5.71:1 light (AA). */
+:root[data-theme="brand-day"] {
+  --color-bg: #0e0b3d;
+  --color-text: #a8dce6;
+  --color--link: #ffffff;
+}
+@media screen and (prefers-color-scheme: light) {
+  :root[data-theme="brand-day"] {
+    --color-bg: #8ed1de;
+    --color-text: #2922c8;
+    --color--link: #101010;
+  }
+}

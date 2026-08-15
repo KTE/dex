@@ -41,16 +41,55 @@ so a typo in `slot:` fails the build rather than silently dropping the block.
 
 ## Styling
 
-[`public/style.css`](public/style.css) vendors
-[`eins78/styles/cloud-docs.css`](https://github.com/eins78/styles/blob/main/cloud-docs.css) (CC0),
-pinned at commit `421dc09`, then overrides its three custom properties for an amber-on-black
-palette. It is copied rather than linked so the page cannot change when that repo does.
+The base stylesheet is [`@eins78/styles`](https://github.com/eins78/styles) (CC0), a dependency
+pinned to a commit:
+
+```json
+"@eins78/styles": "github:eins78/styles#421dc0969409257e13e6370554e9a4a589b55bc5"
+```
+
+Pinned by hash, so the page cannot change when that repo does, and `pnpm-lock.yaml` records the
+resolved tarball. To take a newer version, change the hash and run `pnpm install` — a visible,
+reviewable commit rather than a silent drift.
+
+[`src/styles/dex.css`](src/styles/dex.css) then overrides its three colour custom properties for an
+amber-on-black palette. Both are imported in `src/pages/index.astro`, **in that order** — the
+cascade depends on it.
 
 Note the upstream variable is `--color--link`, with two hyphens. An override that writes one hyphen
 fails silently and falls back to upstream white/black.
 
-The stylesheet and favicon live in `public/` and are referenced with relative URLs, so the page
-renders correctly both at `dex.ars.is` and at the `kte.github.io/dex/` fallback.
+`astro.config.mjs` sets `build.inlineStylesheets: 'always'`, so the CSS ends up inside the HTML
+rather than as an `_astro/` asset. On a one-page site a separate request buys nothing, and with no
+build-time assets the page has no absolute `/_astro/` URLs — it renders correctly at `dex.ars.is`
+and at the `kte.github.io/dex/` fallback alike. The whole built site is two files: `index.html` and
+`icon.svg`.
+
+### Palette previews
+
+Three alternative palettes can be previewed with a query parameter:
+
+| URL | palette | contrast (body) |
+|---|---|---|
+| *(none)* | amber on black | 9.27:1 dark, 16.11:1 light — AAA |
+| `?theme=brand` | the dex brand pair, exactly as recorded | 5.71:1 both — AA |
+| `?theme=brand-deep` | same hues, darker ground | 9.60:1 dark, 11.41:1 light — AAA |
+| `?theme=brand-day` | the recorded pair by day, deeper night | 12.39:1 dark, 5.71:1 light |
+
+All three come from [`packages/branding`](../branding) — a randoma11y result saved 2024-04-11,
+`#8ed1de` on `#2922c8`, and its inverse. The pair is symmetric, which is why `brand` measures the
+same in both modes.
+
+They are defined as `[data-theme="…"]` blocks at the end of `src/styles/dex.css`, selected by a
+short inline script in `src/pages/index.astro`. **The script needs `is:inline`** — without it Astro
+bundles it into an `_astro/` chunk, which would be the page's only build-time asset and would break
+at the `kte.github.io/dex/` fallback path.
+
+The script only accepts `/^[a-z-]{1,20}$/`; anything else is ignored and the default palette stands.
+Verified in a browser across both colour schemes: each parameter produces exactly its declared
+colours, and a malformed value falls back.
+
+To drop the previews once a palette is settled, delete that CSS section and the script.
 
 ## Local development
 

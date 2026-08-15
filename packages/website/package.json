@@ -11,6 +11,7 @@
     "check": "astro check"
   },
   "dependencies": {
+    "@eins78/styles": "github:eins78/styles#421dc0969409257e13e6370554e9a4a589b55bc5",
     "astro": "^7.2.2"
   },
   "devDependencies": {
