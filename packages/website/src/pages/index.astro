@@ -27,7 +27,7 @@ const meta = blocks.find((block) => block.data.title)
     <title>{meta?.data.title}</title>
     <meta name="description" content={meta?.data.description} />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-    {/* Palette previews: ?theme=brand | brand-deep | brand-day, defined in
+    {/* Palette previews: ?theme=amber | brand-deep | brand-day, defined in
         src/styles/dex.css. `is:inline` keeps Astro from bundling this into an
         _astro/ chunk; with the CSS inlined too, the page then emits no
         build-time assets at all and works at any base path. Runs during head

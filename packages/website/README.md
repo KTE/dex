@@ -52,9 +52,18 @@ Pinned by hash, so the page cannot change when that repo does, and `pnpm-lock.ya
 resolved tarball. To take a newer version, change the hash and run `pnpm install` — a visible,
 reviewable commit rather than a silent drift.
 
-[`src/styles/dex.css`](src/styles/dex.css) then overrides its three colour custom properties for an
-amber-on-black palette. Both are imported in `src/pages/index.astro`, **in that order** — the
-cascade depends on it.
+[`src/styles/dex.css`](src/styles/dex.css) then overrides its three colour custom properties with
+the dex brand pair, and gives headings a heavy grotesque. Both are imported in
+`src/pages/index.astro`, **in that order** — the cascade depends on it.
+
+The palette is the pair recorded in [`packages/branding`](../branding): a randoma11y result saved
+2024-04-11, `#8ed1de` on `#2922c8`, with the light theme its exact inverse. Because the two colours
+are simply swapped between modes, both halves measure the same — body 5.71:1, AA.
+
+Body copy stays monospace, as cloud-docs sets it. Headings are `system-ui` at weight 800 with tight
+tracking, following the branding sketch. `system-ui` rather than a webfont because it costs no
+bytes and no extra files, and resolves to SF Pro, Segoe UI or Roboto — all grotesques. The exact
+face differs by platform; the character does not.
 
 Note the upstream variable is `--color--link`, with two hyphens. An override that writes one hyphen
 fails silently and falls back to upstream white/black.
@@ -71,14 +80,15 @@ Three alternative palettes can be previewed with a query parameter:
 
 | URL | palette | contrast (body) |
 |---|---|---|
-| *(none)* | amber on black | 9.27:1 dark, 16.11:1 light — AAA |
-| `?theme=brand` | the dex brand pair, exactly as recorded | 5.71:1 both — AA |
+| *(none)* | the brand pair, as recorded | 5.71:1 both — AA |
+| `?theme=amber` | amber on black, the first palette this site shipped | 9.27:1 dark, 16.11:1 light — AAA |
 | `?theme=brand-deep` | same hues, darker ground | 9.60:1 dark, 11.41:1 light — AAA |
 | `?theme=brand-day` | the recorded pair by day, deeper night | 12.39:1 dark, 5.71:1 light |
 
-All three come from [`packages/branding`](../branding) — a randoma11y result saved 2024-04-11,
-`#8ed1de` on `#2922c8`, and its inverse. The pair is symmetric, which is why `brand` measures the
-same in both modes.
+`?theme=brand` is a no-op rather than an error: the brand pair *is* the default.
+
+In `brand-deep`, links are the brand indigo rather than black, so they read as brighter than the
+body text instead of heavier — black against that already-dark navy inverted the usual affordance.
 
 They are defined as `[data-theme="…"]` blocks at the end of `src/styles/dex.css`, selected by a
 short inline script in `src/pages/index.astro`. **The script needs `is:inline`** — without it Astro
