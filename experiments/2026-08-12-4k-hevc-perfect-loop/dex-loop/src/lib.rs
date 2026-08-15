@@ -11,6 +11,7 @@
 
 pub mod chunk;
 pub mod ffi_consts;
+pub mod health;
 pub mod heartbeat;
 pub mod nal;
 pub mod sha256;

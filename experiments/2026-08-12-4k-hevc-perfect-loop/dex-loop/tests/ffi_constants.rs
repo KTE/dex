@@ -14,8 +14,9 @@
 use std::ffi::{c_char, c_int, CStr};
 
 use dex_loop::ffi_consts::{
-    MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
-    MPV_EVENT_QUEUE_OVERFLOW, MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
+    MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE,
+    MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW, MPV_EVENT_SHUTDOWN,
+    MPV_EVENT_START_FILE,
 };
 
 #[link(name = "mpv")]
@@ -55,6 +56,42 @@ fn event_ids_match_the_live_library() {
         Some("start-file")
     );
     assert_eq!(event_name(MPV_EVENT_END_FILE).as_deref(), Some("end-file"));
+}
+
+/// F1: the two event ids the tier-0 health check relies on -- one to learn
+/// the sampled position (MPV_EVENT_PROPERTY_CHANGE, from
+/// `mpv_observe_property("time-pos", ...)`) and one to learn whether its
+/// async recovery command was accepted (MPV_EVENT_COMMAND_REPLY, from
+/// `mpv_command_async`). Verified against the live library exactly like the
+/// original four -- the whole point of T2 is that a transcription can rot
+/// silently and the live library cannot, and these two are just as
+/// dispatch-critical as the ones that already segfaulted once.
+#[test]
+fn f1_event_ids_match_the_live_library() {
+    assert_eq!(
+        event_name(MPV_EVENT_COMMAND_REPLY).as_deref(),
+        Some("command-reply")
+    );
+    assert_eq!(
+        event_name(MPV_EVENT_PROPERTY_CHANGE).as_deref(),
+        Some("property-change")
+    );
+    // And distinct from every other id this program dispatches on, so a
+    // future transcription collision (LOG_MESSAGE-vs-START_FILE's exact
+    // failure shape) cannot silently misroute one event's payload as
+    // another's.
+    for other in [
+        MPV_EVENT_NONE,
+        MPV_EVENT_SHUTDOWN,
+        MPV_EVENT_LOG_MESSAGE,
+        MPV_EVENT_START_FILE,
+        MPV_EVENT_END_FILE,
+        MPV_EVENT_QUEUE_OVERFLOW,
+    ] {
+        assert_ne!(MPV_EVENT_COMMAND_REPLY, other);
+        assert_ne!(MPV_EVENT_PROPERTY_CHANGE, other);
+    }
+    assert_ne!(MPV_EVENT_COMMAND_REPLY, MPV_EVENT_PROPERTY_CHANGE);
 }
 
 #[test]

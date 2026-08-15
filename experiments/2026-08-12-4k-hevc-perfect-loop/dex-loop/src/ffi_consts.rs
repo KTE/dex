@@ -13,8 +13,20 @@ use std::ffi::c_int;
 pub const MPV_EVENT_NONE: c_int = 0;
 pub const MPV_EVENT_SHUTDOWN: c_int = 1;
 pub const MPV_EVENT_LOG_MESSAGE: c_int = 2;
+/// Delivered in reply to `mpv_command_async`. F1's tier-0 in-place recovery
+/// issues its `loadfile` through the async command API specifically so the
+/// event thread can never block on it (see src/health.rs's module doc);
+/// this event is used only to log whether the queued command was accepted,
+/// nothing gates on it.
+pub const MPV_EVENT_COMMAND_REPLY: c_int = 5;
 pub const MPV_EVENT_START_FILE: c_int = 6;
 pub const MPV_EVENT_END_FILE: c_int = 7;
+/// Delivered when a property registered via `mpv_observe_property` changes
+/// value (or, for some properties, at mpv's own internal polling cadence).
+/// F1's health check subscribes to `time-pos` through this rather than
+/// polling `mpv_get_property_string` synchronously -- see src/health.rs's
+/// module doc for why that distinction matters.
+pub const MPV_EVENT_PROPERTY_CHANGE: c_int = 22;
 /// "At least one event had to be dropped." Delivered once the internal
 /// 1000-slot event ring chokes and starts silently discarding events --
 /// including, potentially, an END_FILE. Treated as fatal: see the event
@@ -25,3 +37,14 @@ pub const MPV_EVENT_QUEUE_OVERFLOW: c_int = 24;
 /// MPV_ERROR_EVENT_QUEUE_FULL, which happens to work only because mpv 0.40
 /// tests the sign rather than the value.
 pub const MPV_ERROR_UNSUPPORTED: c_int = -18;
+
+/// `mpv_format` tag for a plain floating-point property value (client.h's
+/// `mpv_format` enum: NONE=0, STRING=1, OSD_STRING=2, FLAG=3, INT64=4,
+/// DOUBLE=5, NODE=6, ...). Unlike the event ids above, mpv exposes no
+/// `mpv_format_name()` to verify this against the live library the same
+/// way, so main.rs checks this tag on every `MPV_EVENT_PROPERTY_CHANGE`
+/// payload before ever reading it as an `f64`, rather than trusting the
+/// transcription blindly -- the same class of bug that made
+/// MPV_EVENT_LOG_MESSAGE's mistranscription a segfault instead of a caught
+/// error.
+pub const MPV_FORMAT_DOUBLE: c_int = 5;

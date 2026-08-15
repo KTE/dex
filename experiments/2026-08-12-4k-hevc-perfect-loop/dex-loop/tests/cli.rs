@@ -531,6 +531,59 @@ fn startup_identifies_version_and_build() {
     );
 }
 
+// ---- F1: tier-0 health check does not disrupt normal operation ----------
+
+/// F1 registers `mpv_observe_property("time-pos", ...)` unconditionally
+/// whenever `mpv_initialize` succeeds -- i.e. on every test above that
+/// reaches playback. This pins that registration succeeding SILENTLY (no
+/// "mpv_observe_property" warning in stderr) as its own assertion, so a
+/// future FFI slip (wrong arg order, wrong format constant, wrong function
+/// signature) that makes registration fail -- but not crash -- gets a
+/// dedicated regression test instead of only ever showing up as a
+/// silently-disabled safety net nobody notices.
+///
+/// What this does NOT exercise: an actual stall + in-place recovery +
+/// escalation. Doing that safely would need real decode with a selected
+/// video track and a bounded-but-nonzero wait for two ~10s health-check
+/// ticks to elapse -- and this suite's mandatory `--opt vid=no` (see the
+/// module doc above) exists specifically to forbid letting any CLI test
+/// reach real decode, because the endless-stream design means such a test
+/// could never end on its own except by being killed at a deadline. The
+/// escalation POLICY itself (attempts, thresholds, when it gives up, the
+/// position-baseline reset across a recovery) is pure logic and is
+/// exhaustively tested in src/health.rs with none of that risk; this test
+/// is the narrow slice of the mpv-facing half that CAN be exercised here
+/// without touching decode or the display. The full mpv-facing behaviour
+/// (real time-pos progressing, a real health-check tick, a real recovery)
+/// is verified manually on the Pi against the actual display and asset --
+/// see the crate's PLAN.md F1 entry and this task's session notes.
+#[test]
+fn health_check_registers_without_warning_during_normal_playback() {
+    let p = temp_path("healthreg.265");
+    let bytes = stub_annexb();
+    std::fs::write(&p, &bytes).unwrap();
+    write_sidecar(&p, &bytes, "30");
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        !r.stderr.contains("mpv_observe_property"),
+        "F1's time-pos subscription failed to register: {}",
+        r.stderr
+    );
+}
+
 #[test]
 fn heartbeat_zero_is_emitted_at_startup() {
     // The 10-minute cadence is untestable in a test budget; heartbeat #0

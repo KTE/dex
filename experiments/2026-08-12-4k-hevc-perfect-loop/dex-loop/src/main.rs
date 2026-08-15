@@ -46,9 +46,11 @@
 
 use dex_loop::chunk::{clamp_want, next_chunk};
 use dex_loop::ffi_consts::{
-    MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
-    MPV_EVENT_QUEUE_OVERFLOW, MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
+    MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE,
+    MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW, MPV_EVENT_SHUTDOWN,
+    MPV_EVENT_START_FILE, MPV_FORMAT_DOUBLE,
 };
+use dex_loop::health::{HealthAction, HealthMonitor};
 use dex_loop::heartbeat::format_heartbeat;
 use dex_loop::nal::validate_leading_nals;
 use dex_loop::sidecar::{resolve_fps, verify_payload, FpsSource, Sidecar};
@@ -107,6 +109,17 @@ struct MpvEventLogMessage {
     log_level: c_int,
 }
 
+/// `mpv_event_property`. Only read when `format == MPV_FORMAT_DOUBLE` (F1's
+/// `time-pos` subscription); `data` is a tagged union whose true type
+/// depends on `format`, so the tag MUST be checked before `data` is ever
+/// dereferenced -- see the MPV_FORMAT_DOUBLE doc comment in ffi_consts.rs.
+#[repr(C)]
+struct MpvEventProperty {
+    name: *const c_char,
+    format: c_int,
+    data: *mut c_void,
+}
+
 #[link(name = "mpv")]
 extern "C" {
     fn mpv_create() -> *mut MpvHandle;
@@ -118,6 +131,16 @@ extern "C" {
         data: *const c_char,
     ) -> c_int;
     fn mpv_command(ctx: *mut MpvHandle, args: *const *const c_char) -> c_int;
+    // Async counterpart of mpv_command: queues the command and returns
+    // immediately (client.h), replying later via MPV_EVENT_COMMAND_REPLY.
+    // F1's in-place recovery uses this, never the synchronous mpv_command,
+    // specifically so the event thread cannot block on it -- see
+    // src/health.rs's module doc.
+    fn mpv_command_async(
+        ctx: *mut MpvHandle,
+        reply_userdata: u64,
+        args: *const *const c_char,
+    ) -> c_int;
     fn mpv_wait_event(ctx: *mut MpvHandle, timeout: f64) -> *mut MpvEvent;
     fn mpv_error_string(error: c_int) -> *const c_char;
     fn mpv_request_log_messages(ctx: *mut MpvHandle, min_level: *const c_char) -> c_int;
@@ -128,6 +151,18 @@ extern "C" {
         open_fn: Option<extern "C" fn(*mut c_void, *mut c_char, *mut MpvStreamCbInfo) -> c_int>,
     ) -> c_int;
     fn mpv_get_property_string(ctx: *mut MpvHandle, name: *const c_char) -> *mut c_char;
+    // Non-blocking (client.h): queues a subscription and returns
+    // immediately. F1's health check calls this exactly ONCE at startup and
+    // thereafter only ever reads the position out of the resulting
+    // MPV_EVENT_PROPERTY_CHANGE events -- never a synchronous property
+    // read -- see src/health.rs's module doc for why that distinction is
+    // the whole point.
+    fn mpv_observe_property(
+        ctx: *mut MpvHandle,
+        reply_userdata: u64,
+        name: *const c_char,
+        format: c_int,
+    ) -> c_int;
     fn mpv_free(data: *mut c_void);
 }
 
@@ -165,6 +200,33 @@ static WRAP_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Heartbeat cadence: frequent enough to bound "when did it die" to a useful
 /// journal window, rare enough to cost nothing.
 const HEARTBEAT_SECS: u64 = 600;
+
+/// F1 tier-0 health-check cadence: "order 10 s" per PLAN.md -- low enough
+/// frequency, off the decode path, to cost nothing; the escalation policy
+/// itself (dex_loop::health::HealthMonitor) requires TWO consecutive
+/// non-advancing checks before acting, so real detection latency for an
+/// actual stall is roughly 2x this.
+const HEALTH_CHECK_SECS: u64 = 10;
+
+/// F1's cumulative, process-lifetime in-place-recovery budget -- see
+/// dex_loop::health's module doc ("why the budget never resets") for the
+/// full reasoning. 3 is small enough to guarantee the worst case is bounded
+/// (at most 3 loadfile-reload attempts, ever, before conceding to tier 1)
+/// yet large enough to absorb a handful of isolated transient glitches
+/// (HDMI blink, a sink waking late) over a multi-week unattended run
+/// without needlessly forcing a full process restart for something tier 0
+/// could fix in place.
+const MAX_RECOVERY_ATTEMPTS: u32 = 3;
+
+/// `reply_userdata` tag for F1's `time-pos` subscription, so its
+/// MPV_EVENT_PROPERTY_CHANGE events are told apart from any property this
+/// program observes in the future.
+const HEALTH_CHECK_USERDATA: u64 = 1;
+
+/// `reply_userdata` tag for F1's in-place-recovery `loadfile` command, so
+/// its MPV_EVENT_COMMAND_REPLY is told apart from any async command this
+/// program issues in the future.
+const RECOVERY_COMMAND_USERDATA: u64 = 2;
 
 /// The stream read callback: a thin unsafe shell over
 /// [`dex_loop::chunk::next_chunk`], which owns (and tests) every rule that
@@ -589,6 +651,33 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // F1 tier-0 health check: subscribe to time-pos so the event loop can
+    // later detect a stalled decode without ever polling the core
+    // synchronously -- see dex_loop::health's module doc for the full
+    // reasoning. This call is itself documented non-blocking; only the
+    // SUBSEQUENT samples, delivered as ordinary MPV_EVENT_PROPERTY_CHANGE
+    // events through the same wait loop already proven (by END_FILE and
+    // QUEUE_OVERFLOW handling) never to hang, are load-bearing. A failure
+    // to register is NOT fatal -- the health check is a best-effort safety
+    // net on top of a working player, not a gate the show depends on -- but
+    // per principle 2 it must be loud, never silent.
+    let time_pos = CString::new("time-pos").unwrap();
+    let rc = unsafe {
+        mpv_observe_property(
+            ctx,
+            HEALTH_CHECK_USERDATA,
+            time_pos.as_ptr(),
+            MPV_FORMAT_DOUBLE,
+        )
+    };
+    if rc < 0 {
+        eprintln!(
+            "warning: {} -- tier-0 self-healing is DISABLED for this run; tier 1 \
+             (process restart on a fatal event) still applies",
+            err(ctx, "mpv_observe_property(time-pos)", rc)
+        );
+    }
+
     let cmd_loadfile = CString::new("loadfile").unwrap();
     let cmd_url = CString::new("loop://endless").unwrap();
     let argv: [*const c_char; 3] = [cmd_loadfile.as_ptr(), cmd_url.as_ptr(), std::ptr::null()];
@@ -623,17 +712,79 @@ fn main() -> ExitCode {
     // formatting) on every boot, and anchors the journal.
     emit_heartbeat(ctx, started);
 
+    // F1 tier-0 health check state. `last_position` is updated ONLY by the
+    // MPV_EVENT_PROPERTY_CHANGE handler below -- never read synchronously
+    // from mpv -- and fed to `health` on a fixed cadence. See
+    // dex_loop::health's module doc for the full policy and reasoning.
+    let mut last_position: Option<f64> = None;
+    let mut health = HealthMonitor::new(MAX_RECOVERY_ATTEMPTS);
+    let mut last_health_check = Instant::now();
+
     let mut exit = ExitCode::SUCCESS;
     loop {
-        // Wake at least every 30 s: in the healthy steady state mpv delivers
-        // NO events, which is precisely when the heartbeat must still fire.
-        // A 30 s wake on the event thread costs nothing on the decode path.
-        let ev = unsafe { mpv_wait_event(ctx, 30.0) };
+        // Wake at least every HEALTH_CHECK_SECS. In the healthy steady
+        // state mpv delivers frequent time-pos property-change events on
+        // its own, waking this thread without any help from the timeout --
+        // but during an actual STALL, by definition NO such events arrive
+        // (that absence IS the stall signal; see dex_loop::health), so the
+        // timeout is what guarantees the health check still gets evaluated
+        // on schedule in precisely the one case that matters. A wake this
+        // cheap (drain one event, compare two numbers) on the event thread,
+        // separate from the decode/VO threads, costs nothing on the decode
+        // path.
+        let ev = unsafe { mpv_wait_event(ctx, HEALTH_CHECK_SECS as f64) };
         let id = unsafe { (*ev).event_id };
+        let reply_userdata = unsafe { (*ev).reply_userdata };
 
         if last_heartbeat.elapsed().as_secs() >= HEARTBEAT_SECS {
             emit_heartbeat(ctx, started);
             last_heartbeat = Instant::now();
+        }
+
+        if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
+            last_health_check = Instant::now();
+            match health.tick(last_position) {
+                HealthAction::Healthy => {}
+                HealthAction::AttemptRecovery { attempt, max } => {
+                    eprintln!(
+                        "dex-loop: health check: no progress across 2 consecutive \
+                         checks ({HEALTH_CHECK_SECS}s apart) -- attempting in-place \
+                         recovery {attempt}/{max} (re-issuing loadfile to force VO \
+                         reconfiguration)"
+                    );
+                    // mpv_command_async, not mpv_command: this call runs on
+                    // the SAME event thread that also has to keep detecting
+                    // every fatal event, and a synchronous command could
+                    // block that thread against a wedged core -- see
+                    // dex_loop::health's module doc.
+                    let cmd_loadfile = CString::new("loadfile").unwrap();
+                    let cmd_url = CString::new("loop://endless").unwrap();
+                    let cmd_replace = CString::new("replace").unwrap();
+                    let argv: [*const c_char; 4] = [
+                        cmd_loadfile.as_ptr(),
+                        cmd_url.as_ptr(),
+                        cmd_replace.as_ptr(),
+                        std::ptr::null(),
+                    ];
+                    let rc =
+                        unsafe { mpv_command_async(ctx, RECOVERY_COMMAND_USERDATA, argv.as_ptr()) };
+                    if rc < 0 {
+                        eprintln!(
+                            "warning: {}",
+                            err(ctx, "mpv_command_async(loadfile)", rc)
+                        );
+                    }
+                }
+                HealthAction::Escalate => {
+                    eprintln!(
+                        "dex-loop: FATAL: tier-0 self-healing exhausted its recovery \
+                         budget ({MAX_RECOVERY_ATTEMPTS} attempt(s)) with no progress \
+                         -- exiting so the supervisor restarts (tier 1)"
+                    );
+                    exit = ExitCode::FAILURE;
+                    break;
+                }
+            }
         }
 
         if id == MPV_EVENT_NONE {
@@ -643,6 +794,51 @@ fn main() -> ExitCode {
             break;
         }
         if id == MPV_EVENT_START_FILE {
+            continue;
+        }
+        if id == MPV_EVENT_PROPERTY_CHANGE {
+            // SAFETY: `data` is an mpv_event_property for this event id,
+            // valid until the next mpv_wait_event call.
+            let p = unsafe { &*((*ev).data as *const MpvEventProperty) };
+            // Check BOTH the reply_userdata tag and the format tag before
+            // ever touching `data` -- `data`'s true type is decided by
+            // `format` (a tagged union), and trusting a hand-transcribed
+            // format constant without checking it is exactly the class of
+            // bug that made MPV_EVENT_LOG_MESSAGE's mistranscription a
+            // segfault instead of a caught error. A mismatch on either tag
+            // is not acted on: the next health-check tick simply sees no
+            // new sample, which HealthMonitor already treats identically to
+            // a genuine stall (see dex_loop::health's module doc) -- so
+            // failing to interpret an unexpected payload here fails toward
+            // "the health check is slightly more eager", never toward
+            // reading garbage.
+            if reply_userdata == HEALTH_CHECK_USERDATA
+                && p.format == MPV_FORMAT_DOUBLE
+                && !p.data.is_null()
+            {
+                // SAFETY: the format tag confirms `data` points to an f64,
+                // per client.h's mpv_event_property contract for
+                // MPV_FORMAT_DOUBLE.
+                last_position = Some(unsafe { *(p.data as *const f64) });
+            }
+            continue;
+        }
+        if id == MPV_EVENT_COMMAND_REPLY {
+            // Diagnostic only -- nothing gates on this. The next
+            // health-check tick judges the recovery by its actual effect
+            // (did time-pos start advancing again), not by whether mpv
+            // accepted the command; logging a rejection just makes that
+            // judgment call diagnosable from the journal afterwards.
+            if reply_userdata == RECOVERY_COMMAND_USERDATA {
+                let error = unsafe { (*ev).error };
+                if error < 0 {
+                    eprintln!(
+                        "dex-loop: health check: in-place recovery's loadfile command \
+                         was rejected: {}",
+                        err(ctx, "mpv_command_async(loadfile) reply", error)
+                    );
+                }
+            }
             continue;
         }
         if id == MPV_EVENT_LOG_MESSAGE {
