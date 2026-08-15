@@ -1,11 +1,11 @@
 ---
 slot: header
-title: dex — Raspberry Pi based digital exhibition player
+title: dex — Raspberry Pi based HDMI media player
 description: >-
-  A Raspberry Pi based digital exhibition player. Plays video and images on a
-  screen or projector, in a loop, with no gap between video repeats.
+  A Raspberry Pi based HDMI media player. Plays an image or video loop on a
+  screen or projector, repeating with no gap.
 ---
 
 # dex
 
-Raspberry Pi based digital exhibition player.
+Raspberry Pi based HDMI media player.
