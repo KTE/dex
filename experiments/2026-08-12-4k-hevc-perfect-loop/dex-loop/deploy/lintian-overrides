@@ -17,3 +17,8 @@
 # to trixie's 1.85 on purpose (SPEC 5c, "Toolchain"). This override should be
 # deleted the moment that pin moves.
 dex-loop: aliased-location
+
+# Wants the changelog entry to close an ITP bug. That is a rule for packages
+# being uploaded INTO the Debian archive; this one is built in CI and installed
+# on our own devices, so there is no bug to close and never will be.
+dex-loop: initial-upload-closes-no-bugs
