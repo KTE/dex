@@ -201,6 +201,28 @@ that reuse obvious instead of accidental.
 | `n120` | 120 | 2s @ 60 |
 | `n180` | 180 | 3s @ 60 |
 
+**The corollary: `nN` already contains every `nM` where `M` divides `N`.** Because frame
+`i` is pinned to a phase angle rather than to a time, frame `k·i` of `n(k·M)` and frame
+`i` of `nM` are the same angle — and therefore pixel-identical, not merely similar. So a
+missing sequence is often a `find`/`ln` away rather than an AE render:
+
+```sh
+# n90 from n180 — every other frame, pixel-exact, no render
+mkdir -p /tmp/clouds-4k-n90
+for i in $(seq 0 89); do
+  ln /tmp/clouds-4k-n180/f_$(printf %04d $((i*2))).tif \
+     /tmp/clouds-4k-n90/f_$(printf %04d $i).tif
+done
+```
+
+`n180` alone can serve 90, 60, 45, 36, 30, 20, 18, 12, 10 and 9. **Verify the claim on a
+sequence you already trust before relying on it** — compare `framemd5` of `n180[6i]`
+against `n30[i]`. That test is really checking the cycle's endpoint convention: it holds
+only because the closing keyframe sits at frame `N`, so the render spans `N` frames of a
+cycle that would repeat at `N`. Had the endpoint been at `N-1`, every derived frame would
+sit a fraction of a degree off — clouds that look right and loop wrong. Compare pixel
+data, not bytes: the TIFF headers differ.
+
 ---
 
 ## Stage 3 — Compose and encode
@@ -289,7 +311,9 @@ single definition by construction.
    label and bar across, update the label text, scale if not 4K.
 2. **Masters** — render to `.mov`, transcode with `libx264rgb -qp 0` to `.mkv`.
 3. **Clouds** — check whether a sequence with that frame count already exists; if so,
-   reuse it. Otherwise set the cumulus comp to the same size, rate and duration,
+   reuse it. Next, check whether an existing sequence is an exact **multiple** of it —
+   `nN` decimates to any `nM` where `M` divides `N`, no render required. Only if
+   neither holds: set the cumulus comp to the same size, rate and duration,
    [retarget the resolution](#retargeting-to-a-different-resolution) if it changed,
    move the `Evolution` keyframe, and render `D×F` frames plus one. The project keeps
    one comp per frame count (`clouds-4K-n30`, `-n60`, `-n120`, `-n180`) — duplicate
@@ -316,6 +340,11 @@ bin/capture.mjs --source out/dex-test-card-….mp4 --out /tmp/idx.txt
 Expect `hevc`, the intended geometry, **one keyframe per second**, and a barcode
 decoding `0 … N−1` exactly. The build script already asserts the barcode; the rest
 is worth an eyeball when adding a format.
+
+Then verify the asset against **the rest of the set**, not only against itself — a
+file can pass every check above and still have been built from a superseded cloud
+render. See [One asset in the set built from a stale cloud
+source](#one-asset-in-the-set-built-from-a-stale-cloud-source).
 
 ---
 
@@ -369,6 +398,31 @@ shows up when set beside an asset built correctly.
 
 Double `Scale` with the linear dimension and recentre `Offset Turbulence`. See
 [Retargeting to a different resolution](#retargeting-to-a-different-resolution).
+
+### One asset in the set built from a stale cloud source
+
+When the cloud comps change, assets built *before* the change keep whatever source
+they were built from. Nothing marks them: they carry the right geometry, the right
+frame count, a verified barcode, and — because the film grain fills the bitrate
+budget regardless of what the clouds look like — a bitrate indistinguishable from a
+correct build. `3s-2160p30` sat in the set for a day this way.
+
+**Bitrate cannot catch this, and neither can any single-file check.** The defect is
+only visible *across* the set, so verify the set rather than the file:
+
+```sh
+# signed background darkening: clean minus clouds, one number per asset
+yavg() { ffmpeg -v error -i "$1" \
+  -vf "crop=iw/6:ih/6:0:0,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" \
+  -frames:v 1 -f null - 2>/dev/null | grep -o 'YAVG=[0-9.]*' | head -1 | cut -d= -f2; }
+```
+
+Assets of the same resolution should agree to a fraction of a luma level (the 4K set
+runs +11.32 … +11.41). An asset outside the band — or with the **wrong sign** — was
+built from a different cloud source. Keep the comparison *signed*: `blend=difference`
+is unsigned and cannot separate "darkened by 1" from "brightened by 1", and the sign
+is what identifies the odd asset. Re-run this whenever a cloud comp changes, and
+rebuild whatever falls outside the band.
 
 ### A layer that stops before the comp does
 
