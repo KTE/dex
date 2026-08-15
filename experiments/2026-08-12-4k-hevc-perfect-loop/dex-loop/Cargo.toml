@@ -3,6 +3,16 @@ name = "dex-loop"
 version = "0.1.0"
 edition = "2021"
 description = "Gapless HEVC looper: libmpv fed by an endless in-process byte stream"
+# The dex project's policy: public domain wherever the project is free to
+# choose. It is free to choose here — this crate is written from scratch and
+# its cargo dependencies are all MIT/Apache-2.0.
+#
+# This describes THE SOURCE ONLY. The .deb links libmpv, which Debian ships as
+# GPL-3+ (it links GPL-3+ libsmbclient), so the shipped binary is a combined
+# work conveyed under GPL-3+. No conflict — CC0 is GPL-compatible, and the two
+# statements are about different artifacts. See LICENSE, which the package
+# embeds verbatim as its copyright file so the distinction ships with it.
+license = "CC0-1.0"
 # The compiler Debian trixie ships, which is what the Pi has. The device is a
 # development host, so the crate must stay buildable with the fleet's own
 # toolchain — CI compiles with apt's rustc to enforce it, not rustup's stable.
@@ -44,6 +54,11 @@ sha2 = "0.11.0"
 [package.metadata.deb]
 maintainer = "Max Albrecht <1@178.is>"
 copyright = "Max Albrecht"
+# Ship LICENSE verbatim as the package's copyright file. Without this, cargo-deb
+# emits `License: CC0-1.0` alone — true of the source and misleading about the
+# binary, which is a GPL-3+ combined work. A package that understates its own
+# obligations is the one licensing bug worth going out of the way to avoid.
+license-file = ["LICENSE", 0]
 extended-description = """
 Gapless 4K HEVC loop player for Raspberry Pi gallery installations. Feeds
 libmpv an endless in-process byte stream so the decoder never sees EOF and
