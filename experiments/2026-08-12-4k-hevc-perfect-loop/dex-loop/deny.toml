@@ -31,14 +31,13 @@ ignore = []
 # Unicode-3.0 should therefore FAIL here and be waved through by an explicit
 # one-line edit — which is the review this file exists to force.
 #
-# Note `CC0-1.0` is dex-loop's own current licence. If the project-wide licence
-# decision lands on 0BSD (see the story's licence open point), this list must be
-# updated in the same commit or the check fails — which is the intended
-# behaviour, not friction: it keeps this file honest about what ships.
+# `MIT-0` is dex-loop's own licence. That entry changed from CC0-1.0 in the same
+# commit as the licence decision — which is exactly the behaviour this list is
+# for: it cannot silently disagree with what ships.
 allow = [
     "Apache-2.0", # 14 crates
     "MIT",        # 16 crates
-    "CC0-1.0",    # dex-loop itself
+    "MIT-0",      # dex-loop itself
 ]
 confidence-threshold = 0.9
 

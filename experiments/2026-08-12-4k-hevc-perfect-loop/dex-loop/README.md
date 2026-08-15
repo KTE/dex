@@ -389,3 +389,35 @@ PLAN.md's F8): on site this reads as a plain black rectangle, so start with
   unseekable/unknown, exactly like a pipe: an mpv that believes it can seek will
   try to, and seeking is the operation that produces the seam. Fine for dex,
   which only ever loops; disqualifying for a general-purpose player.
+
+## Licensing
+
+The dex project releases its works to the public domain as far as is legally and
+practically possible. Public domain dedication is not uniformly recognised across
+jurisdictions, and the instruments closest to it carry different trade-offs for
+software and for content — so that single intent resolves to two licences:
+
+| | |
+|---|---|
+| **Content** (test cards, video masters, branding) | `CC0-1.0` |
+| **Software** (this crate, dex code generally) | `MIT-0` |
+
+Both are maximally permissive — no attribution, no conditions. The split is the
+same intent surviving two practical facts: CC0 expressly disclaims any patent
+grant, and **Fedora has disallowed CC0 for code since 2022**, so using it for
+software would forfeit a distribution channel for nothing; while `MIT-0` is MIT
+minus the attribution clause, OSI-approved and accepted everywhere. GPL appears
+in the project only where it was **inherited** (pi-gen → dex-os), never by choice.
+
+Licensing is machine-readable per the [REUSE](https://reuse.software)
+specification — `REUSE.toml` plus `LICENSES/` — because the people who most need
+a precise answer are distro packagers, and `reuse lint` gives them one that is
+checked rather than asserted. It runs in CI.
+
+**The shipped `.deb` is a different question.** It links libmpv, which Debian
+builds against GPL-3+ libsmbclient, so the binary is a combined work conveyed
+under GPL-3+. Not a conflict and not a retreat: `MIT-0` is GPL-compatible, so
+this source imposes nothing on anyone. The binary's terms simply are not ours to
+set — they follow from how each distributor builds mpv, and an mpv without
+libsmbclient is LGPL-2.1+. See [`LICENSE`](LICENSE), which the package embeds
+verbatim as its copyright file so the distinction ships with it.

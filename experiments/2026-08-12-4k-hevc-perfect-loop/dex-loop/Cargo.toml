@@ -3,16 +3,19 @@ name = "dex-loop"
 version = "0.1.0"
 edition = "2021"
 description = "Gapless HEVC looper: libmpv fed by an endless in-process byte stream"
-# The dex project's policy: public domain wherever the project is free to
-# choose. It is free to choose here — this crate is written from scratch and
-# its cargo dependencies are all MIT/Apache-2.0.
+# The dex project releases its works to the public domain as far as legally and
+# practically possible: CC0-1.0 for content, MIT-0 for software. MIT-0 is MIT
+# minus the attribution clause — maximally permissive, OSI-approved, and unlike
+# CC0 it is accepted by every distributor for CODE (Fedora has disallowed CC0
+# for code since 2022, because CC0 expressly disclaims patent grants).
 #
 # This describes THE SOURCE ONLY. The .deb links libmpv, which Debian ships as
 # GPL-3+ (it links GPL-3+ libsmbclient), so the shipped binary is a combined
-# work conveyed under GPL-3+. No conflict — CC0 is GPL-compatible, and the two
+# work conveyed under GPL-3+. No conflict — MIT-0 is GPL-compatible, and the two
 # statements are about different artifacts. See LICENSE, which the package
 # embeds verbatim as its copyright file so the distinction ships with it.
-license = "CC0-1.0"
+# Machine-readable per-file licensing: REUSE.toml + LICENSES/ (reuse.software).
+license = "MIT-0"
 # The compiler Debian trixie ships, which is what the Pi has. The device is a
 # development host, so the crate must stay buildable with the fleet's own
 # toolchain — CI compiles with apt's rustc to enforce it, not rustup's stable.

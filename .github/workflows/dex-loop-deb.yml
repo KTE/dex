@@ -165,7 +165,7 @@ jobs:
           apt-get update
           # devscripts provides checkbashisms; systemd provides systemd-analyze.
           apt-get install -y --no-install-recommends \
-            shellcheck devscripts systemd git ca-certificates
+            shellcheck devscripts systemd git ca-certificates reuse
 
       - uses: actions/checkout@v4
 
@@ -206,6 +206,19 @@ jobs:
       - name: Shellcheck the bench harness
         working-directory: experiments/2026-08-12-4k-hevc-perfect-loop
         run: shellcheck scripts/*.sh
+
+      # REUSE (reuse.software): every file must carry copyright and licence
+      # information, machine-readably. dex aims to be installable from all the
+      # usual repos, and distro packagers are precisely the people who need a
+      # precise per-file answer -- this makes it checkable rather than asserted.
+      #
+      # Scoped to the crate with --root. Repo-wide compliance is the eventual
+      # goal but is blocked on the GPL-inherited packages (pi-gen -> dex-os),
+      # whose licensing is not settled; annotating those unilaterally would be
+      # making a claim rather than recording one.
+      - name: REUSE lint
+        working-directory: ${{ env.CRATE_DIR }}
+        run: reuse --root . lint
 
   # Turns SPEC §5c's dependency policy into a gate: advisories, a trimmed
   # licence allow-list, and a ban on the proc-macro toolchain (see deny.toml —
