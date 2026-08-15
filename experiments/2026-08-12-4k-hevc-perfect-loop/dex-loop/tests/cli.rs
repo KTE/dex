@@ -821,7 +821,6 @@ fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
 /// line while T7 is armed, asserted present at least once after the
 /// absorb) -- not implemented here; this comment exists so that gap is
 /// recorded rather than silently assumed covered.
-/// only the bench proves the picture.
 #[test]
 #[ignore]
 fn force_recovery_survives_against_real_mpv() {
