@@ -334,7 +334,13 @@ jobs:
           apt-get purge -y dex-loop
           apt-get autoremove --purge -y
 
-          snap > /before.txt
+          # /tmp, not /: snap() walks the whole filesystem, and a snapshot
+          # written to / would then be a directory entry snap's own find
+          # sees -- including itself as a "new" file relative to whichever
+          # snapshot didn't exist yet when it was taken. /tmp is already in
+          # snap()'s prune list for the same class of reason (excluding the
+          # runner's own transient state), so scratch output belongs there.
+          snap > /tmp/before.txt
 
           # --- the real, asserted run ---
           apt-get install -y "./${deb#./}"
@@ -407,12 +413,12 @@ jobs:
           # bash, and process substitution is a bashism dash does not have --
           # confirmed by CI itself once the group-membership fix above let the
           # job reach this far for the first time ("Syntax error: ( unexpected").
-          snap > /after.txt
-          grep -v '^/opt/dex' /before.txt > /before.filtered.txt
-          grep -v '^/opt/dex' /after.txt > /after.filtered.txt
-          if ! diff /before.filtered.txt /after.filtered.txt > /leftovers.diff; then
+          snap > /tmp/after.txt
+          grep -v '^/opt/dex' /tmp/before.txt > /tmp/before.filtered.txt
+          grep -v '^/opt/dex' /tmp/after.txt > /tmp/after.filtered.txt
+          if ! diff /tmp/before.filtered.txt /tmp/after.filtered.txt > /tmp/leftovers.diff; then
             echo "::error::purge left files behind beyond the two intended:"
-            cat /leftovers.diff
+            cat /tmp/leftovers.diff
             exit 1
           fi
           echo "lifecycle OK — install, remove and purge all behave as designed"
