@@ -514,7 +514,21 @@ fn act_on_health_action(
                 // actually engages -- it is here so a future change to that
                 // relationship fails safe (an undercount that stays fatal)
                 // rather than wrapping into a silent lie.
-                *recovery_stops_pending = recovery_stops_pending.saturating_add(1);
+                // TEMPORARY MUTATION-KILL, reverted immediately after: the
+                // commented-out line below is C1's actual fix. Disabling it
+                // reproduces the exact regression -- the queued recovery's
+                // own END_FILE(reason=stop) is no longer marked as expected,
+                // so the event loop treats it as fatal and the process dies
+                // on its own first recovery step. The `let _ =` line exists
+                // only to keep this parameter "used" for clippy's
+                // -D warnings gate, so the mutation is caught by the new
+                // live-fire CI step rather than by Clippy failing earlier
+                // for an unrelated reason. This commit exists ONLY to prove
+                // the new CI step (`.github/workflows/dex-loop-deb.yml`,
+                // "C1 live-fire") goes red for this exact reason; it is
+                // reverted by the very next commit. Do not ship this.
+                let _ = *recovery_stops_pending;
+                // *recovery_stops_pending = recovery_stops_pending.saturating_add(1);
             }
         }
         HealthAction::Escalate => {
