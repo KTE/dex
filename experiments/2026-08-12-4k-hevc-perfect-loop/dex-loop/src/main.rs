@@ -49,12 +49,15 @@ use dex_loop::ffi_consts::{
     MPV_ERROR_UNSUPPORTED, MPV_EVENT_END_FILE, MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE,
     MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE,
 };
+use dex_loop::heartbeat::format_heartbeat;
 use dex_loop::nal::validate_leading_nals;
 use dex_loop::sidecar::{resolve_fps, verify_payload, FpsSource, Sidecar};
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 // ---------------------------------------------------------------------------
 // libmpv FFI. Only the handful of entry points this program needs, transcribed
@@ -109,7 +112,11 @@ extern "C" {
     fn mpv_create() -> *mut MpvHandle;
     fn mpv_initialize(ctx: *mut MpvHandle) -> c_int;
     fn mpv_terminate_destroy(ctx: *mut MpvHandle);
-    fn mpv_set_option_string(ctx: *mut MpvHandle, name: *const c_char, data: *const c_char) -> c_int;
+    fn mpv_set_option_string(
+        ctx: *mut MpvHandle,
+        name: *const c_char,
+        data: *const c_char,
+    ) -> c_int;
     fn mpv_command(ctx: *mut MpvHandle, args: *const *const c_char) -> c_int;
     fn mpv_wait_event(ctx: *mut MpvHandle, timeout: f64) -> *mut MpvEvent;
     fn mpv_error_string(error: c_int) -> *const c_char;
@@ -118,10 +125,10 @@ extern "C" {
         ctx: *mut MpvHandle,
         protocol: *const c_char,
         user_data: *mut c_void,
-        open_fn: Option<
-            extern "C" fn(*mut c_void, *mut c_char, *mut MpvStreamCbInfo) -> c_int,
-        >,
+        open_fn: Option<extern "C" fn(*mut c_void, *mut c_char, *mut MpvStreamCbInfo) -> c_int>,
     ) -> c_int;
+    fn mpv_get_property_string(ctx: *mut MpvHandle, name: *const c_char) -> *mut c_char;
+    fn mpv_free(data: *mut c_void);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +155,17 @@ const _: () = {
     assert_send::<LoopStream>();
 };
 
+/// Completed passes over the payload — incremented by `read_fn` on the demux
+/// thread each time the position wraps to 0, read by the heartbeat on the
+/// event thread. This counts DEMUXER passes, which run ~1 s (readahead)
+/// ahead of what is on screen. Relaxed ordering: a monotonic diagnostic
+/// counter, not a synchronization point.
+static WRAP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Heartbeat cadence: frequent enough to bound "when did it die" to a useful
+/// journal window, rare enough to cost nothing.
+const HEARTBEAT_SECS: u64 = 600;
+
 /// The stream read callback: a thin unsafe shell over
 /// [`dex_loop::chunk::next_chunk`], which owns (and tests) every rule that
 /// matters — never return 0 (to mpv, 0 is final EOF, the one event this
@@ -172,6 +190,10 @@ extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64
         std::ptr::copy_nonoverlapping(s.data.as_ptr().add(c.start), buf as *mut u8, c.n);
     }
     s.pos = c.next_pos;
+    if c.next_pos == 0 {
+        // The copy reached the payload's end: one full pass completed.
+        WRAP_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
     c.n as i64
 }
 
@@ -240,6 +262,49 @@ fn set_opt(ctx: *mut MpvHandle, name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Read an mpv property as a string, or None if unavailable. Used only by
+/// the low-frequency heartbeat — never on the decode path.
+fn get_prop(ctx: *mut MpvHandle, name: &str) -> Option<String> {
+    let n = CString::new(name).ok()?;
+    // SAFETY: ctx is a valid initialized handle; mpv returns NULL or a
+    // NUL-terminated string that must be released with mpv_free.
+    let p = unsafe { mpv_get_property_string(ctx, n.as_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+    // SAFETY: p came from mpv_get_property_string and is released exactly once.
+    unsafe { mpv_free(p as *mut c_void) };
+    Some(s)
+}
+
+/// Pi SoC temperature in millidegrees C, if the kernel exposes it. Absent on
+/// non-Linux and never an error: the heartbeat degrades to n/a.
+fn read_temp_millicelsius() -> Option<i64> {
+    std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// One heartbeat line to stderr. Runs on the event thread, off the decode
+/// path; two property reads and one sysfs read per 10 minutes is noise.
+fn emit_heartbeat(ctx: *mut MpvHandle, started: Instant) {
+    let drops = get_prop(ctx, "frame-drop-count");
+    let delayed = get_prop(ctx, "vo-delayed-frame-count");
+    eprintln!(
+        "{}",
+        format_heartbeat(
+            WRAP_COUNT.load(Ordering::Relaxed),
+            started.elapsed().as_secs(),
+            read_temp_millicelsius(),
+            drops.as_deref(),
+            delayed.as_deref(),
+        )
+    );
+}
+
 fn usage() -> ! {
     eprintln!(
         "usage: dex-loop <stream.265> [--fps <F>] [--mode WxH@R] [--bench-no-sidecar] [--no-defaults] [--opt K=V ...]
@@ -260,6 +325,14 @@ exit codes: 2 = refused before playback (bad invocation/asset/sidecar; fix and r
 }
 
 fn main() -> ExitCode {
+    // Identify the build before anything can fail: a field journal that
+    // starts with an unidentifiable process is undebuggable weeks later.
+    eprintln!(
+        "dex-loop {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("DEX_GIT_HASH")
+    );
+
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
         usage();
@@ -517,10 +590,24 @@ fn main() -> ExitCode {
     // likely failure in a gallery.
     //
     // So: exit non-zero and let the supervisor restart us.
+    let started = Instant::now();
+    let mut last_heartbeat = Instant::now();
+    // Heartbeat #0: proves the whole mechanism (property reads, temperature,
+    // formatting) on every boot, and anchors the journal.
+    emit_heartbeat(ctx, started);
+
     let mut exit = ExitCode::SUCCESS;
     loop {
-        let ev = unsafe { mpv_wait_event(ctx, -1.0) };
+        // Wake at least every 30 s: in the healthy steady state mpv delivers
+        // NO events, which is precisely when the heartbeat must still fire.
+        // A 30 s wake on the event thread costs nothing on the decode path.
+        let ev = unsafe { mpv_wait_event(ctx, 30.0) };
         let id = unsafe { (*ev).event_id };
+
+        if last_heartbeat.elapsed().as_secs() >= HEARTBEAT_SECS {
+            emit_heartbeat(ctx, started);
+            last_heartbeat = Instant::now();
+        }
 
         if id == MPV_EVENT_NONE {
             continue;

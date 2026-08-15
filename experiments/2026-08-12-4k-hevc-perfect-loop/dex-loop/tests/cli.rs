@@ -413,3 +413,49 @@ fn bench_flag_without_fps_refused_exit_2() {
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
 }
+
+// ---- F7: build identity + heartbeat (task 8) -----------------------------
+
+#[test]
+fn startup_identifies_version_and_build() {
+    // Even a refused start must identify its build — a field journal that
+    // begins with an unidentifiable process is undebuggable weeks later.
+    let r = run_with_deadline(&["/nonexistent/x.265"], Duration::from_secs(10));
+    assert_eq!(r.exit_code, Some(GATE_EXIT));
+    assert!(
+        r.stderr
+            .contains(&format!("dex-loop {}", env!("CARGO_PKG_VERSION"))),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn heartbeat_zero_is_emitted_at_startup() {
+    // The 10-minute cadence is untestable in a test budget; heartbeat #0
+    // right after loadfile proves the whole mechanism (property reads,
+    // temperature, formatting) on every boot — and therefore here.
+    let p = temp_path("heartbeat.265");
+    let bytes = stub_annexb();
+    std::fs::write(&p, &bytes).unwrap();
+    write_sidecar(&p, &bytes, "30");
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("heartbeat wraps="),
+        "stderr: {}",
+        r.stderr
+    );
+}
