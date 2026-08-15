@@ -30,11 +30,16 @@
 //!    getter blocks neither our event thread nor `mpv_wait_event`. If the
 //!    core is wedged we get silence, not a hang -- and silence is exactly
 //!    the signal `pos-age=` below exists to surface.
-//! 2. **Steady-state cost is one event per counter, ever.** Change events
-//!    fire only when the value actually changes (`equal_mpv_value`,
-//!    player/client.c:1715-1717), plus one guaranteed initial notification.
-//!    A gallery run with no drops emits each counter once at startup, then
-//!    silence for three weeks.
+//! 2. **Steady-state cost is a handful of events per counter, ever, never
+//!    queued.** Registration forces one initial notification per counter
+//!    (client.h) that arrives promptly as `format=NONE`/`data=NULL` because
+//!    no VO chain exists yet (player/command.c:763-781); a second event
+//!    carries the first real `INT64` value once the VO chain comes up
+//!    (availability flipping counts as a change independent of value
+//!    equality, player/client.c:1715). After that, change events fire only
+//!    when the value actually changes (`equal_mpv_value`,
+//!    player/client.c:1715-1717). A gallery run with no drops emits two
+//!    events per counter around startup, then silence for three weeks.
 //! 3. **They cannot contribute to `QUEUE_OVERFLOW`.** Property-change events
 //!    are "never queued" (player/client.c:942-943) -- generated inside
 //!    `mpv_wait_event` only once the queue has drained. Observing more
@@ -56,20 +61,28 @@
 pub struct ObservedCounter {
     observed: bool,
     last_raw: Option<u64>,
+    /// Whether ANY real sample has ever arrived, via `sample`. Deliberately
+    /// separate from `last_raw`: `mark_unavailable` clears `last_raw` (the
+    /// diffing baseline) but must NOT make an already-earned `total` render
+    /// as "n/a" again -- that would trade one false-all-clear risk (a raw
+    /// counter reading 0 right after a reset) for another (a real,
+    /// already-known total flickering back to "no value yet" for the
+    /// ordinary few-second VO-chain gap every recovery causes).
+    has_sample: bool,
     total: u64,
 }
 
 impl ObservedCounter {
     /// `mpv_observe_property` succeeded: this run can produce values.
     pub const fn observed() -> Self {
-        Self { observed: true, last_raw: None, total: 0 }
+        Self { observed: true, last_raw: None, has_sample: false, total: 0 }
     }
 
     /// `mpv_observe_property` FAILED: this run never will. Renders `off`,
     /// which is a different fact from "no value yet" -- see the module doc
     /// (principle 2, "distinguish the two no-value cases").
     pub const fn unobserved() -> Self {
-        Self { observed: false, last_raw: None, total: 0 }
+        Self { observed: false, last_raw: None, has_sample: false, total: 0 }
     }
 
     /// Feed one `MPV_EVENT_PROPERTY_CHANGE` payload (already unwrapped from
@@ -96,12 +109,45 @@ impl ObservedCounter {
         };
         self.total = self.total.saturating_add(delta);
         self.last_raw = Some(raw);
+        self.has_sample = true;
     }
 
     /// Cumulative count since process start, or `None` if no sample has
-    /// arrived yet. Test/caller accessor; rendering goes through `Display`.
+    /// EVER arrived. Test/caller accessor; rendering goes through `Display`.
+    /// Gated on `has_sample`, not `last_raw`: `mark_unavailable` clears the
+    /// latter (a diffing-baseline reset) without un-earning a total this
+    /// counter has already accumulated -- see `has_sample`'s doc comment.
     pub fn total(&self) -> Option<u64> {
-        self.last_raw.map(|_| self.total)
+        self.has_sample.then_some(self.total)
+    }
+
+    /// Record that mpv reported this property as currently UNAVAILABLE (an
+    /// `MPV_EVENT_PROPERTY_CHANGE` with `format=MPV_FORMAT_NONE` arrived --
+    /// no VO chain, at startup or mid-recovery). `total` (and whether
+    /// `total()` renders it at all -- see `has_sample`) is untouched: this
+    /// is not itself a counter reset, and a total already earned must not
+    /// flicker back to "n/a" for the ordinary few-second gap every recovery
+    /// causes. `last_raw` IS cleared, so the next real sample -- however
+    /// small -- is read as a fresh first sample (added in full) rather than
+    /// diffed against a value that may already belong to a dead playback
+    /// session.
+    ///
+    /// Why this exists (MINOR, three adversarial reviews, 2026-08-15):
+    /// `sample`'s only reset signal is a numeric DECREASE, but mpv coalesces
+    /// property-change events -- only the latest state per changed property
+    /// survives to the next drain (client.h). If a recovery's teardown
+    /// (unavailable), the new session's restart at 0, and a climb past the
+    /// old session's total all happen before this program's event thread
+    /// drains -- plausible exactly during a recovery, when that thread is
+    /// busy absorbing the END_FILE/START_FILE burst -- the visible sequence
+    /// can be e.g. 5 -> 7 with no decrease at all, and `sample` would count
+    /// a delta of 2 when 7 new drops actually occurred. Marking the
+    /// unavailable state narrows that window (the NONE event itself could
+    /// still be coalesced away) rather than closing it -- full closure is
+    /// not possible from the client side, and isn't worth more machinery
+    /// for a diagnostic line.
+    pub fn mark_unavailable(&mut self) {
+        self.last_raw = None;
     }
 }
 
@@ -114,9 +160,23 @@ impl std::fmt::Display for ObservedCounter {
         } else if let Some(total) = self.total() {
             write!(f, "{total}")
         } else {
-            // Registered, but no value has arrived yet (heartbeat #0, or no
-            // VO chain exists). A run stuck here for hours IS the
-            // diagnosis: the core asked and never answered.
+            // Registered, but no real sample has EVER arrived (`total()` is
+            // gated on `has_sample`, not on the diffing baseline
+            // `mark_unavailable` clears -- so this branch, unlike a plain
+            // "no current value" check, is NOT re-entered by an ordinary
+            // few-second VO-chain gap once at least one sample has already
+            // landed). Two distinct causes render identically, both
+            // correctly: (1) no VO chain has EVER come up in this run's
+            // whole life -- expected only for heartbeat #0, unusual after;
+            // (2) the property NAME is unknown to this mpv build.
+            // `mpv_observe_property` never validates the name -- it fails
+            // only for a bad FORMAT or OOM (client.h: "Observing a property
+            // that doesn't exist is allowed") -- so a future mpv renaming
+            // `frame-drop-count`/`vo-delayed-frame-count` would not fail
+            // `observe()` (which would render "off" instead, see above); it
+            // would silently subscribe successfully and sit here forever.
+            // Whichever cause, a run stuck here for HOURS (not seconds) IS
+            // the diagnosis: the core asked and never usefully answered.
             write!(f, "n/a")
         }
     }
@@ -231,6 +291,39 @@ mod tests {
         assert_eq!(c.total(), Some(43), "the post-reset value must be added, not replace the total");
         c.sample(3); // steady after the reset: no further change
         assert_eq!(c.total(), Some(43));
+    }
+
+    #[test]
+    fn mark_unavailable_keeps_total_but_makes_the_next_sample_a_fresh_first_sample() {
+        // The scenario `mark_unavailable` exists for: mpv coalesces
+        // property-change events, so an unavailability blip that lands
+        // between two drains can hide an ENTIRE recovery episode's session
+        // reset from `sample`'s only reset signal (a numeric decrease) --
+        // see `mark_unavailable`'s doc comment. `total` must survive
+        // untouched; `last_raw` must NOT, so the next sample is read as a
+        // fresh first sample (added in full) rather than diffed against a
+        // value that may belong to a dead session.
+        let mut c = ObservedCounter::observed();
+        c.sample(40);
+        assert_eq!(c.total(), Some(40));
+
+        c.mark_unavailable();
+        assert_eq!(
+            c.total(),
+            Some(40),
+            "an already-earned total must not flicker back to n/a for an \
+             ordinary unavailability blip -- total() is gated on has_sample, \
+             not on the diffing baseline mark_unavailable clears"
+        );
+
+        c.sample(7); // a coalesced sequence would otherwise read as delta=7
+        assert_eq!(
+            c.total(),
+            Some(47),
+            "post-unavailability sample must be added in full as a fresh \
+             first sample, not diffed against the stale pre-unavailability \
+             last_raw"
+        );
     }
 
     #[test]

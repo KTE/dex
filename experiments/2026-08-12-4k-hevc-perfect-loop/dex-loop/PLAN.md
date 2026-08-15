@@ -144,9 +144,103 @@ mpv 0.40 probes on the Pi):**
   Worth one bench measurement before the next gallery install; not done in
   this pass.
 
-All four Rust-level fixes verified: `cargo check --all-targets` and
-`cargo test --lib` clean on the Mac (48 lib tests); full matrix re-verified
-on the Pi (see the phasing note / session log for the exact count).
+**2026-08-15, second addendum -- overlapping tier-0 recoveries (MAJOR, confirmed by
+three further adversarial reviews):** the C1 fix above absorbs exactly one
+`END_FILE(reason=stop)` via a single `bool`. It missed that the organic
+health-check tick and T7's forced probe run in the SAME loop iteration
+(tick block before trigger block) and `mpv_command_async` only QUEUES a
+`loadfile` against a core that may still be busy from a still-wedged
+episode -- so a SECOND recovery can be issued (and accepted) before the
+first attempt's stop has even been observed, e.g. an organic tick issuing
+attempt 1 while the core is still wedged, then T7's forced probe issuing
+attempt 2 in the same iteration, or (organic-only) two re-arms 10 s/20 s
+apart against a core that unwedges only after both are queued. Two
+in-flight recoveries produce TWO `END_FILE(reason=stop)` events; a bool
+absorbs only the first and takes the fatal path on the second -- a healthy
+recovery converted into an unnecessary tier-1 restart with a journal line
+indistinguishable from C1. **Fixed:** `recovery_stop_pending: bool` ->
+`recovery_stops_pending: u32`, incremented on every successfully-queued
+recovery command and decremented on every absorbed stop (or a rejected
+command reply); `is_expected_recovery_stop` now checks `count > 0`. Two new
+pure-logic tests in `main.rs` pin the two-in-flight sequence and the
+rejected-reply decrement. No suppression of the second issue was added
+(considered and rejected as unnecessary complexity): the counter alone
+makes both stops absorb cleanly, and spending budget slightly faster in
+this edge case is consistent with the module's existing "lean on tier 1
+sooner than strictly necessary" philosophy (see "why the budget never
+resets" above).
+
+**2026-08-15, third addendum -- smaller findings from the same review pass, all
+confirmed against mpv v0.40.0 source (`/tmp/mpv-0.40`) and fixed (comment/doc-only
+or cheap logic, per this task's MINOR/NIT bar):**
+- `read_fn`'s SAFETY comment attributed callback exclusivity to a
+  serialization guarantee `stream_cb.h` does not make (it makes none;
+  `cancel_fn` is explicitly documented cross-thread). Reworded to attribute
+  it to mpv's stream layer instead (single-owner `stream_t`, open-time probe
+  happens-before reads, close happens-after teardown) and to warn that
+  wiring up `cancel_fn` (still `None` today) would break this argument.
+- The comment justifying registering F9's two counters before `loadfile`
+  claimed the forced initial notification "arrives as soon as the VO chain
+  exists" and would otherwise be "missed by a later subscription" -- both
+  wrong per `client.h`/`player/client.c` (the initial event is forced
+  unconditionally at registration and arrives promptly as
+  `format=NONE`/`data=NULL`; nothing is ever missed by registering late).
+  Reworded to the accurate rationale (registration order doesn't affect
+  completeness; it is grouped here only for tidiness).
+- `heartbeat.rs`'s module doc claimed a clean run costs "one event per
+  counter" -- actually at least two (the forced initial `NONE`, then a
+  separate event when the VO chain first makes the property available).
+  Reworded; the "negligible, never queued" cost argument itself was correct
+  and stands.
+- `ObservedCounter` could under-count drops across a recovery: mpv coalesces
+  property-change events (`client.h`: "only once the event queue becomes
+  empty ... one event per changed property"), so if a recovery's teardown
+  (unavailable), the new session's restart at 0, and a climb past the old
+  total all happen before this program's event thread next drains, `sample`
+  never sees the intervening decrease and under-counts. Fixed: added
+  `ObservedCounter::mark_unavailable()`, called from `main.rs`'s
+  property-change handler on `MPV_FORMAT_NONE` for the two drop-counter
+  userdata tags (previously silently ignored), which clears the diffing
+  baseline without un-earning an already-known total (needed a new
+  `has_sample` field, separate from the baseline, so the total doesn't
+  flicker back to "n/a" for the same few-second gap). New
+  `MPV_FORMAT_NONE` constant in `ffi_consts.rs`. Narrows the under-count
+  window rather than closing it (the `NONE` event itself could still be
+  coalesced away); full closure isn't possible from the client side and
+  isn't worth more machinery for a diagnostic line.
+- The `n/a` doc comment attributed persistent `n/a` only to "the VO chain
+  never came up", but `mpv_observe_property` never validates a property
+  NAME (`client.h`: "Observing a property that doesn't exist is allowed") --
+  a future mpv rename of `frame-drop-count`/`vo-delayed-frame-count` would
+  subscribe successfully and sit at `n/a` forever, not fail loudly at
+  `observe()`. Doc comment extended to name that second cause.
+- T7's arming warning and `--force-recovery-after-secs`'s usage text said
+  the probe fires "N seconds into playback" / "after the stream starts" --
+  it actually fires N seconds after the `loadfile` request is queued
+  (`started = Instant::now()` right after that call), which is not the same
+  moment on a real asset with non-trivial decode startup latency. Reworded
+  both strings to say what they mean, and added a note to size N with
+  margin over real decode startup for a live-fire run against a real asset.
+  The deeper fix some reviewers suggested -- arm the trigger's clock from
+  the first observed `time-pos` sample instead -- was NOT done: it is a
+  small design change to `ForceRecoveryTrigger`/the driver, not a wording
+  fix, and the one ignored test that exists today (`tests/cli.rs`'s
+  `force_recovery_survives_against_real_mpv`) uses a synthetic stub asset
+  with millisecond decode startup, so the gap has zero practical effect on
+  it as written. Revisit if a live-fire procedure against a real 4K asset
+  is ever added.
+- Verification note, no defect: the same review pass confirmed (1) no F9
+  heartbeat field became silently less meaningful and no wedged-core state
+  can present as healthy, and (2) T7's `--force-recovery-after-secs` cannot
+  reach a real deployment (CLI gate, refused before the asset is even read,
+  pinned by tests; `deploy/dex-loop.service` passes neither bench flag).
+  No action.
+
+All Rust-level fixes across both addenda verified: `cargo check --all-targets`,
+`cargo clippy --all-targets -- -D warnings`, and `cargo test --lib` clean on the
+Mac (70 lib tests). **On-device verification still owed** for all of it -- the Pi
+was off-limits for this pass (mid-thermal-soak); nothing here has been exercised
+against a real mpv since these changes landed.
 
 ### F2 — Tier-1/2: supervision and reboot escalation
 `deploy/dex-loop.service` exists (tier 1). Add tier 2: a `StartLimitBurst`

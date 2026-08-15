@@ -49,6 +49,7 @@ use dex_loop::ffi_consts::{
     MPV_END_FILE_REASON_STOP, MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE,
     MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW,
     MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64,
+    MPV_FORMAT_NONE,
 };
 use dex_loop::health::{ForceRecoveryTrigger, HealthAction, HealthMonitor};
 use dex_loop::heartbeat::{HeartbeatSnapshot, ObservedCounter, PositionSample};
@@ -260,10 +261,21 @@ const VO_DELAYED_USERDATA: u64 = 4;
 extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64 {
     // SAFETY: `cookie` is the Box<LoopStream> leaked in `open_fn`, and mpv
     // guarantees it is passed back unmodified for the life of the stream.
-    // The `&mut` additionally requires exclusivity: stream_cb.h serializes
-    // every callback for a given stream (read/seek/size/close never run
-    // concurrently with each other for the same cookie), so no other
-    // callback can be touching this LoopStream while this borrow is live.
+    // The `&mut` additionally requires exclusivity. That comes from mpv's
+    // STREAM LAYER, not from any serialization guarantee in stream_cb.h --
+    // verified against mpv v0.40.0's include/mpv/stream_cb.h: it documents
+    // no such thing, and the one callback whose threading it DOES document
+    // (cancel_fn) is explicitly cross-thread ("will be called from a
+    // separate thread than the demux thread", stream_cb.h:154-155). The
+    // real mechanism: a stream_t is single-owner and driven by one thread at
+    // a time -- open_cb runs the seek_fn(cookie, 0) probe during open,
+    // before fill_buffer/close are ever installed (stream/stream_cb.c), so
+    // open-time access happens-before every read, and close (after demux
+    // teardown) happens-after the last one. `cancel_fn` is `None` today
+    // (see `open_fn` below) specifically so nothing can touch this cookie
+    // from that documented second thread; if a future change ever needs
+    // `cancel_fn`, this exclusivity argument breaks and the cookie needs a
+    // redesign (e.g. an atomic/lock) before it is wired up.
     let s = unsafe { &mut *(cookie as *mut LoopStream) };
 
     let Some(c) = next_chunk(s.data.len(), s.pos, clamp_want(nbytes)) else {
@@ -411,24 +423,34 @@ fn emit_heartbeat(
     );
 }
 
-/// Whether an `MPV_EVENT_END_FILE` with this `reason` is the expected
+/// Whether an `MPV_EVENT_END_FILE` with this `reason` is an expected
 /// teardown half of F1's in-place recovery -- its own `loadfile ...
-/// replace` command -- rather than a real failure. Pure and separately
+/// replace` command(s) -- rather than a real failure. Pure and separately
 /// tested (unlike the rest of the event loop, which needs libmpv) so this
-/// one boolean condition -- the entire fix for the regression where every
-/// recovery attempt killed the process on its own first step -- cannot
-/// silently break again without a failing test. See
-/// `MPV_END_FILE_REASON_STOP`'s doc comment for the mpv behaviour this
-/// encodes.
-fn is_expected_recovery_stop(recovery_stop_pending: bool, reason: c_int) -> bool {
-    recovery_stop_pending && reason == MPV_END_FILE_REASON_STOP
+/// one condition -- the entire fix for the regression where every recovery
+/// attempt killed the process on its own first step -- cannot silently
+/// break again without a failing test. See `MPV_END_FILE_REASON_STOP`'s doc
+/// comment for the mpv behaviour this encodes.
+///
+/// `recovery_stops_pending` is a COUNT, not a bool: the organic health-check
+/// tick and T7's forced probe can both issue a recovery in the same loop
+/// iteration (main.rs's tick block runs before the trigger block), and
+/// `mpv_command_async` only QUEUES a loadfile against a core that may still
+/// be busy from a still-wedged episode, so a second recovery can be issued
+/// (and accepted) before the first attempt's stop has been observed. Two
+/// in-flight recoveries produce two END_FILE(reason=stop) events; a bool can
+/// absorb only the first and would treat the second -- an entirely expected
+/// teardown -- as fatal. See PLAN.md's F1 addendum ("overlapping tier-0
+/// recoveries") for the confirmed scenario this fixes.
+fn is_expected_recovery_stop(recovery_stops_pending: u32, reason: c_int) -> bool {
+    recovery_stops_pending > 0 && reason == MPV_END_FILE_REASON_STOP
 }
 
 /// Act on a [`HealthAction`], whatever produced it. Shared by the organic
 /// health-check tick and T7's `--force-recovery-after-secs` bench probe
 /// (`HealthMonitor::force_recovery`) specifically so a forced probe drives
 /// the EXACT SAME mpv-facing mechanics -- `mpv_command_async(loadfile ...
-/// replace)`, then arming `recovery_stop_pending` so the resulting
+/// replace)`, then incrementing `recovery_stops_pending` so the resulting
 /// `END_FILE(reason=stop)` is absorbed rather than treated as fatal (see
 /// `is_expected_recovery_stop`) -- that a real stall would. That identity is
 /// the point of T7: it is what lets a bench probe stand in for a real
@@ -440,7 +462,7 @@ fn act_on_health_action(
     action: HealthAction,
     reason: &str,
     last_position: &mut Option<(f64, Instant)>,
-    recovery_stop_pending: &mut bool,
+    recovery_stops_pending: &mut u32,
 ) {
     match action {
         HealthAction::Healthy => {}
@@ -486,8 +508,13 @@ fn act_on_health_action(
                 // that event must be absorbed, not treated as the fatal
                 // failure it would otherwise look like. If mpv_command_async
                 // itself failed (above), no such event is coming, so the
-                // flag must NOT be set.
-                *recovery_stop_pending = true;
+                // count must NOT be incremented. Saturating: bounded in
+                // practice by MAX_RECOVERY_ATTEMPTS (the cumulative budget
+                // this same command draws from), so saturation never
+                // actually engages -- it is here so a future change to that
+                // relationship fails safe (an undercount that stays fatal)
+                // rather than wrapping into a silent lie.
+                *recovery_stops_pending = recovery_stops_pending.saturating_add(1);
             }
         }
         HealthAction::Escalate => {
@@ -523,10 +550,14 @@ fn usage() -> ! {
   --mode WxH@R        force a DRM mode, e.g. 3840x2160@30 (default: connector preferred)
   --bench-no-sidecar  BENCH ONLY: skip the sidecar, take --fps as given
   --force-recovery-after-secs N
-                      T7 BENCH ONLY: force a tier-0 in-place recovery N seconds into
-                      playback, whether or not anything has stalled. REQUIRES
-                      --bench-no-sidecar (refused otherwise) so it can never fire
-                      against a real, sidecar-bound deployment asset.
+                      T7 BENCH ONLY: force a tier-0 in-place recovery N seconds after
+                      the loadfile request (NOT N seconds of confirmed playback --
+                      decode startup takes time too), whether or not anything has
+                      stalled. For a live-fire run meant to catch mid-playback issues
+                      rather than startup ones, pick N with margin over real decode
+                      startup latency. REQUIRES --bench-no-sidecar (refused otherwise)
+                      so it can never fire against a real, sidecar-bound deployment
+                      asset.
   --opt K=V           pass an extra mpv option (repeatable)
   --no-defaults       omit the built-in Pi 4 zero-copy option set
 
@@ -724,9 +755,11 @@ fn main() -> ExitCode {
         // recovery log line with no explanation of why it fired.
         eprintln!(
             "warning: BENCH ONLY (T7): --force-recovery-after-secs={n} is ARMED -- this \
-             run will FORCE a tier-0 in-place recovery {n}s after the stream starts, \
-             whether or not anything has actually stalled. Never pass this flag on a \
-             real deployment asset (see PLAN.md's T7 entry)."
+             run will FORCE a tier-0 in-place recovery {n}s after the loadfile request was \
+             queued (NOT {n}s of confirmed playback -- decode startup can itself take a \
+             few seconds, so a small N can fire during startup rather than steady \
+             playback), whether or not anything has actually stalled. Never pass this \
+             flag on a real deployment asset (see PLAN.md's T7 entry)."
         );
     }
 
@@ -867,13 +900,20 @@ fn main() -> ExitCode {
 
     // F9: the heartbeat's two drop counters, subscribed the same way as
     // time-pos above and for the same reason -- see dex_loop::heartbeat's
-    // module doc. Registered here, before `loadfile`, so the guaranteed
-    // initial MPV_EVENT_PROPERTY_CHANGE notification arrives as soon as the
-    // VO chain exists rather than being missed by a later subscription. A
-    // failed registration is not fatal -- `observe()` already warned loudly
-    // -- it just means this run's heartbeat prints "off" for that counter
-    // for its whole life; no separate warning is needed beyond `observe`'s
-    // own, since the heartbeat repeats the fact every 10 minutes anyway.
+    // module doc. Registered here, before `loadfile`, simply to group all of
+    // this program's mpv_observe_property calls at startup rather than
+    // scattering them -- registration order relative to loadfile does not
+    // affect completeness either way: mpv forces an initial notification for
+    // EVERY observer at the moment it registers (client.h), regardless of
+    // when that happens, so nothing is "missed" by a later subscription.
+    // That forced initial event for these two properties arrives promptly
+    // as format=NONE/data=NULL (no VO chain yet -- see the property-change
+    // handler below); the first real INT64 value is a second, later event
+    // once the VO chain exists. A failed registration is not fatal --
+    // `observe()` already warned loudly -- it just means this run's
+    // heartbeat prints "off" for that counter for its whole life; no
+    // separate warning is needed beyond `observe`'s own, since the
+    // heartbeat repeats the fact every 10 minutes anyway.
     let mut frame_drops = if observe(ctx, FRAME_DROPS_USERDATA, "frame-drop-count", MPV_FORMAT_INT64) {
         ObservedCounter::observed()
     } else {
@@ -944,15 +984,19 @@ fn main() -> ExitCode {
     // run -- and costs one `Option` check per loop iteration.
     let mut force_recovery_trigger: Option<ForceRecoveryTrigger> =
         force_recovery_after_secs.map(ForceRecoveryTrigger::new);
-    // Set for exactly the span between issuing the in-place recovery's
-    // `loadfile ... replace` and observing the END_FILE(reason=stop) that
-    // command produces for the file it replaces (bench-confirmed live,
-    // three independent reviews, 2026-08-15) -- see the MPV_EVENT_END_FILE
-    // handler below and PLAN.md's F1 addendum. Nothing else in this program
-    // ever issues a command that produces a STOP-reason end-file, so this
-    // flag is what tells "our own recovery's expected teardown" apart from
-    // an actual failure that happens to carry the same reason code.
-    let mut recovery_stop_pending = false;
+    // Counts recoveries issued whose matching END_FILE(reason=stop) has not
+    // yet been observed (bench-confirmed live, three independent reviews,
+    // 2026-08-15) -- see the MPV_EVENT_END_FILE handler below and PLAN.md's
+    // F1 addendum. A COUNT, not a single flag: the organic tick and T7's
+    // forced probe can both issue a recovery in the same loop iteration
+    // (mpv_command_async only queues against a core that may still be busy
+    // from a prior attempt), so more than one can be in flight at once, and
+    // each produces its own END_FILE(stop) to absorb. Nothing else in this
+    // program ever issues a command that produces a STOP-reason end-file, so
+    // "count > 0" is what tells "one of our own recoveries' expected
+    // teardowns" apart from an actual failure that happens to carry the same
+    // reason code.
+    let mut recovery_stops_pending: u32 = 0;
 
     let exit = ExitCode::SUCCESS;
     loop {
@@ -986,7 +1030,7 @@ fn main() -> ExitCode {
                         "no progress across 2 consecutive checks ({HEALTH_CHECK_SECS}s apart)"
                     ),
                     &mut last_position,
-                    &mut recovery_stop_pending,
+                    &mut recovery_stops_pending,
                 );
             }
         }
@@ -1012,7 +1056,7 @@ fn main() -> ExitCode {
                             action,
                             "T7 bench probe: --force-recovery-after-secs elapsed",
                             &mut last_position,
-                            &mut recovery_stop_pending,
+                            &mut recovery_stops_pending,
                         );
                     }
                     None => {
@@ -1057,7 +1101,8 @@ fn main() -> ExitCode {
             // failing to interpret an unexpected payload here fails toward
             // "the health check is slightly more eager", never toward
             // reading garbage. F9's two drop-counter observers follow the
-            // exact same discipline for MPV_FORMAT_INT64.
+            // exact same discipline for MPV_FORMAT_INT64 -- and DO also act
+            // on MPV_FORMAT_NONE, deliberately, see below.
             if reply_userdata == HEALTH_CHECK_USERDATA
                 && p.format == MPV_FORMAT_DOUBLE
                 && !p.data.is_null()
@@ -1072,20 +1117,44 @@ fn main() -> ExitCode {
                 // compile error instead of a silent reinterpretation.
                 last_position = Some((unsafe { *p.data.cast::<f64>() }, Instant::now()));
             } else if p.format == MPV_FORMAT_INT64 && !p.data.is_null() {
-                // A property that is momentarily UNAVAILABLE (no vo_chain:
-                // before the first frame, and during a recovery's teardown)
-                // arrives as format=MPV_FORMAT_NONE with data=NULL
-                // (player/client.c:1810) -- falls through this `if` and is
-                // simply not acted on, which is right: it is not a value
-                // and it is NOT a counter reset, so the last known total
-                // must survive it untouched.
-                //
                 // SAFETY: the format tag confirms `data` points to an i64,
                 // per MPV_FORMAT_INT64's doc comment in ffi_consts.rs.
                 let raw = unsafe { *p.data.cast::<i64>() };
                 match reply_userdata {
                     FRAME_DROPS_USERDATA => frame_drops.sample(raw),
                     VO_DELAYED_USERDATA => vo_delayed.sample(raw),
+                    _ => {}
+                }
+            } else if p.format == MPV_FORMAT_NONE
+                && matches!(reply_userdata, FRAME_DROPS_USERDATA | VO_DELAYED_USERDATA)
+            {
+                // A property that is momentarily UNAVAILABLE (no vo_chain:
+                // before the first frame, and during a recovery's teardown)
+                // arrives as format=MPV_FORMAT_NONE with data=NULL
+                // (player/client.c:1810-1816). `total` must survive this
+                // untouched -- it is not a value and not itself a counter
+                // reset -- but `last_raw` must NOT: mpv coalesces property
+                // events (client.h: "only once the event queue becomes
+                // empty ... one event per changed property"), so if a
+                // recovery's teardown (unavailable), the new session's
+                // restart at 0, and a climb past the old session's total all
+                // happen before this event thread next drains -- plausible
+                // exactly then, since the thread is busy absorbing the
+                // recovery's END_FILE/START_FILE burst -- `sample()` would
+                // see e.g. 5 -> 7 with no visible decrease and under-count
+                // by however many drops actually occurred (MINOR, three
+                // adversarial reviews, 2026-08-15). Recording the
+                // unavailability here means the next delivered sample,
+                // however small, is read as a fresh first sample rather
+                // than diffed against a `last_raw` that may already belong
+                // to a dead session -- narrows the window (this NONE event
+                // itself could still be coalesced away) rather than closing
+                // it; full closure isn't possible from the client side and
+                // isn't worth more machinery for a diagnostic line. See
+                // `ObservedCounter::mark_unavailable`'s doc comment.
+                match reply_userdata {
+                    FRAME_DROPS_USERDATA => frame_drops.mark_unavailable(),
+                    VO_DELAYED_USERDATA => vo_delayed.mark_unavailable(),
                     _ => {}
                 }
             }
@@ -1108,11 +1177,15 @@ fn main() -> ExitCode {
                     // Rejected AFTER being queued (mpv_command_async itself
                     // returned success) but before taking effect: no
                     // matching END_FILE(reason=stop) will ever arrive for
-                    // this attempt, so the flag must not sit waiting for
-                    // one -- a stale flag left set here could otherwise
-                    // mask a real, later, unrelated END_FILE(stop) as this
-                    // attempt's expected teardown.
-                    recovery_stop_pending = false;
+                    // THIS attempt, so its slot must not sit waiting for one
+                    // -- a stale count left too high here could otherwise
+                    // mask a real, later, unrelated END_FILE(stop) as an
+                    // attempt's expected teardown. Decrement by one, not
+                    // reset to zero: RECOVERY_COMMAND_USERDATA is shared by
+                    // every recovery command, so a second attempt may
+                    // legitimately still be in flight and its own stop is
+                    // still owed.
+                    recovery_stops_pending = recovery_stops_pending.saturating_sub(1);
                 }
             }
             continue;
@@ -1130,20 +1203,25 @@ fn main() -> ExitCode {
         if id == MPV_EVENT_END_FILE {
             // SAFETY: `data` is an mpv_event_end_file for this event id.
             let ef = unsafe { &*((*ev).data as *const MpvEventEndFile) };
-            if is_expected_recovery_stop(recovery_stop_pending, ef.reason) {
-                // The in-place recovery's own `loadfile ... replace` just
-                // produced the END_FILE(reason=stop) mpv always emits for
-                // the file being replaced -- the expected teardown half of
-                // a recovery that is still in progress, not a failure. See
-                // MPV_END_FILE_REASON_STOP's doc comment and PLAN.md's F1
-                // addendum: before this check existed, EVERY in-place
-                // recovery attempt killed the process on its own first
-                // step, making tier 0 unreachable.
-                recovery_stop_pending = false;
+            if is_expected_recovery_stop(recovery_stops_pending, ef.reason) {
+                // One of the in-place recovery's `loadfile ... replace`
+                // calls just produced the END_FILE(reason=stop) mpv always
+                // emits for the file being replaced -- the expected teardown
+                // half of a recovery that is still in progress, not a
+                // failure. See MPV_END_FILE_REASON_STOP's doc comment and
+                // PLAN.md's F1 addendum: before this check existed, EVERY
+                // in-place recovery attempt killed the process on its own
+                // first step, making tier 0 unreachable. Absorb exactly one
+                // -- not reset to zero -- because the organic tick and T7's
+                // forced probe can both have issued a recovery in the same
+                // loop iteration, in which case a SECOND matching stop is
+                // still owed and must not be treated as fatal either.
+                recovery_stops_pending -= 1;
                 eprintln!(
                     "dex-loop: health check: in-place recovery's loadfile replaced the \
                      stream; absorbing the expected END_FILE(reason=stop) for the file \
-                     it replaced, not treating it as a failure"
+                     it replaced ({recovery_stops_pending} more still outstanding), not \
+                     treating it as a failure"
                 );
                 continue;
             }
@@ -1247,7 +1325,7 @@ mod tests {
 
     #[test]
     fn a_pending_recovery_absorbs_its_own_stop_reason_end_file() {
-        assert!(is_expected_recovery_stop(true, MPV_END_FILE_REASON_STOP));
+        assert!(is_expected_recovery_stop(1, MPV_END_FILE_REASON_STOP));
     }
 
     #[test]
@@ -1255,7 +1333,7 @@ mod tests {
         // Nothing else in this program issues a command that produces a
         // stop-reason end-file -- but if one ever did, it must not be
         // silently swallowed just because the reason code matches.
-        assert!(!is_expected_recovery_stop(false, MPV_END_FILE_REASON_STOP));
+        assert!(!is_expected_recovery_stop(0, MPV_END_FILE_REASON_STOP));
     }
 
     #[test]
@@ -1263,9 +1341,58 @@ mod tests {
         // eof=0, quit=3, error=4, redirect=5 (2 is stop, tested above).
         for reason in [0, 3, 4, 5] {
             assert!(
-                !is_expected_recovery_stop(true, reason),
+                !is_expected_recovery_stop(1, reason),
                 "reason {reason} must not be absorbed"
             );
         }
+    }
+
+    // The follow-up regression these two pin (three independent adversarial
+    // reviews, 2026-08-15, MAJOR): the organic health-check tick and T7's
+    // forced probe can both issue a recovery before either one's END_FILE
+    // arrives (mpv_command_async only QUEUES against a core that may still
+    // be busy from the first attempt), producing TWO END_FILE(reason=stop)
+    // events for one episode. A single bool could absorb only the first and
+    // treated the second -- an entirely expected teardown for a recovery
+    // that just worked -- as fatal, killing a healthy-again process with a
+    // journal line indistinguishable from C1. See main.rs's
+    // `recovery_stops_pending` doc comment and PLAN.md's F1 addendum.
+
+    #[test]
+    fn two_overlapping_recoveries_both_absorb_their_own_stop() {
+        let mut pending: u32 = 0;
+        pending += 1; // organic tick issues attempt 1
+        pending += 1; // T7's forced probe issues attempt 2, same iteration
+        assert_eq!(pending, 2);
+
+        assert!(is_expected_recovery_stop(pending, MPV_END_FILE_REASON_STOP));
+        pending -= 1; // first END_FILE(stop) absorbed
+        assert_eq!(pending, 1, "one recovery's stop is still owed");
+
+        assert!(
+            is_expected_recovery_stop(pending, MPV_END_FILE_REASON_STOP),
+            "the second stop must NOT be treated as fatal just because the \
+             first one already cleared the flag -- this is the exact bug a \
+             plain bool could not represent"
+        );
+        pending -= 1;
+        assert_eq!(pending, 0);
+
+        // Budget is exhausted now (both attempts absorbed): a THIRD
+        // stop-reason end-file with nothing outstanding is a real failure.
+        assert!(!is_expected_recovery_stop(pending, MPV_END_FILE_REASON_STOP));
+    }
+
+    #[test]
+    fn a_rejected_command_reply_decrements_by_one_not_to_zero() {
+        // Mirrors the MPV_EVENT_COMMAND_REPLY handler: a rejection after
+        // queueing means THAT attempt's stop will never arrive, but
+        // RECOVERY_COMMAND_USERDATA is shared by every recovery command, so
+        // a second, still-legitimate attempt may be in flight and its stop
+        // must remain expected.
+        let mut pending: u32 = 2;
+        pending = pending.saturating_sub(1); // one attempt's reply was rejected
+        assert_eq!(pending, 1);
+        assert!(is_expected_recovery_stop(pending, MPV_END_FILE_REASON_STOP));
     }
 }

@@ -66,6 +66,20 @@ pub const MPV_FORMAT_DOUBLE: c_int = 5;
 /// matches, the counters read "n/a" forever, and nothing is misread.
 pub const MPV_FORMAT_INT64: c_int = 4;
 
+/// `mpv_format` tag mpv substitutes for a property's real format whenever
+/// the property is unavailable or a getter errored -- client.h: "Warning: if
+/// a property is unavailable or retrieving it caused an error,
+/// MPV_FORMAT_NONE will be set in mpv_event_property, even if the format
+/// parameter was set to a different value. In this case, the
+/// mpv_event_property.data field is invalid." F9's two observed drop
+/// counters see this instead of MPV_FORMAT_INT64 whenever no vo_chain
+/// exists (`M_PROPERTY_UNAVAILABLE`, player/command.c:763-781) -- at startup,
+/// and during a tier-0 recovery's teardown/rebuild. main.rs's
+/// property-change handler acts on it (see `ObservedCounter::mark_unavailable`)
+/// rather than silently dropping it, so a reset that mpv's event coalescing
+/// hides cannot silently under-count the heartbeat's totals.
+pub const MPV_FORMAT_NONE: c_int = 0;
+
 /// `mpv_end_file_reason` tag for MPV_EVENT_END_FILE's `reason` field:
 /// "Playback was stopped by an external action" (client.h). Bench-confirmed
 /// live on the Pi's mpv 0.40.0 (three independent adversarial reviews,
