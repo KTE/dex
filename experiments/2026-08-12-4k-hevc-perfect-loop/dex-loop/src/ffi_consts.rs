@@ -49,6 +49,23 @@ pub const MPV_ERROR_UNSUPPORTED: c_int = -18;
 /// error.
 pub const MPV_FORMAT_DOUBLE: c_int = 5;
 
+/// `mpv_format` tag for a 64-bit integer property value (client.h's
+/// `mpv_format` enum: NONE=0, STRING=1, OSD_STRING=2, FLAG=3, INT64=4,
+/// DOUBLE=5, ...). F9's two observed drop counters use it. Their NATIVE
+/// type is `int` (`m_property_int_ro`, player/command.c:763-781), but the
+/// client API converts on the way out -- getproperty_fn routes INT64
+/// through M_PROPERTY_GET_NODE -> conv_node_to_format (player/client.c
+/// :1417-1442), and m_property_do synthesizes GET_NODE from GET for the
+/// int type (options/m_property.c:171-188) -- so INT64 is a legal request
+/// for them and the payload is an i64.
+///
+/// Like MPV_FORMAT_DOUBLE this cannot be checked against the live library
+/// (mpv exposes no mpv_format_name()), so main.rs checks the tag on every
+/// payload before dereferencing it. A wrong value here fails in the SAFE
+/// direction, exactly like MPV_END_FILE_REASON_STOP: the tag never
+/// matches, the counters read "n/a" forever, and nothing is misread.
+pub const MPV_FORMAT_INT64: c_int = 4;
+
 /// `mpv_end_file_reason` tag for MPV_EVENT_END_FILE's `reason` field:
 /// "Playback was stopped by an external action" (client.h). Bench-confirmed
 /// live on the Pi's mpv 0.40.0 (three independent adversarial reviews,

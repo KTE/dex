@@ -48,10 +48,10 @@ use dex_loop::chunk::{clamp_want, next_chunk};
 use dex_loop::ffi_consts::{
     MPV_END_FILE_REASON_STOP, MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE,
     MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW,
-    MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE, MPV_FORMAT_DOUBLE,
+    MPV_EVENT_SHUTDOWN, MPV_EVENT_START_FILE, MPV_FORMAT_DOUBLE, MPV_FORMAT_INT64,
 };
 use dex_loop::health::{HealthAction, HealthMonitor};
-use dex_loop::heartbeat::format_heartbeat;
+use dex_loop::heartbeat::{HeartbeatSnapshot, ObservedCounter, PositionSample};
 use dex_loop::nal::validate_leading_nals;
 use dex_loop::sidecar::{resolve_fps, verify_payload, FpsSource, Sidecar};
 use std::env;
@@ -150,7 +150,6 @@ extern "C" {
         user_data: *mut c_void,
         open_fn: Option<extern "C" fn(*mut c_void, *mut c_char, *mut MpvStreamCbInfo) -> c_int>,
     ) -> c_int;
-    fn mpv_get_property_string(ctx: *mut MpvHandle, name: *const c_char) -> *mut c_char;
     // Non-blocking (client.h): queues a subscription and returns
     // immediately. F1's health check calls this exactly ONCE at startup and
     // thereafter only ever reads the position out of the resulting
@@ -163,7 +162,15 @@ extern "C" {
         name: *const c_char,
         format: c_int,
     ) -> c_int;
-    fn mpv_free(data: *mut c_void);
+    // DELIBERATELY ABSENT: mpv_get_property_string / mpv_get_property (and
+    // the mpv_free they require). Every synchronous property read goes
+    // through run_locked -> mp_dispatch_lock (player/client.c:1059,
+    // misc/dispatch.c:364), which waits WITHOUT A TIMEOUT until the core
+    // thread is trapped in its dispatch loop -- a core wedged in a DRM
+    // ioctl never gets there, so the caller blocks forever. That is F9:
+    // the heartbeat's own diagnostic becoming bug #1 (alive, supervisor
+    // green, screen black). Values come from mpv_observe_property +
+    // MPV_EVENT_PROPERTY_CHANGE instead. Do not re-add these bindings.
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +234,13 @@ const HEALTH_CHECK_USERDATA: u64 = 1;
 /// its MPV_EVENT_COMMAND_REPLY is told apart from any async command this
 /// program issues in the future.
 const RECOVERY_COMMAND_USERDATA: u64 = 2;
+
+/// `reply_userdata` tags for F9's two observed drop counters, told apart
+/// from HEALTH_CHECK_USERDATA/RECOVERY_COMMAND_USERDATA and from each other
+/// so the MPV_EVENT_PROPERTY_CHANGE handler never has to `CStr`-compare
+/// `p.name` to know which counter a payload belongs to.
+const FRAME_DROPS_USERDATA: u64 = 3;
+const VO_DELAYED_USERDATA: u64 = 4;
 
 /// The stream read callback: a thin unsafe shell over
 /// [`dex_loop::chunk::next_chunk`], which owns (and tests) every rule that
@@ -345,22 +359,6 @@ fn set_opt(ctx: *mut MpvHandle, name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Read an mpv property as a string, or None if unavailable. Used only by
-/// the low-frequency heartbeat — never on the decode path.
-fn get_prop(ctx: *mut MpvHandle, name: &str) -> Option<String> {
-    let n = CString::new(name).ok()?;
-    // SAFETY: ctx is a valid initialized handle; mpv returns NULL or a
-    // NUL-terminated string that must be released with mpv_free.
-    let p = unsafe { mpv_get_property_string(ctx, n.as_ptr()) };
-    if p.is_null() {
-        return None;
-    }
-    let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
-    // SAFETY: p came from mpv_get_property_string and is released exactly once.
-    unsafe { mpv_free(p as *mut c_void) };
-    Some(s)
-}
-
 /// Pi SoC temperature in millidegrees C, if the kernel exposes it. Absent on
 /// non-Linux and never an error: the heartbeat degrades to n/a.
 fn read_temp_millicelsius() -> Option<i64> {
@@ -371,20 +369,45 @@ fn read_temp_millicelsius() -> Option<i64> {
         .ok()
 }
 
+/// Register one property observer. Non-blocking by construction:
+/// `mpv_observe_property` only takes the client-local lock and wakes the
+/// core (player/client.c:1536-1572). Returns whether the subscription is
+/// live for this run; a failure is never fatal, but per design principle 2
+/// it is always loud.
+fn observe(ctx: *mut MpvHandle, userdata: u64, name: &str, format: c_int) -> bool {
+    let Ok(n) = CString::new(name) else { return false };
+    let rc = unsafe { mpv_observe_property(ctx, userdata, n.as_ptr(), format) };
+    if rc < 0 {
+        eprintln!("warning: {}", err(ctx, &format!("mpv_observe_property({name})"), rc));
+    }
+    rc >= 0
+}
+
 /// One heartbeat line to stderr. Runs on the event thread, off the decode
-/// path; two property reads and one sysfs read per 10 minutes is noise.
-fn emit_heartbeat(ctx: *mut MpvHandle, started: Instant) {
-    let drops = get_prop(ctx, "frame-drop-count");
-    let delayed = get_prop(ctx, "vo-delayed-frame-count");
+/// path. Takes no `*mut MpvHandle` -- see the module doc on
+/// `dex_loop::heartbeat` for why that absence is the point of F9: with no
+/// mpv handle in scope, it is type-level impossible for this function to
+/// call into mpv. Every value it prints was already learned from an event.
+fn emit_heartbeat(
+    started: Instant,
+    last_position: Option<(f64, Instant)>,
+    frame_drops: ObservedCounter,
+    vo_delayed: ObservedCounter,
+) {
     eprintln!(
         "{}",
-        format_heartbeat(
-            WRAP_COUNT.load(Ordering::Relaxed),
-            started.elapsed().as_secs(),
-            read_temp_millicelsius(),
-            drops.as_deref(),
-            delayed.as_deref(),
-        )
+        HeartbeatSnapshot {
+            wraps: WRAP_COUNT.load(Ordering::Relaxed),
+            uptime_secs: started.elapsed().as_secs(),
+            temp_millicelsius: read_temp_millicelsius(),
+            position: last_position.map(|(secs, at)| PositionSample {
+                secs,
+                age_secs: at.elapsed().as_secs(),
+            }),
+            frame_drops,
+            vo_delayed,
+        }
+        .render()
     );
 }
 
@@ -681,30 +704,42 @@ fn main() -> ExitCode {
     // to register is NOT fatal -- the health check is a best-effort safety
     // net on top of a working player, not a gate the show depends on -- but
     // per principle 2 it must be loud, never silent.
-    let time_pos = CString::new("time-pos").unwrap();
-    let rc = unsafe {
-        mpv_observe_property(
-            ctx,
-            HEALTH_CHECK_USERDATA,
-            time_pos.as_ptr(),
-            MPV_FORMAT_DOUBLE,
-        )
-    };
+    let health_check_registered = observe(ctx, HEALTH_CHECK_USERDATA, "time-pos", MPV_FORMAT_DOUBLE);
     // Whether the health check is actually usable this run. Gates the tick
     // loop below (`health: Option<HealthMonitor>`) -- without this gate, a
     // failed registration would leave `last_position` permanently `None`,
     // and every tick would read as a stall forever, eventually issuing
     // recovery commands (and, once the budget is exhausted, exiting)
     // against a perfectly healthy player: the exact opposite of the
-    // "DISABLED" warning below.
-    let health_check_registered = rc >= 0;
+    // "DISABLED" warning below. `observe()` already logged the underlying
+    // mpv error; this is the feature-specific consequence of that failure.
     if !health_check_registered {
         eprintln!(
-            "warning: {} -- tier-0 self-healing is DISABLED for this run; tier 1 \
-             (process restart on a fatal event) still applies",
-            err(ctx, "mpv_observe_property(time-pos)", rc)
+            "warning: tier-0 self-healing is DISABLED for this run (time-pos \
+             subscription failed above); tier 1 (process restart on a fatal \
+             event) still applies"
         );
     }
+
+    // F9: the heartbeat's two drop counters, subscribed the same way as
+    // time-pos above and for the same reason -- see dex_loop::heartbeat's
+    // module doc. Registered here, before `loadfile`, so the guaranteed
+    // initial MPV_EVENT_PROPERTY_CHANGE notification arrives as soon as the
+    // VO chain exists rather than being missed by a later subscription. A
+    // failed registration is not fatal -- `observe()` already warned loudly
+    // -- it just means this run's heartbeat prints "off" for that counter
+    // for its whole life; no separate warning is needed beyond `observe`'s
+    // own, since the heartbeat repeats the fact every 10 minutes anyway.
+    let mut frame_drops = if observe(ctx, FRAME_DROPS_USERDATA, "frame-drop-count", MPV_FORMAT_INT64) {
+        ObservedCounter::observed()
+    } else {
+        ObservedCounter::unobserved()
+    };
+    let mut vo_delayed = if observe(ctx, VO_DELAYED_USERDATA, "vo-delayed-frame-count", MPV_FORMAT_INT64) {
+        ObservedCounter::observed()
+    } else {
+        ObservedCounter::unobserved()
+    };
 
     let cmd_loadfile = CString::new("loadfile").unwrap();
     let cmd_url = CString::new("loop://endless").unwrap();
@@ -736,15 +771,23 @@ fn main() -> ExitCode {
     // So: exit non-zero and let the supervisor restart us.
     let started = Instant::now();
     let mut last_heartbeat = Instant::now();
-    // Heartbeat #0: proves the whole mechanism (property reads, temperature,
-    // formatting) on every boot, and anchors the journal.
-    emit_heartbeat(ctx, started);
-
     // F1 tier-0 health check state. `last_position` is updated ONLY by the
     // MPV_EVENT_PROPERTY_CHANGE handler below -- never read synchronously
     // from mpv -- and fed to `health` on a fixed cadence. See
-    // dex_loop::health's module doc for the full policy and reasoning.
-    let mut last_position: Option<f64> = None;
+    // dex_loop::health's module doc for the full policy and reasoning. The
+    // Instant travels WITH the position (one tuple, not two separately
+    // updated locals) so they cannot desync -- see dex_loop::heartbeat's
+    // `PositionSample` doc for why that is a struct-shape decision, not
+    // just a style one.
+    let mut last_position: Option<(f64, Instant)> = None;
+    // Heartbeat #0: proves temperature reading and line formatting on every
+    // boot, and anchors the journal. It is NOT proof of the mpv property
+    // subscriptions (F9 removed the only call that could prove that
+    // synchronously): frame-drops/vo-delayed/pos all read "n/a" here by
+    // design, since nothing has been decoded yet. The on-device check that
+    // the subscriptions actually work belongs to the deploy checklist, not
+    // this line -- see PLAN.md's F9 entry ("must show numbers, not n/a").
+    emit_heartbeat(started, last_position, frame_drops, vo_delayed);
     let mut health: Option<HealthMonitor> = if health_check_registered {
         Some(HealthMonitor::new(MAX_RECOVERY_ATTEMPTS))
     } else {
@@ -778,14 +821,14 @@ fn main() -> ExitCode {
         let reply_userdata = unsafe { (*ev).reply_userdata };
 
         if last_heartbeat.elapsed().as_secs() >= HEARTBEAT_SECS {
-            emit_heartbeat(ctx, started);
+            emit_heartbeat(started, last_position, frame_drops, vo_delayed);
             last_heartbeat = Instant::now();
         }
 
         if let Some(h) = health.as_mut() {
             if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
                 last_health_check = Instant::now();
-                match h.tick(last_position) {
+                match h.tick(last_position.map(|(secs, _)| secs)) {
                     HealthAction::Healthy => {}
                     HealthAction::AttemptRecovery { attempt, max } => {
                         eprintln!(
@@ -804,7 +847,13 @@ fn main() -> ExitCode {
                         // monitor -- now comparing against its own `None`
                         // baseline -- would misread as a fresh first sample
                         // (i.e. progress), buying a spurious "Healthy" tick
-                        // that stretches the real escalation timeline.
+                        // that stretches the real escalation timeline. Since
+                        // F9, `last_position` also carries the sample's
+                        // `Instant` in the same tuple, so this one line
+                        // clears `pos-age=`'s staleness clock too -- before
+                        // F9 those were two separate locals that had to be
+                        // reset together by hand; now it is impossible to
+                        // reset one without the other.
                         last_position = None;
                         // mpv_command_async, not mpv_command: this call runs on
                         // the SAME event thread that also has to keep detecting
@@ -888,15 +937,38 @@ fn main() -> ExitCode {
             // a genuine stall (see dex_loop::health's module doc) -- so
             // failing to interpret an unexpected payload here fails toward
             // "the health check is slightly more eager", never toward
-            // reading garbage.
+            // reading garbage. F9's two drop-counter observers follow the
+            // exact same discipline for MPV_FORMAT_INT64.
             if reply_userdata == HEALTH_CHECK_USERDATA
                 && p.format == MPV_FORMAT_DOUBLE
                 && !p.data.is_null()
             {
                 // SAFETY: the format tag confirms `data` points to an f64,
                 // per client.h's mpv_event_property contract for
-                // MPV_FORMAT_DOUBLE.
-                last_position = Some(unsafe { *(p.data as *const f64) });
+                // MPV_FORMAT_DOUBLE. `.cast::<f64>()` rather than
+                // `as *const f64`: this crate's convention (see read_fn's
+                // SAFETY comment above, where a platform-dependent `as`
+                // cast already caused a real bug) is `.cast()` for every raw
+                // pointer conversion, so a pointee-type mismatch is always a
+                // compile error instead of a silent reinterpretation.
+                last_position = Some((unsafe { *p.data.cast::<f64>() }, Instant::now()));
+            } else if p.format == MPV_FORMAT_INT64 && !p.data.is_null() {
+                // A property that is momentarily UNAVAILABLE (no vo_chain:
+                // before the first frame, and during a recovery's teardown)
+                // arrives as format=MPV_FORMAT_NONE with data=NULL
+                // (player/client.c:1810) -- falls through this `if` and is
+                // simply not acted on, which is right: it is not a value
+                // and it is NOT a counter reset, so the last known total
+                // must survive it untouched.
+                //
+                // SAFETY: the format tag confirms `data` points to an i64,
+                // per MPV_FORMAT_INT64's doc comment in ffi_consts.rs.
+                let raw = unsafe { *p.data.cast::<i64>() };
+                match reply_userdata {
+                    FRAME_DROPS_USERDATA => frame_drops.sample(raw),
+                    VO_DELAYED_USERDATA => vo_delayed.sample(raw),
+                    _ => {}
+                }
             }
             continue;
         }

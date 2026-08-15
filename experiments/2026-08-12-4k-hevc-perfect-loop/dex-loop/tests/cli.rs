@@ -587,8 +587,11 @@ fn health_check_registers_without_warning_during_normal_playback() {
 #[test]
 fn heartbeat_zero_is_emitted_at_startup() {
     // The 10-minute cadence is untestable in a test budget; heartbeat #0
-    // right after loadfile proves the whole mechanism (property reads,
-    // temperature, formatting) on every boot — and therefore here.
+    // right after loadfile proves temperature reading and line formatting
+    // on every boot — and therefore here. Since F9 it does NOT prove the
+    // mpv property subscriptions (frame-drops/vo-delayed/pos read "n/a" at
+    // heartbeat #0 by design, since nothing has decoded yet); that needs a
+    // longer-running on-device check, not this test.
     let p = temp_path("heartbeat.265");
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
