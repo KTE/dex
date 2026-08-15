@@ -32,6 +32,65 @@ It works because a correctly-built bench asset has a **closed GOP with an IDR at
 frame 0**, so presenting byte 0 straight after the last byte is an ordinary
 mid-stream keyframe rather than a seek.
 
+## The stack, and where each layer stops
+
+```
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ dex-loop                                    OURS — ~370 lines of Rust  │
+  │   loop:// stream callback; read_fn never returns 0, so there is no EOF │
+  │   option set · END_FILE treated as fatal · mpv log capture             │
+  └────────────────────────────────────────────────────────────────────────┘
+                      │  mpv client API  (mpv_stream_cb_add_ro, loadfile)
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ libmpv 0.40                              PRESENTATION + TIMING         │
+  │   vsync-locked scheduling  (--video-sync=display-resample)             │
+  │   vo=gpu / gpu-context=drm — modeset, atomic commits, page flips       │
+  │   --gpu-hwdec-interop=drmprime-overlay — hands the frame to a KMS plane│
+  └────────────────────────────────────────────────────────────────────────┘
+                      │  libav* API
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ FFmpeg — libavformat / libavcodec              DEMUX + DECODE          │
+  │   raw Annex-B HEVC demux (carries no timestamps, hence --fps)          │
+  │   hwaccel: V4L2 Request API (stateless)                                │
+  └────────────────────────────────────────────────────────────────────────┘
+                      │  ioctl
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ Linux kernel                                                           │
+  │                                                                        │
+  │   V4L2 stateless decoder  ──── dma-buf ────▶  DRM / KMS  (vc4)         │
+  │   rpi-hevc-dec                (DRM_PRIME)     planes · CRTC pixelvalve-2│
+  │   /dev/video19                                connector HDMI-A-1       │
+  └────────────────────────────────────────────────────────────────────────┘
+                      │
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ Broadcom BCM2711                                                       │
+  │   HEVC decode block ──▶ SAND-tiled NV12, in CMA                        │
+  │                              │  no conversion: the HVS reads SAND      │
+  │   HVS (compositor) ──▶ PixelValve ──▶ HDMI PHY  @ 297 MHz TMDS         │
+  └────────────────────────────────────────────────────────────────────────┘
+```
+
+**Read the arrows carefully: the decoded frame never travels back up the stack.**
+It is written once into CMA by the HEVC block and stays there. What moves upward
+is a *dma-buf file descriptor*; libmpv hands that to KMS as a framebuffer, and
+the HVS scans the same memory out. Control flows down; pixels move sideways at
+the bottom.
+
+That is the whole performance story, and every configuration that lost was one
+that dragged the frame upward:
+
+| Path | What touches the frame | Result |
+|---|---|---|
+| `--hwdec=drm-copy` | CPU detiles SAND into linear NV12 | 14.3 fps |
+| `--gpu-hwdec-interop=drmprime` (GL) | V3D samples SAND as a texture | ~5 fps |
+| **`drmprime-overlay`** | **nothing — fd straight to a KMS plane** | **29.1 fps** |
+
+It also explains the two upstream gaps we hit: GStreamer's `kmssink` cannot bind
+a SAND dma-buf at all (so it falls back to dumb-buffer copies and OOMs at 4K),
+and mpv's `--hwdec=drm` with `--vo=drm` silently selects the software decoder
+rather than the plane path.
+
+
 ## Measured
 
 4K30 HEVC on a Pi 4 (trixie), captured over HDMI and decoded frame-by-frame:
