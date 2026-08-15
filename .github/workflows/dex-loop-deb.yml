@@ -304,8 +304,39 @@ jobs:
           snap() { find / -xdev \( -path /proc -o -path /sys -o -path /run -o -path /tmp \
                      -o -path /var/log -o -path /var/lib/apt -o -path /var/cache \
                      -o -path /var/lib/dpkg -o -path /github \) -prune -o -print 2>/dev/null | sort; }
+
+          # `apt install ./dex-loop.deb` pulls in every dependency and
+          # Recommends apt derives for it -- libmpv2's own libs, aria2 and
+          # yt-dlp (libmpv2 Recommends both), systemd and dbus (a systemd
+          # unit ships), and more. Not container noise: README.md documents
+          # production install as this exact plain `apt install
+          # ./dex-loop.deb`, so a stock Pi picks up the identical chain.
+          # Most of it autoremoves cleanly once dex-loop is purged, but
+          # systemd/dbus/policykit are Debian-protected and never
+          # autoremove -- AND their own postinst scripts create dynamic
+          # state (dbus's machine-id, systemd's catalog database,
+          # deb-systemd-helper's enablement markers...) that dpkg's static
+          # file list never mentions either. There is no way to tell "apt
+          # settling a protected dependency" apart from "dex-loop's postrm
+          # forgot to clean something" by inspecting paths after the fact.
+          #
+          # On a real device this whole paragraph is moot: systemd, dbus
+          # and policykit are already part of the base OS image, so
+          # installing dex-loop adds nothing new there. Reproduced here by
+          # running the FULL install/remove/purge/autoremove cycle once,
+          # unobserved, before the real run: that settles every protected
+          # package's one-time setup exactly as a real device's base image
+          # already has it, so the "before" snapshot below starts from the
+          # same place a real Pi does, and the leftovers diff at the end
+          # needs nothing cleverer than a plain diff to stay honest.
+          apt-get install -y "./${deb#./}"
+          apt-get remove -y dex-loop
+          apt-get purge -y dex-loop
+          apt-get autoremove --purge -y
+
           snap > /before.txt
 
+          # --- the real, asserted run ---
           apt-get install -y "./${deb#./}"
 
           # --- postinst did what it promises ---
@@ -357,24 +388,19 @@ jobs:
           getent passwd dex                       # still retained after purge
           test -d /opt/dex
 
-          # `apt-get install ./dex-loop.deb` pulled in every runtime dependency
-          # dpkg-shlibdeps derived (libmpv2's own deps: ffmpeg-linked libs,
-          # fontconfig, X11 libs, and -- because this container starts with
-          # none of it -- systemd, dbus, python3 too) and apt marks all of
-          # those auto-installed. Purging dex-loop itself does not cascade to
-          # them; a real Pi image already carries systemd/dbus/etc as part of
-          # the base OS, so this is invisible there, but in this bare
-          # container it shows up as hundreds of "leftover" files that were
-          # never dex-loop's to leave behind. autoremove is the missing half
-          # of the lifecycle this job claims to test -- without it, the diff
-          # below flags apt's own dependency bookkeeping as a dex-loop bug.
           apt-get autoremove --purge -y
 
           # --- leftovers ---
           # Exactly two are intended, both deliberate in postrm: /opt/dex holds
           # artwork the package never shipped, and `dex` may be referenced by
           # anything the operator wrote. A THIRD leftover is a bug, so this
-          # diffs rather than trusting the exit code.
+          # diffs rather than trusting the exit code. The "before" snapshot at
+          # the top of this script was taken after an IDENTICAL, unobserved
+          # install/remove/purge/autoremove cycle for exactly this reason: every
+          # dependency apt settles for dex-loop -- protected packages included,
+          # the dynamic state their own postinst scripts create included -- is
+          # already present on BOTH sides and cancels out, leaving only what
+          # THIS run's postinst/postrm are actually responsible for.
           #
           # Filtered to temp files rather than `diff <(...) <(...)`: run steps
           # in a `container:` job execute under /bin/sh (dash on trixie), not
