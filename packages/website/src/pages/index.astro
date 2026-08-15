@@ -1,0 +1,63 @@
+---
+import { getCollection, render } from 'astro:content'
+
+// Order matters: cloud-docs.css defines the three colour custom properties,
+// dex.css overrides them. It is a git dependency pinned by commit hash in
+// package.json, so it cannot change under the page without a lockfile change.
+import '@eins78/styles/cloud-docs.css'
+import '../styles/dex.css'
+
+const blocks = await Promise.all(
+  (await getCollection('blocks'))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map(async (entry) => ({ ...entry, Content: (await render(entry)).Content })),
+)
+
+const inSlot = (slot: 'header' | 'main' | 'footer') =>
+  blocks.filter((block) => block.data.slot === slot)
+
+const meta = blocks.find((block) => block.data.title)
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{meta?.data.title}</title>
+    <meta name="description" content={meta?.data.description} />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    {/* Palette previews: ?theme=amber | brand-deep | brand-day, defined in
+        src/styles/dex.css. `is:inline` keeps Astro from bundling this into an
+        _astro/ chunk; with the CSS inlined too, the page then emits no
+        build-time assets at all and works at any base path. Runs during head
+        parsing, so the default palette never flashes. */}
+    <script is:inline>
+      const theme = new URLSearchParams(location.search).get('theme')
+      if (theme && /^[a-z-]{1,20}$/.test(theme)) document.documentElement.dataset.theme = theme
+    </script>
+  </head>
+  <body>
+    <header>
+      {inSlot('header').map(({ Content }) => <Content />)}
+    </header>
+
+    <main>
+      {
+        inSlot('main').map(({ Content, data }) =>
+          data.section ? (
+            <section>
+              <Content />
+            </section>
+          ) : (
+            <Content />
+          ),
+        )
+      }
+    </main>
+
+    <footer>
+      {inSlot('footer').map(({ Content }) => <Content />)}
+    </footer>
+  </body>
+</html>

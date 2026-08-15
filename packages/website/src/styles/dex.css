@@ -1,0 +1,119 @@
+/* dex colours and typography.
+ *
+ * Loaded after @eins78/styles/cloud-docs.css, which is a dependency pinned by
+ * commit in package.json. That stylesheet is dark-first: its :root block IS the
+ * dark theme and the light theme is a prefers-color-scheme override, so every
+ * palette here has to supply both halves.
+ *
+ * It exposes exactly three custom properties. Note the two hyphens in
+ * --color--link: an override spelled with one fails silently and falls back to
+ * upstream white/black.
+ */
+
+/* ── colours ──────────────────────────────────────────────────────────── */
+
+/* The dex brand pair, from packages/branding (KTE/dex-branding): a randoma11y
+ * result saved 2024-04-11, #8ed1de on #2922c8, with the light theme its exact
+ * inverse. The two colours are simply swapped between modes, so both halves
+ * measure the same.
+ *
+ * Contrast against background, WCAG 2.1:
+ *   dark  body 5.71:1 (AA)   link  9.74:1 (AAA)
+ *   light body 5.71:1 (AA)   link 12.33:1 (AAA)
+ */
+
+:root {
+  color-scheme: dark light;
+  --color-bg: #2922c8;
+  --color-text: #8ed1de;
+  --color--link: #ffffff;
+}
+
+@media screen and (prefers-color-scheme: light) {
+  :root {
+    --color-bg: #8ed1de;
+    --color-text: #2922c8;
+    --color--link: #000000;
+  }
+}
+
+/* ── typography ───────────────────────────────────────────────────────── */
+
+/* cloud-docs sets everything in monospace. Keep that for body copy - it suits
+ * a page about a device, and it leaves <code> indistinguishable from prose in
+ * a way that reads as deliberate - but give the headings a heavy grotesque,
+ * following the branding sketch.
+ *
+ * system-ui rather than a webfont: it costs no bytes and no extra files, and
+ * it resolves to SF Pro, Segoe UI or Roboto, which are all grotesques. The
+ * exact face differs by platform; the character does not.
+ */
+
+h1,
+h2 {
+  font-family: system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+h1 {
+  font-size: 2.6em;
+  line-height: 1.1;
+}
+
+/* ── palette previews ─────────────────────────────────────────────────── */
+
+/* Alternatives, selectable with ?theme=<name>. A short inline script in the
+ * page head copies the query parameter onto <html data-theme>, before first
+ * paint, so the default palette never flashes. The default above is the brand
+ * pair; ?theme=brand is therefore a no-op rather than an error.
+ *
+ * To drop the previews, delete this section and the script in index.astro.
+ */
+
+/* ?theme=amber - a dark room with a projector running. The first palette this
+ * site shipped with. body 9.27:1 dark, 16.11:1 light (both AAA). */
+:root[data-theme="amber"] {
+  --color-bg: #0b0b0c;
+  --color-text: #e0a852;
+  --color--link: #fff6e6;
+}
+@media screen and (prefers-color-scheme: light) {
+  :root[data-theme="amber"] {
+    --color-bg: #f5f0e6;
+    --color-text: #1a1408;
+    --color--link: #743f00;
+  }
+}
+
+/* ?theme=brand-deep - the same two hues over a darker ground, less glare over
+ * a long read. Links are the brand indigo rather than black, so they read as
+ * brighter than the body text instead of heavier.
+ * body 9.60:1 dark, 11.41:1 light; link 16.35:1 and 7.74:1 (all AAA). */
+:root[data-theme="brand-deep"] {
+  --color-bg: #141063;
+  --color-text: #8ed1de;
+  --color--link: #ffffff;
+}
+@media screen and (prefers-color-scheme: light) {
+  :root[data-theme="brand-deep"] {
+    --color-bg: #cfeaf1;
+    --color-text: #1a1580;
+    --color--link: #2922c8;
+  }
+}
+
+/* ?theme=brand-day - the recorded pair kept for daylight, with a deeper night
+ * behind it. body 12.39:1 dark (AAA), 5.71:1 light (AA). */
+:root[data-theme="brand-day"] {
+  --color-bg: #0e0b3d;
+  --color-text: #a8dce6;
+  --color--link: #ffffff;
+}
+@media screen and (prefers-color-scheme: light) {
+  :root[data-theme="brand-day"] {
+    --color-bg: #8ed1de;
+    --color-text: #2922c8;
+    --color--link: #101010;
+  }
+}
