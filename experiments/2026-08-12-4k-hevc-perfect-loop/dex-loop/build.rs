@@ -1,7 +1,14 @@
 //! Embed the git commit into the binary so the startup line identifies the
 //! exact build. std only — zero dependencies.
 //!
-//! Two sources, in preference order:
+//! Three sources, in preference order:
+//!  0. `DEX_BUILD_ID` — an environment variable. This exists because the file
+//!     in (1) is NOT cache-safe: `rerun-if-changed` on a path that did not
+//!     exist when the cached build ran is "simply never changed" (see the note
+//!     below), so a CI job that restores a `target/` cache and THEN writes the
+//!     stamp gets a stale binary reporting the old hash. Observed exactly that
+//!     on 2026-08-16: the stamp was written, the package still said `nogit`.
+//!     `rerun-if-env-changed` has no such hole — cargo compares the value.
 //!  1. `.dex-build-id` — a one-line stamp file (gitignored) written by an
 //!     external sync step. This matters because the Pi build is NOT a git
 //!     checkout: it builds from an rsync mirror (`~/bench/dex-loop`), where
@@ -18,10 +25,16 @@
 use std::process::Command;
 
 fn main() {
-    let hash = stamp_hash()
+    let hash = env_hash()
+        .or_else(stamp_hash)
         .or_else(git_hash_with_dirty)
         .unwrap_or_else(|| "nogit".to_string());
     println!("cargo:rustc-env=DEX_GIT_HASH={hash}");
+
+    // Cargo compares the VALUE of this variable, so it invalidates correctly
+    // even from a warm cache — unlike a rerun-if-changed path that appears
+    // where none existed.
+    println!("cargo:rerun-if-env-changed=DEX_BUILD_ID");
 
     // Re-run on anything that could change the identity above. A missing
     // path is simply never "changed" -- fine, since not every build
@@ -40,6 +53,12 @@ fn main() {
     // paths may not exist in a non-checkout build; that is fine.
     println!("cargo:rerun-if-changed=../../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../../.git/refs");
+}
+
+fn env_hash() -> Option<String> {
+    let s = std::env::var("DEX_BUILD_ID").ok()?;
+    let s = s.trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 fn stamp_hash() -> Option<String> {

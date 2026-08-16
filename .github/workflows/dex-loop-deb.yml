@@ -66,6 +66,13 @@ permissions:
 
 env:
   CRATE_DIR: experiments/2026-08-12-4k-hevc-perfect-loop/dex-loop
+  # build.rs embeds this as the binary's build identity. An ENV VAR, not the
+  # .dex-build-id file, because `rerun-if-changed` on a path that did not exist
+  # when the cached build ran is "never changed" — so with a warm target/ cache
+  # the stamp file is written and then IGNORED, producing a package that still
+  # reports (nogit). Observed exactly that on 2026-08-16. Cargo compares the
+  # VALUE of a `rerun-if-env-changed` variable, which has no such hole.
+  DEX_BUILD_ID: ${{ github.sha }}
 
 jobs:
   build:
@@ -124,30 +131,6 @@ jobs:
       # full suite runs here because this container HAS libmpv -- the Mac
       # checkout cannot link the binary at all, so `cargo test --lib` is the
       # most a developer machine can do.
-      # Stamp the build identity BEFORE anything compiles.
-      #
-      # build.rs prefers a .dex-build-id stamp file over calling git, a
-      # mechanism added for the Pi (which builds from a non-checkout mirror
-      # where `git rev-parse` fails). CI hit the same failure from the other
-      # direction: the container's git would not identify the checkout, so
-      # every packaged binary reported `dex-loop 0.1.0 (nogit)` -- permanently
-      # unidentifiable, which is precisely the failure F7 exists to prevent.
-      #
-      # A soak whose binary cannot say what it is measured nothing: on
-      # 2026-08-15 a service auto-started after an unrelated reboot and ran 90
-      # clean minutes on a THREE-HOUR-OLD build, and only the version string
-      # caught it. Using github.sha needs no working git at all, which is
-      # strictly more robust than fixing whatever git objected to.
-      - name: Stamp build identity
-        working-directory: ${{ env.CRATE_DIR }}
-        run: |
-          set -eux
-          printf '%s' "${GITHUB_SHA}" | cut -c1-12 > .dex-build-id
-          cat .dex-build-id
-          # .dex-build-id is gitignored, so this cannot dirty the tree or
-          # change what the lifecycle/leftovers checks see.
-          git -C "$GITHUB_WORKSPACE" status --porcelain | head -3 || true
-
       - name: Clippy
         working-directory: ${{ env.CRATE_DIR }}
         run: cargo clippy --all-targets -- -D warnings
@@ -224,11 +207,20 @@ jobs:
           extract=$(mktemp -d)
           dpkg-deb -x "$deb" "$extract"
           test -x "$extract/usr/bin/dex-loop"
-          ver=$("$extract/usr/bin/dex-loop" --version | head -1)
+          # 2>&1 is load-bearing: --version writes to STDERR. Without it $ver
+          # is empty, `case "" in *nogit*)` matches nothing, and the assertion
+          # reports success having observed nothing at all — which is precisely
+          # what it did when first added.
+          ver=$("$extract/usr/bin/dex-loop" --version 2>&1 | head -1)
           echo "packaged binary reports: $ver"
           case "$ver" in
             *nogit*) echo "::error::packaged binary reports (nogit) — build identity not stamped"; exit 1 ;;
           esac
+          # Positive assertion, because "does not contain nogit" is also true of
+          # the empty string. The build identity must be 12 hex characters and
+          # must match the commit CI is building.
+          echo "$ver" | grep -qE "\(${GITHUB_SHA:0:12}(\+dirty)?\)" \
+            || { echo "::error::version '$ver' does not carry this commit (${GITHUB_SHA:0:12})"; exit 1; }
 
       # Policy check on the built package. --fail-on error,warning is the point:
       # a linter that reports and exits 0 is a linter nobody reads. Accepted
