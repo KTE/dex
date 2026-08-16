@@ -57,7 +57,11 @@ fn main() {
 
 fn env_hash() -> Option<String> {
     let s = std::env::var("DEX_BUILD_ID").ok()?;
-    let s = s.trim().to_string();
+    // Truncated to 12 to match the git path's --short=12: the startup line is
+    // read by a human on site, and one shape is easier to compare against a
+    // release note than "sometimes 12 chars, sometimes 40" depending on which
+    // source happened to win.
+    let s: String = s.trim().chars().take(12).collect();
     (!s.is_empty()).then_some(s)
 }
 

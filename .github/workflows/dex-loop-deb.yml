@@ -219,8 +219,12 @@ jobs:
           # Positive assertion, because "does not contain nogit" is also true of
           # the empty string. The build identity must be 12 hex characters and
           # must match the commit CI is building.
-          echo "$ver" | grep -qE "\(${GITHUB_SHA:0:12}(\+dirty)?\)" \
-            || { echo "::error::version '$ver' does not carry this commit (${GITHUB_SHA:0:12})"; exit 1; }
+          # `cut`, not ${VAR:0:12}: container run: steps execute under /bin/sh
+          # (dash), where bash substring expansion is a "Bad substitution" error.
+          # The same bashism bit the lifecycle job earlier with diff <(...).
+          short=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)
+          echo "$ver" | grep -qE "\($short(\+dirty)?\)" \
+            || { echo "::error::version '$ver' does not carry this commit ($short)"; exit 1; }
 
       # Policy check on the built package. --fail-on error,warning is the point:
       # a linter that reports and exits 0 is a linter nobody reads. Accepted
