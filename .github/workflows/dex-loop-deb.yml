@@ -169,9 +169,25 @@ jobs:
           echo "$out" | grep -q '1 passed' \
             || { echo "::error::C1 gate did not actually run (filter matched nothing?)"; exit 1; }
 
+      # Every CI build must produce a DISTINCT, ORDERED version, or apt refuses
+      # to install it over an identical one -- silently. Observed 2026-08-16:
+      # `apt install` reported "dex-loop is already the newest version (0.1.0-1)"
+      # and did nothing, so the device kept running an older binary while
+      # `dpkg -l` showed the expected version. Every signal agreed and all of
+      # them were wrong; only the startup line caught it.
+      #
+      # Scheme: <run-number>+g<short-sha>. The run number LEADS because dpkg
+      # compares digit runs numerically, so 9 < 10 and ordering follows time.
+      # A commit-only revision does NOT work -- verified with
+      # `dpkg --compare-versions`: 0.1.0-1+gzz999999 sorts ABOVE
+      # 0.1.0-1+g000aaaaa, so an older build could outrank a newer one and apt
+      # would refuse the real upgrade as a downgrade.
       - name: Build package
         working-directory: ${{ env.CRATE_DIR }}
-        run: cargo deb
+        run: |
+          set -eux
+          short=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)
+          cargo deb --deb-revision "${GITHUB_RUN_NUMBER}+g${short}"
 
       # Print the derived Depends into the log. If dpkg-shlibdeps ever silently
       # stops resolving libmpv, the package would still build and would still
@@ -225,6 +241,15 @@ jobs:
           short=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)
           echo "$ver" | grep -qE "\($short(\+dirty)?\)" \
             || { echo "::error::version '$ver' does not carry this commit ($short)"; exit 1; }
+
+          # The PACKAGE version must be distinct per build, not just the binary's
+          # internal string: apt decides whether to install by version alone.
+          pkgver=$(dpkg-deb --field "$deb" Version)
+          echo "package version: $pkgver"
+          case "$pkgver" in
+            *"$GITHUB_RUN_NUMBER+g$short"*) : ;;
+            *) echo "::error::package version '$pkgver' lacks the run number/commit — apt will refuse to reinstall it"; exit 1 ;;
+          esac
 
       # Policy check on the built package. --fail-on error,warning is the point:
       # a linter that reports and exits 0 is a linter nobody reads. Accepted
