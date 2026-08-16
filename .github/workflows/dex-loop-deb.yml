@@ -217,9 +217,14 @@ jobs:
           # device carrying that package becomes unidentifiable in the field.
           # Asserted rather than trusted: the stamp step above is one `printf`
           # away from silently doing nothing.
-          dpkg-deb --fsys-tarfile "$deb" | tar -xO ./usr/bin/dex-loop > /tmp/dex-loop-bin
-          chmod +x /tmp/dex-loop-bin
-          ver=$(/tmp/dex-loop-bin --version | head -1)
+          # dpkg-deb -x rather than piping --fsys-tarfile into tar: the tarfile's
+          # members have no './' prefix, so `tar -xO ./usr/bin/dex-loop` finds
+          # nothing and exits 2. Extracting the tree sidesteps the path-prefix
+          # question entirely.
+          extract=$(mktemp -d)
+          dpkg-deb -x "$deb" "$extract"
+          test -x "$extract/usr/bin/dex-loop"
+          ver=$("$extract/usr/bin/dex-loop" --version | head -1)
           echo "packaged binary reports: $ver"
           case "$ver" in
             *nogit*) echo "::error::packaged binary reports (nogit) — build identity not stamped"; exit 1 ;;
