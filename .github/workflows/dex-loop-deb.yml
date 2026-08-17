@@ -61,6 +61,14 @@ on:
       - "experiments/2026-08-12-4k-hevc-perfect-loop/scripts/**"
       - ".github/workflows/dex-loop-deb.yml"
 
+# Cancel a superseded run rather than paying for it. Grouped per ref, so pushes
+# to a branch supersede each other while a TAG build never cancels a branch build
+# (and vice versa) -- a tag build produces the release artifact, so losing one to
+# an unrelated push would be the wrong economy.
+concurrency:
+  group: dex-loop-deb-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
