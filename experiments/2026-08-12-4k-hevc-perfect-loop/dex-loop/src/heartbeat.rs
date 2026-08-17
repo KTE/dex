@@ -204,6 +204,16 @@ pub struct HeartbeatSnapshot {
     pub position: Option<PositionSample>,
     pub frame_drops: ObservedCounter,
     pub vo_delayed: ObservedCounter,
+    /// F10: `None` when the systemd watchdog is inert for this run (no
+    /// `$NOTIFY_SOCKET` -- every Mac/bench/CI run); `Some(n)` when armed,
+    /// `n` being the cumulative count of pings that could not be sent
+    /// (`dex_loop::watchdog::PingOutcome::Dropped`) since process start.
+    /// Kept as a plain `Option<u64>` rather than importing
+    /// `dex_loop::watchdog`'s own types here -- this module already prints
+    /// two other subsystems' state (F1's position, F9's counters) as plain
+    /// values, and pulling in a third module's enum just to render one
+    /// number would be the odd one out.
+    pub watchdog_pings_dropped: Option<u64>,
 }
 
 impl HeartbeatSnapshot {
@@ -227,9 +237,17 @@ impl HeartbeatSnapshot {
             Some(PositionSample { secs, age_secs }) => (format!("{secs:.1}s"), format!("{age_secs}s")),
             None => ("n/a".to_string(), "n/a".to_string()),
         };
+        // F10: "inert" and "armed pings-dropped=0" are different facts (no
+        // systemd watchdog at all, vs. one that is armed and has never lost
+        // a ping yet) -- both worth telling apart from the journal after
+        // the fact, same reasoning as `ObservedCounter`'s off/n/a split.
+        let watchdog = match self.watchdog_pings_dropped {
+            Some(n) => format!("armed pings-dropped={n}"),
+            None => "inert".to_string(),
+        };
         format!(
             "dex-loop: heartbeat wraps={} uptime={}s temp={temp} frame-drops={} \
-             vo-delayed={} pos={pos} pos-age={pos_age}",
+             vo-delayed={} pos={pos} pos-age={pos_age} watchdog={watchdog}",
             self.wraps, self.uptime_secs, self.frame_drops, self.vo_delayed,
         )
     }
@@ -365,11 +383,12 @@ mod tests {
             position: Some(PositionSample { secs: 3599.4, age_secs: 0 }),
             frame_drops,
             vo_delayed,
+            watchdog_pings_dropped: Some(0),
         };
         assert_eq!(
             snap.render(),
             "dex-loop: heartbeat wraps=143 uptime=3600s temp=48.2C frame-drops=0 \
-             vo-delayed=2 pos=3599.4s pos-age=0s"
+             vo-delayed=2 pos=3599.4s pos-age=0s watchdog=armed pings-dropped=0"
         );
     }
 
@@ -382,11 +401,12 @@ mod tests {
             position: None,
             frame_drops: ObservedCounter::observed(),
             vo_delayed: ObservedCounter::observed(),
+            watchdog_pings_dropped: None,
         };
         assert_eq!(
             snap.render(),
             "dex-loop: heartbeat wraps=0 uptime=0s temp=n/a frame-drops=n/a \
-             vo-delayed=n/a pos=n/a pos-age=n/a"
+             vo-delayed=n/a pos=n/a pos-age=n/a watchdog=inert"
         );
     }
 
@@ -399,12 +419,51 @@ mod tests {
             position: None,
             frame_drops: ObservedCounter::unobserved(),
             vo_delayed: ObservedCounter::unobserved(),
+            watchdog_pings_dropped: None,
         };
         assert_eq!(
             snap.render(),
             "dex-loop: heartbeat wraps=0 uptime=0s temp=n/a frame-drops=off \
-             vo-delayed=off pos=n/a pos-age=n/a"
+             vo-delayed=off pos=n/a pos-age=n/a watchdog=inert"
         );
+    }
+
+    #[test]
+    fn armed_watchdog_prints_the_dropped_ping_count() {
+        let snap = HeartbeatSnapshot {
+            wraps: 0,
+            uptime_secs: 0,
+            temp_millicelsius: None,
+            position: None,
+            frame_drops: ObservedCounter::observed(),
+            vo_delayed: ObservedCounter::observed(),
+            watchdog_pings_dropped: Some(7),
+        };
+        assert!(
+            snap.render().ends_with("watchdog=armed pings-dropped=7"),
+            "{}",
+            snap.render()
+        );
+    }
+
+    #[test]
+    fn inert_watchdog_never_prints_a_dropped_count() {
+        // `None` means "no systemd watchdog at all" -- distinct from "armed,
+        // zero drops so far" (Some(0), pinned by `renders_the_full_line`
+        // above). A dropped-count number here would misleadingly suggest a
+        // watchdog exists when it does not.
+        let snap = HeartbeatSnapshot {
+            wraps: 0,
+            uptime_secs: 0,
+            temp_millicelsius: None,
+            position: None,
+            frame_drops: ObservedCounter::observed(),
+            vo_delayed: ObservedCounter::observed(),
+            watchdog_pings_dropped: None,
+        };
+        let s = snap.render();
+        assert!(s.ends_with("watchdog=inert"), "{s}");
+        assert!(!s.contains("pings-dropped"), "{s}");
     }
 
     #[test]
@@ -421,18 +480,19 @@ mod tests {
             position: None,
             frame_drops: ObservedCounter::observed(),
             vo_delayed: ObservedCounter::observed(),
+            watchdog_pings_dropped: None,
         };
         assert_eq!(
             base.render(),
             "dex-loop: heartbeat wraps=0 uptime=0s temp=-0.2C frame-drops=n/a \
-             vo-delayed=n/a pos=n/a pos-age=n/a"
+             vo-delayed=n/a pos=n/a pos-age=n/a watchdog=inert"
         );
         let mut base = base;
         base.temp_millicelsius = Some(-1_500);
         assert_eq!(
             base.render(),
             "dex-loop: heartbeat wraps=0 uptime=0s temp=-1.5C frame-drops=n/a \
-             vo-delayed=n/a pos=n/a pos-age=n/a"
+             vo-delayed=n/a pos=n/a pos-age=n/a watchdog=inert"
         );
         // i64::MIN: the one value where a naive `.abs()` would panic.
         // `unsigned_abs()` does not.
@@ -450,6 +510,7 @@ mod tests {
             position: Some(PositionSample { secs: 12.049, age_secs: 4 }),
             frame_drops: ObservedCounter::observed(),
             vo_delayed: ObservedCounter::observed(),
+            watchdog_pings_dropped: None,
         };
         assert!(snap.render().contains("pos=12.0s pos-age=4s"), "{}", snap.render());
     }
@@ -467,6 +528,7 @@ mod tests {
             position: Some(PositionSample { secs: three_weeks_secs, age_secs: 0 }),
             frame_drops: ObservedCounter::observed(),
             vo_delayed: ObservedCounter::observed(),
+            watchdog_pings_dropped: None,
         };
         let s = snap.render();
         assert!(s.contains("pos=1814400.0s"), "{s}");

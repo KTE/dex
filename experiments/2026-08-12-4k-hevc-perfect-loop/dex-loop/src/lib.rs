@@ -16,3 +16,4 @@ pub mod heartbeat;
 pub mod nal;
 pub mod sha256;
 pub mod sidecar;
+pub mod watchdog;

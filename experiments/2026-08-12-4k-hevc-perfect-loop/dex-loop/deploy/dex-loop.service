@@ -35,9 +35,55 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# F10 -- systemd watchdog (PLAN.md's F10 entry; implementation in
+# src/watchdog.rs). Type stays `simple`, NOT `notify`: a notify unit that
+# never sends READY=1 sits inactive forever, and this player has no natural
+# "ready" moment before the endless stream starts (see src/watchdog.rs's
+# module doc for why READY=1 is deliberately never sent). NotifyAccess=main
+# is what makes WatchdogSec= work under Type=simple: it grants the main
+# process the notify socket without requiring the READY handshake Type=notify
+# would.
+#
+# LIVENESS CRITERION (see src/watchdog.rs's module doc for the full
+# argument): dex-loop pings WATCHDOG=1 once per ~10s health-check tick, AFTER
+# that tick's F1 evaluation has completed -- never from the 600s heartbeat.
+# F1's in-place-recovery budget is cumulative and NEVER refills, so a
+# display-wedged player's tick sequence is FORCED, by construction, through
+# silence -> stall -> <=3 budgeted recoveries (~20s each) -> exit(1) --
+# bounding the pings a wedge can ever emit before either exiting (tier 1's
+# exit-code restart already covers that) or, on the one path that can still
+# hang (e.g. `eprintln!` against a wedged journald, INCLUDING on the exit(1)
+# arm whose entire job is "let the supervisor take over" -- see that arm's
+# own comment in main.rs), simply STOPPING. A wedged player therefore cannot
+# keep this watchdog satisfied indefinitely -- there is no third state
+# between "pings continue because the loop is genuinely progressing" and
+# "pings stop because the loop hung".
+#
+# WatchdogSec=180 (PLAN.md's stated floor): >=17x the ping cadence, so a
+# handful of missed/dropped pings (journald stutter, scheduling bursts;
+# src/watchdog.rs's socket is non-blocking and a full receiver queue is
+# treated as a DROPPED ping, never a retry or a block) cannot cause a
+# spurious kill, while still bounding the worst-case black-wall time for
+# this hazard class to a few minutes across a weeks-long unattended run.
+# 180s also comfortably exceeds F1's own worst-case tier-0 episode (~2 min),
+# so a watchdog kill can never preempt a recovery that tier 0 would have
+# completed on its own -- see src/watchdog.rs's module doc, "gate placement".
+#
+# INVARIANT for future edits to this unit or to main.rs's event loop: do NOT
+# add a "final ping" anywhere on an exit path (Escalate, END_FILE,
+# QUEUE_OVERFLOW). Pings exist to prove the loop is STILL RUNNING, not that
+# it once was; a ping sent right before the one hang this feature exists to
+# catch would only reset the countdown and defeat it.
+WatchdogSec=180
+NotifyAccess=main
 # The display may not be awake when the Pi boots -- a projector can take 30-90s
 # to present EDID while the Pi boots in ~15. Wait for the connector rather than
-# starting into a fallback mode that never corrects itself.
+# starting into a fallback mode that never corrects itself. ExecStartPre runs
+# BEFORE the main process is forked, i.e. before the watchdog timer starts
+# (systemd starts counting WatchdogSec= at Type=simple's "start-up complete"
+# point, which for `Type=simple` is exec of ExecStart) -- so this wait, however
+# long, consumes none of the 180s budget above. Verified on the Pi, not just
+# inferred: see PLAN.md's F10 entry for the bench unit that pins this.
 ExecStartPre=/usr/bin/dex-wait-hdmi
 # No --fps here: the frame rate comes from /opt/dex/loop.265.json, written at
 # ingest and hash-bound to the asset. Deploy BOTH files. A missing or stale

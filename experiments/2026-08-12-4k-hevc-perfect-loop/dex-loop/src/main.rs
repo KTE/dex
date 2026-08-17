@@ -55,9 +55,11 @@ use dex_loop::health::{ForceRecoveryTrigger, HealthAction, HealthMonitor};
 use dex_loop::heartbeat::{HeartbeatSnapshot, ObservedCounter, PositionSample};
 use dex_loop::nal::validate_leading_nals;
 use dex_loop::sidecar::{resolve_fps, verify_payload, FpsSource, Sidecar};
+use dex_loop::watchdog::{self, PingOutcome, WatchdogDecision, WatchdogEnv};
 use std::env;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs;
+use std::os::unix::net::{SocketAddr as UnixSocketAddr, UnixDatagram};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -405,6 +407,7 @@ fn emit_heartbeat(
     last_position: Option<(f64, Instant)>,
     frame_drops: ObservedCounter,
     vo_delayed: ObservedCounter,
+    watchdog_pings_dropped: Option<u64>,
 ) {
     eprintln!(
         "{}",
@@ -418,9 +421,89 @@ fn emit_heartbeat(
             }),
             frame_drops,
             vo_delayed,
+            watchdog_pings_dropped,
         }
         .render()
     );
+}
+
+/// F10: the live systemd-watchdog resources held across the whole run --
+/// the non-blocking socket (opened once, never recreated) plus the address
+/// it pings and a running count of drops for the heartbeat line. `None`
+/// (via [`setup_watchdog`]) for every non-systemd run: Mac dev, bench tmux,
+/// CI, any manual invocation off systemd -- see `dex_loop::watchdog`'s
+/// module doc.
+///
+/// This struct -- and the actual `send_to_addr` call site -- deliberately
+/// live HERE, in the driver, not in the library: `dex_loop::watchdog`
+/// already owns everything decidable (the handshake, the address
+/// construction, the non-blocking send wrapper, all unit-tested with real
+/// sockets under `cargo test --lib`, see that module's tests). What is left
+/// is process-lifetime resource ownership and the "when do we call this"
+/// wiring -- exactly what `main.rs` already does for every other piece of
+/// mpv-facing state in this program (`health`, `frame_drops`, `vo_delayed`),
+/// per `lib.rs`'s own "main.rs is a thin driver" principle.
+struct WatchdogRuntime {
+    socket: UnixDatagram,
+    addr: UnixSocketAddr,
+    pings_dropped: u64,
+}
+
+/// Resolve the systemd watchdog handshake and, if armed, open the
+/// non-blocking socket it needs. Every failure along the way (address
+/// resolution, socket creation, `set_nonblocking`) DISABLES the watchdog for
+/// this run rather than aborting startup -- a systemd unit misconfigured in
+/// a way this program cannot fix is not a reason to refuse playing the
+/// asset; per principle 2, it is loud instead, once, here.
+fn setup_watchdog(tick_secs: u64) -> Option<WatchdogRuntime> {
+    let decision = watchdog::resolve(&WatchdogEnv::from_process_env(), std::process::id(), tick_secs);
+    let (addr, window_secs, warning) = match decision {
+        WatchdogDecision::Inert(reason) => {
+            eprintln!("dex-loop: watchdog: inert ({reason})");
+            return None;
+        }
+        WatchdogDecision::Armed { addr, window_secs, warning } => (addr, window_secs, warning),
+    };
+
+    let sockaddr = match watchdog::socket_addr(&addr) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!(
+                "warning: dex-loop: watchdog: cannot resolve $NOTIFY_SOCKET address ({addr:?}): \
+                 {e} -- watchdog DISABLED for this run"
+            );
+            return None;
+        }
+    };
+    let socket = match UnixDatagram::unbound() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "warning: dex-loop: watchdog: UnixDatagram::unbound failed: {e} -- watchdog \
+                 DISABLED for this run"
+            );
+            return None;
+        }
+    };
+    // LOAD-BEARING: see dex_loop::watchdog's module doc §"no new blocking
+    // call" -- a blocking send against a full receiver queue would be a new
+    // way for THIS feature to hang the event thread, exactly the class of
+    // bug F9 already had to fix once for the heartbeat.
+    if let Err(e) = socket.set_nonblocking(true) {
+        eprintln!(
+            "warning: dex-loop: watchdog: set_nonblocking failed: {e} -- watchdog DISABLED for \
+             this run (refusing to arm a socket that could block the event thread)"
+        );
+        return None;
+    }
+
+    let window = window_secs.map(|w| format!("{w}s")).unwrap_or_else(|| "unknown".to_string());
+    eprintln!("dex-loop: watchdog: armed (window {window}, ping cadence {tick_secs}s)");
+    if let Some(w) = warning {
+        eprintln!("warning: dex-loop: watchdog: {w}");
+    }
+
+    Some(WatchdogRuntime { socket, addr: sockaddr, pings_dropped: 0 })
 }
 
 /// Whether an `MPV_EVENT_END_FILE` with this `reason` is an expected
@@ -534,6 +617,19 @@ fn act_on_health_action(
             // is to let the supervisor take over. Per design principle 4
             // (the mains switch IS the shutdown path), exiting abruptly
             // here is not a shortcut, it is correct.
+            //
+            // F10 INVARIANT: this `eprintln!` line above -- or anything
+            // else added to this arm before `exit(1)` -- can in principle
+            // block (e.g. against a wedged journald), and that possibility
+            // is EXACTLY what the systemd watchdog (`WatchdogSec=` in
+            // deploy/dex-loop.service, dex_loop::watchdog) exists to catch:
+            // if this arm hangs here, the tick loop never completes another
+            // iteration, so no further WATCHDOG=1 pings are sent, and
+            // systemd's timer fires. Do NOT add a "final ping" to this arm
+            // to try to look more alive on the way out -- that would reset
+            // the watchdog's countdown right before the one hang this
+            // feature exists to catch, defeating it. See
+            // dex_loop::watchdog's module doc for the full argument.
             std::process::exit(1);
         }
     }
@@ -558,6 +654,16 @@ fn usage() -> ! {
                       startup latency. REQUIRES --bench-no-sidecar (refused otherwise)
                       so it can never fire against a real, sidecar-bound deployment
                       asset.
+  --bench-wedge-after-secs N
+                      F10 BENCH ONLY: N seconds after startup, deliberately hang the
+                      event thread FOREVER -- simulates the one hazard class F1/F9
+                      cannot see (an event-thread hang outside any mpv call), to prove
+                      whether a systemd watchdog (WatchdogSec=) actually fires and
+                      restarts this process. The process never recovers on its own once
+                      this fires; only an external actor (systemd, or a test harness's
+                      own kill) can end it. REQUIRES --bench-no-sidecar (refused
+                      otherwise) so it can never fire against a real, sidecar-bound
+                      deployment asset.
   --opt K=V           pass an extra mpv option (repeatable)
   --no-defaults       omit the built-in Pi 4 zero-copy option set
 
@@ -588,6 +694,7 @@ fn main() -> ExitCode {
     let mut defaults = true;
     let mut bench_no_sidecar = false;
     let mut force_recovery_after_secs: Option<u64> = None;
+    let mut bench_wedge_after_secs: Option<u64> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -620,6 +727,14 @@ fn main() -> ExitCode {
                 let Some(v) = args.get(i) else { usage() };
                 let Ok(n) = v.parse::<u64>() else { usage() };
                 force_recovery_after_secs = Some(n);
+            }
+            "--bench-wedge-after-secs" => {
+                i += 1;
+                // Same "refuse loudly, never evaporate" discipline as
+                // --force-recovery-after-secs above.
+                let Some(v) = args.get(i) else { usage() };
+                let Ok(n) = v.parse::<u64>() else { usage() };
+                bench_wedge_after_secs = Some(n);
             }
             "--opt" => {
                 i += 1;
@@ -658,6 +773,22 @@ fn main() -> ExitCode {
              must never be armed against what could be a real, sidecar-bound \
              deployment asset. Add --bench-no-sidecar --fps <F> to run it on a bench, \
              or drop --force-recovery-after-secs to run normally."
+        );
+        return ExitCode::from(2);
+    }
+
+    // F10 (PLAN.md) -- the identical "impossible to enable accidentally in
+    // a deployment" gate as T7 above, for the same reason: a probe that
+    // deliberately hangs the event thread forever must never be reachable
+    // against a real, sidecar-bound show, however it got pasted into a
+    // command line.
+    if bench_wedge_after_secs.is_some() && !bench_no_sidecar {
+        eprintln!(
+            "error: --bench-wedge-after-secs requires --bench-no-sidecar -- it is an F10 \
+             BENCH-ONLY probe (PLAN.md) that deliberately hangs the event thread forever to \
+             prove whether a systemd watchdog actually fires, and must never be armed against \
+             what could be a real, sidecar-bound deployment asset. Add --bench-no-sidecar \
+             --fps <F> to run it on a bench, or drop --bench-wedge-after-secs to run normally."
         );
         return ExitCode::from(2);
     }
@@ -760,6 +891,16 @@ fn main() -> ExitCode {
              few seconds, so a small N can fire during startup rather than steady \
              playback), whether or not anything has actually stalled. Never pass this \
              flag on a real deployment asset (see PLAN.md's T7 entry)."
+        );
+    }
+
+    if let Some(n) = bench_wedge_after_secs {
+        // Same "loud on purpose" discipline as T7 above.
+        eprintln!(
+            "warning: BENCH ONLY (F10 wedge probe): --bench-wedge-after-secs={n} is ARMED -- \
+             this run will deliberately hang the event thread FOREVER {n}s after startup, \
+             simulating F10's hazard class (an event-thread hang outside any mpv call). \
+             Never pass this flag on a real deployment asset (see PLAN.md's F10 entry)."
         );
     }
 
@@ -964,6 +1105,11 @@ fn main() -> ExitCode {
     // `PositionSample` doc for why that is a struct-shape decision, not
     // just a style one.
     let mut last_position: Option<(f64, Instant)> = None;
+    // F10: resolve the systemd watchdog handshake and open its socket (if
+    // armed) BEFORE heartbeat #0, so that very first line already reports
+    // the real watchdog state instead of a stale default -- see
+    // dex_loop::watchdog's module doc and `setup_watchdog` above.
+    let mut watchdog_runtime = setup_watchdog(HEALTH_CHECK_SECS);
     // Heartbeat #0: proves temperature reading and line formatting on every
     // boot, and anchors the journal. It is NOT proof of the mpv property
     // subscriptions (F9 removed the only call that could prove that
@@ -971,7 +1117,13 @@ fn main() -> ExitCode {
     // design, since nothing has been decoded yet. The on-device check that
     // the subscriptions actually work belongs to the deploy checklist, not
     // this line -- see PLAN.md's F9 entry ("must show numbers, not n/a").
-    emit_heartbeat(started, last_position, frame_drops, vo_delayed);
+    emit_heartbeat(
+        started,
+        last_position,
+        frame_drops,
+        vo_delayed,
+        watchdog_runtime.as_ref().map(|w| w.pings_dropped),
+    );
     let mut health: Option<HealthMonitor> = if health_check_registered {
         Some(HealthMonitor::new(MAX_RECOVERY_ATTEMPTS))
     } else {
@@ -984,6 +1136,12 @@ fn main() -> ExitCode {
     // run -- and costs one `Option` check per loop iteration.
     let mut force_recovery_trigger: Option<ForceRecoveryTrigger> =
         force_recovery_after_secs.map(ForceRecoveryTrigger::new);
+    // F10 (PLAN.md): the bench-only wedge probe, armed only when the CLI
+    // gate below accepted --bench-wedge-after-secs (which itself requires
+    // --bench-no-sidecar, same escape hatch as T7). See its firing site
+    // below for what it proves and why.
+    let mut bench_wedge_trigger: Option<ForceRecoveryTrigger> =
+        bench_wedge_after_secs.map(ForceRecoveryTrigger::new);
     // Counts recoveries issued whose matching END_FILE(reason=stop) has not
     // yet been observed (bench-confirmed live, three independent reviews,
     // 2026-08-15) -- see the MPV_EVENT_END_FILE handler below and PLAN.md's
@@ -1015,13 +1173,40 @@ fn main() -> ExitCode {
         let reply_userdata = unsafe { (*ev).reply_userdata };
 
         if last_heartbeat.elapsed().as_secs() >= HEARTBEAT_SECS {
-            emit_heartbeat(started, last_position, frame_drops, vo_delayed);
+            emit_heartbeat(
+                started,
+                last_position,
+                frame_drops,
+                vo_delayed,
+                watchdog_runtime.as_ref().map(|w| w.pings_dropped),
+            );
             last_heartbeat = Instant::now();
         }
 
-        if let Some(h) = health.as_mut() {
-            if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
-                last_health_check = Instant::now();
+        // F1's tick AND F10's ping share this cadence gate, but the ping is
+        // NOT nested inside `if let Some(h) = health` below -- see
+        // dex_loop::watchdog's module doc, "gate placement": if the
+        // time-pos subscription itself failed to register (health is
+        // `None`, near-zero probability), F1 is disabled but the player may
+        // still be perfectly healthy, and stopping pings in that mode would
+        // convert a merely-degraded run into a guaranteed watchdog kill
+        // loop. The ping is emitted AFTER the tick/act_on_health_action
+        // pair for this iteration has fully completed, per PLAN.md F10 §1 --
+        // that ordering, plus F1's cumulative never-refilling recovery
+        // budget (dex_loop::health, "why the budget never resets"), is what
+        // makes this a real liveness criterion rather than "the process
+        // runs": a display-wedged player's tick sequence is FORCED, by
+        // construction, through silence -> stall -> <=3 budgeted recoveries
+        // -> Escalate -> process exit, so it can only ever emit a BOUNDED
+        // number of pings before either exiting (tier 1 already handles
+        // that) or -- on the one path that can still hang, e.g. `eprintln!`
+        // against a wedged journald on the Escalate arm itself, see that
+        // arm's own comment below -- simply stopping, which is exactly what
+        // the watchdog is here to catch. There is no way to keep pinging
+        // while the display stays black.
+        if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
+            last_health_check = Instant::now();
+            if let Some(h) = health.as_mut() {
                 let action = h.tick(last_position.map(|(secs, _)| secs));
                 act_on_health_action(
                     ctx,
@@ -1032,6 +1217,12 @@ fn main() -> ExitCode {
                     &mut last_position,
                     &mut recovery_stops_pending,
                 );
+            }
+            if let Some(wd) = watchdog_runtime.as_mut() {
+                match watchdog::send_ping(&wd.socket, &wd.addr) {
+                    PingOutcome::Sent => {}
+                    PingOutcome::Dropped => wd.pings_dropped = wd.pings_dropped.saturating_add(1),
+                }
             }
         }
 
@@ -1072,6 +1263,40 @@ fn main() -> ExitCode {
                              subscription failed above)"
                         );
                     }
+                }
+            }
+        }
+
+        // F10: the bench-only wedge probe -- deliberately parks THIS event
+        // thread forever, simulating the one hazard class F1/F9 cannot see
+        // (a hang in our own code that is not an mpv call at all -- see
+        // dex_loop::watchdog's module doc "Framing"). Checked every
+        // iteration, same reasoning as T7's trigger above, and placed
+        // BEFORE the event-id dispatch below for the same reason that
+        // matters here even more than it does for T7: on a run where mpv
+        // reaches END_FILE/QUEUE_OVERFLOW almost immediately (e.g. this
+        // file's own `--opt vid=no --opt aid=no` test convention), the
+        // dispatch's own `std::process::exit(1)` would otherwise win the
+        // race and this probe would never get a chance to fire at all.
+        // Firing hangs the thread PERMANENTLY (a real `loop`, not a single
+        // long sleep) -- there is no "and then it resumes"; the whole point
+        // is that only an external actor (systemd's watchdog, if armed; the
+        // test harness's own deadline-kill otherwise) can end this process
+        // from here on. If nothing ever un-hangs it, that IS the pass
+        // condition -- see PLAN.md's F10 entry and README.md for how this
+        // is used on the Pi to prove the watchdog fires.
+        if let Some(trigger) = bench_wedge_trigger.as_mut() {
+            if trigger.should_fire(started.elapsed().as_secs()) {
+                eprintln!(
+                    "warning: BENCH ONLY (F10 wedge probe): --bench-wedge-after-secs elapsed -- \
+                     deliberately parking the event thread forever to simulate F10's hazard \
+                     class (an event-thread hang outside any mpv call). If a systemd watchdog \
+                     is armed above, it should fire and this process should be restarted by \
+                     the supervisor; if this process is still alive well past WatchdogSec, the \
+                     watchdog did not fire and F10 has a gap."
+                );
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
                 }
             }
         }

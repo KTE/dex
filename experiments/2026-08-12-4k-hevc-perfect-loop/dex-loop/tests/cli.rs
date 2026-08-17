@@ -898,3 +898,115 @@ fn force_recovery_survives_against_real_mpv() {
         r.stderr
     );
 }
+
+// ---- F10: --bench-wedge-after-secs, the systemd-watchdog live-fire probe -
+//
+// F9 proved a wedged mpv core produces SILENCE on this program's event
+// thread, and F1 acts on that silence in-process. Neither covers the event
+// thread hanging in code that is NOT an mpv call at all (e.g. `eprintln!`
+// against a wedged journald) -- see dex_loop::watchdog's module doc
+// ("Framing"). `--bench-wedge-after-secs` deliberately reproduces that one
+// remaining hazard class on a timer, so its plumbing gets the same
+// "impossible to enable accidentally in a deployment" gate as T7's
+// `--force-recovery-after-secs`, tested the same way here.
+
+/// The gate itself, mirroring
+/// `force_recovery_without_bench_no_sidecar_refused_exit_2`:
+/// `--bench-wedge-after-secs` without `--bench-no-sidecar` is refused on CLI
+/// shape alone, before the asset is even read.
+#[test]
+fn bench_wedge_without_bench_no_sidecar_refused_exit_2() {
+    let r = run_with_deadline(
+        &["/nonexistent/x.265", "--bench-wedge-after-secs", "5"],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("--bench-no-sidecar"),
+        "stderr must explain the required pairing: {}",
+        r.stderr
+    );
+}
+
+/// Same missing-value discipline as every other flag taking a value.
+#[test]
+fn bench_wedge_flag_missing_value_refused_exit_2_with_usage() {
+    let r = run_with_deadline(
+        &["/nonexistent/x.265", "--bench-wedge-after-secs"],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
+}
+
+/// A non-numeric value must also refuse via usage(), not silently parse as
+/// 0 or panic the process.
+#[test]
+fn bench_wedge_flag_non_numeric_value_refused_exit_2_with_usage() {
+    let r = run_with_deadline(
+        &["/nonexistent/x.265", "--bench-wedge-after-secs", "soon"],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
+}
+
+/// The mechanism itself: with `--bench-wedge-after-secs 0`, the wedge check
+/// fires on the very first loop iteration, unconditionally, BEFORE that same
+/// iteration's event-id dispatch can act on whatever `mpv_wait_event`
+/// happened to return (see the firing site's comment in main.rs for why
+/// that ordering matters -- with `--opt vid=no --opt aid=no`, mpv reaches
+/// "nothing to play" and would otherwise race this probe to an ordinary
+/// `exit(1)`). A process that has genuinely wedged never exits on its own,
+/// so the ONLY way this test ends is the harness's own deadline kill --
+/// `deadline_killed` must be true, mirroring the `Run` struct's own doc
+/// comment on why that is the correct assertion (an exit_code of `None`
+/// alone cannot distinguish "wedged, harness killed it" from "died by
+/// signal on its own").
+///
+/// This proves the MECHANISM -- that the flag genuinely, permanently parks
+/// the event thread -- not that a systemd watchdog then kills it: this
+/// harness has no systemd to observe. That half is proved on the Pi; see
+/// PLAN.md's F10 entry and README.md for the on-device procedure
+/// (journalctl showing `Watchdog timeout`, a SIGABRT, and a supervisor
+/// restart).
+#[test]
+fn bench_wedge_flag_actually_hangs_the_event_thread_forever() {
+    let p = temp_path("wedge.265");
+    std::fs::write(&p, stub_annexb()).unwrap();
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--bench-no-sidecar",
+            "--fps",
+            "30",
+            "--bench-wedge-after-secs",
+            "0",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(6),
+    );
+    assert!(
+        r.deadline_killed,
+        "a genuinely wedged event thread must never exit on its own -- exit_code {:?}, \
+         stderr: {}",
+        r.exit_code, r.stderr
+    );
+    assert!(
+        r.stderr.contains("BENCH ONLY (F10 wedge probe)") && r.stderr.contains("ARMED"),
+        "must print the loud arming warning: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr
+            .contains("deliberately parking the event thread forever"),
+        "must print the firing line proving the probe actually triggered: {}",
+        r.stderr
+    );
+}

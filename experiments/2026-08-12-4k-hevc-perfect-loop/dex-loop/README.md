@@ -216,6 +216,7 @@ subset refuses startup — fail closed.
 | `--mode WxH@R` | force a DRM mode, e.g. `3840x2160@30`. Default: connector preferred. Deliberately NOT in the sidecar: mode is venue config, not asset metadata |
 | `--bench-no-sidecar` | BENCH ONLY: skip the sidecar and take `--fps` as given (both flags required — the escape hatch is a deliberate two-flag act) |
 | `--force-recovery-after-secs N` | T7, BENCH ONLY: force a tier-0 in-place recovery N seconds into playback, whether or not anything has stalled — a live-fire probe for F1's recovery command. Requires `--bench-no-sidecar` (refused otherwise), so it can never end up armed against a real, sidecar-bound deployment asset |
+| `--bench-wedge-after-secs N` | F10, BENCH ONLY: deliberately hang the event thread FOREVER N seconds after startup, simulating the one hazard class F1/F9 cannot see (an event-thread hang outside any mpv call) — proves whether a systemd watchdog (`WatchdogSec=`) actually fires. The process never recovers on its own once armed and fired. Requires `--bench-no-sidecar` (refused otherwise) |
 | `--opt K=V` | pass any extra mpv option (repeatable) |
 | `--no-defaults` | omit the built-in Pi 4 zero-copy option set |
 
@@ -225,11 +226,14 @@ the wrap premise is "IDR at frame 0") → every `--opt`/default/`--mode` mpv opt
 accepted. Exit codes: **2** = refused before playback (fix the asset/invocation —
 including a rejected mpv option; restarting cannot help), **1** = playback/runtime
 failure (the supervisor restarts). Every start logs `dex-loop <version> (<git hash>)`
-and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`, `pos-age=`) at boot and every
-10 minutes. The drop counters (`frame-drops=`, `vo-delayed=`) are cumulative since
-process start and read `n/a` until the first value arrives from mpv, or `off` if the
-subscription failed at startup — never a direct property read, so the heartbeat
-itself can never block on a wedged mpv core.
+and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`, `pos-age=`, `watchdog=`) at
+boot and every 10 minutes. The drop counters (`frame-drops=`, `vo-delayed=`) are
+cumulative since process start and read `n/a` until the first value arrives from
+mpv, or `off` if the subscription failed at startup — never a direct property
+read, so the heartbeat itself can never block on a wedged mpv core. `watchdog=`
+reads `inert` off systemd (Mac/bench/CI — the overwhelmingly common case) or
+`armed pings-dropped=N` under a unit with `WatchdogSec=` set (F10, see
+**Deployment** below) — see `src/watchdog.rs`'s module doc for the full design.
 
 The defaults encode the measured zero-copy path: the Pi's decoder emits
 Broadcom SAND-tiled NV12, and the display scans SAND out natively **only**
@@ -410,6 +414,37 @@ screen.
 The primary boot-order fix is at the KMS layer, not in the player -- bake the
 projector's EDID into `cmdline.txt` so the Pi always believes a 4K30 display is
 attached. See the comments in `deploy/dex-wait-hdmi`.
+
+**Watchdog (F10).** The unit also carries `WatchdogSec=180` + `NotifyAccess=main`
+— an EXTERNAL actor for the one hazard tier 0/F9 cannot see: the event thread
+hanging in our own code that is not an mpv call at all (e.g. `eprintln!` against
+a wedged journald). `dex-loop` pings `WATCHDOG=1` once per ~10 s health-check
+tick over a non-blocking `AF_UNIX` datagram socket (hand-written, `std` only —
+zero new dependencies, see `src/watchdog.rs`); a dropped ping is counted, never
+retried inline, and surfaced in the heartbeat (`watchdog=armed pings-dropped=N`).
+`journalctl -u dex-loop` shows `watchdog: armed (window 180s, ping cadence 10s)`
+at every start when running under the real unit, `watchdog: inert (...)` for any
+manual/bench/CI invocation (no `$NOTIFY_SOCKET`).
+
+To PROVE it fires rather than trust the design (this crate's own standing bar —
+see PLAN.md's F10 entry for the full three-part verification and exact
+timestamps), on a bench, as an unprivileged user:
+
+```bash
+sudo systemd-run --unit=wedge-test -p Type=simple -p NotifyAccess=main \
+  -p WatchdogSec=15 -p Restart=on-failure -p RestartSec=2 \
+  -p User=dex -p Group=dex -p SupplementaryGroups=video \
+  /usr/bin/dex-loop /opt/dex/loop.265 --bench-no-sidecar --fps 30 \
+  --bench-wedge-after-secs 0 --no-defaults --opt vo=null --opt vid=no --opt aid=no
+
+journalctl -u wedge-test -f   # expect, ~15s later:
+#   wedge-test.service: Watchdog timeout (limit 15s)!
+#   wedge-test.service: Killing process NNNNN (dex-loop) with signal SIGABRT.
+#   wedge-test.service: Main process exited, code=killed, status=6/ABRT
+# ...then it restarts and repeats. Stop it: systemctl stop wedge-test
+```
+
+A watchdog never seen to fire is indistinguishable from one wired to nothing.
 
 **Triage.** Every refusal and every runtime failure is journal-only today (see
 PLAN.md's F8): on site this reads as a plain black rectangle, so start with

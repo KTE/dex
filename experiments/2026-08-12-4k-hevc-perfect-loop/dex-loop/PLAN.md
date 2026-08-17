@@ -249,6 +249,15 @@ a window. Deliberately *not* the default `StartLimitAction=reboot`, because that
 interacts badly with `StartLimitIntervalSec=0` (never-give-up restarts); needs an
 explicit second unit. Future iteration per Max — record the design now.
 
+**F10 note (2026-08-17):** the unit now also carries `WatchdogSec=180` (F10) —
+a watchdog-triggered kill is `Restart=`-recovered exactly like an exit-code
+failure (confirmed live on the Pi: `Result: watchdog`, `Killing process ...
+with signal SIGABRT`, followed by the same `Scheduled restart job` path an
+ordinary crash takes), so watchdog expiries are already IN-BAND with tier 1 and
+need no special-casing here. When tier 2's `StartLimitBurst`/`OnFailure=`
+counter is eventually built, a watchdog-caused restart should count toward it
+the same as any other — nothing in F10 requires tier 2 to distinguish the two.
+
 ### F3 — Bind fps (and mode) to the asset; refuse unbound assets
 **Why:** the one failure that is undetectable *by construction*. A raw Annex-B
 stream has no timestamps, so `--fps 25` on a 30 fps asset plays 20 % slow,
@@ -522,14 +531,132 @@ can no longer be a false all-clear. **On-device verification still owed:** withi
 ~1 minute of playback the counters must read numbers, not `n/a` — if they do not,
 `MPV_FORMAT_INT64`'s transcription is wrong (it fails safe, but it fails).
 
-**F10 — systemd `WatchdogSec=` + `sd_notify` (new, deferred).** Not a substitute for
-the above and deliberately not bundled with it. It remains worth doing for the one
-risk F9 does not touch: a hang in our own event-thread code that is not an mpv call
-(`eprintln!` against a wedged journald). Constraints if it lands: keep `Type=simple`
-and add `NotifyAccess=main` — never `Type=notify`, which can leave the unit inactive
-forever if `READY=1` is not sent; `WatchdogSec` ≥ 180 s so it cannot preempt tier-0's
-worst-case ~2-minute episode and turn every recoverable HDMI blink into a process
-restart; ping `WATCHDOG=1` from the 10 s health-check tick, not the 600 s heartbeat.
+### F10 — systemd `WatchdogSec=` + hand-rolled `sd_notify` (2026-08-17, IMPLEMENTED)
+
+**Why:** not a substitute for F9/F1 and deliberately not bundled with either. It
+closes the one risk neither touches: a hang in our OWN event-thread code that is
+not an mpv call at all — canonically `eprintln!` blocking against a wedged
+journald, including on the `Escalate` arm whose entire job is "exit so tier 1 can
+take over." Nothing in-process can detect that; it needs an external actor.
+
+**Liveness criterion (the requirement that it be one a WEDGED PLAYER FAILS):**
+`main.rs` pings `WATCHDOG=1` once per `HEALTH_CHECK_SECS` (10 s) tick, AFTER
+that tick's `HealthMonitor::tick` evaluation and any resulting recovery command
+have completed — never from the 600 s heartbeat. F1's recovery budget
+(`MAX_RECOVERY_ATTEMPTS`) is cumulative and never refills, so a display-wedged
+player's tick sequence is FORCED, by construction, through silence → stall (2
+ticks) → ≤3 budgeted recoveries (~20 s each) → `Escalate` → `exit(1)`. A wedge
+therefore emits a BOUNDED number of pings and then either exits (tier 1's
+exit-code path already covers that) or, on the one path that can still hang
+(e.g. the `eprintln!` before `Escalate`'s own `exit(1)`), simply stops pinging —
+which is exactly what the watchdog is here to catch. There is no third state.
+The ping deliberately sits OUTSIDE the `if let Some(h) = health` gate: if the
+`time-pos` subscription itself failed to register (F1 disabled, near-zero
+probability), stopping pings there too would convert a merely-degraded-but-alive
+run into a guaranteed watchdog kill loop.
+
+**No new blocking call:** `sd_notify` is `sendto(2)` on an `AF_UNIX SOCK_DGRAM`,
+which — unlike UDP — has flow control and CAN block if the receiver's queue is
+full. The socket this crate opens is explicit non-blocking
+(`UnixDatagram::set_nonblocking(true)`), and `EAGAIN`/`EWOULDBLOCK` (or any other
+send failure) is a DROPPED ping — incremented in a counter, never retried
+synchronously, never panicked on. Surfaced in the heartbeat line
+(`watchdog=armed pings-dropped=N` / `watchdog=inert`), so a degraded run is
+diagnosable after the fact.
+
+**Dependency: zero, hand-written, `std` only.** `std::os::unix::net::UnixDatagram`
+covers the whole protocol, including the abstract-namespace case
+(`std::os::linux::net::SocketAddrExt`, stable since 1.70, inside this crate's
+`rust-version = "1.85"` floor). No `libsystemd` binding (would grow the `.deb`'s
+`$auto`-derived `Depends` with a new shared-object link to save ~150 lines) and no
+`sd-notify` crate (removes less than it appears to — the ping policy, the env
+handshake, and an audit of its socket handling for the non-blocking guarantee
+this feature requires would all still be owned here). `Cargo.toml`'s dependency
+list and the `.deb`'s `$auto`-derived `Depends` are BOTH unchanged by this
+feature — verified: `cargo tree` shows no new crate, and CI's own "Verify derived
+dependencies" step (unchanged) still only asserts `libmpv`/`libc`.
+
+**`WatchdogSec=180`, `NotifyAccess=main`, `Type=simple`** (never `Type=notify` —
+a notify unit that never sends `READY=1` sits inactive forever, and this player
+has no natural "ready" moment; `READY=1`/`STOPPING=1` are deliberately never
+sent, see `src/watchdog.rs`'s module doc). 180 s is ≥17× the 10 s ping cadence
+(tolerates a burst of dropped/missed pings) and comfortably exceeds F1's own
+worst-case tier-0 episode (~2 min), so a watchdog kill can never preempt a
+recovery tier 0 would have completed on its own.
+
+**Bench probe (`--bench-wedge-after-secs N`):** mirrors T7's shape exactly —
+requires `--bench-no-sidecar` (refused otherwise, gate-tested in `tests/cli.rs`),
+absent from `deploy/dex-loop.service`. Deliberately parks the event thread in a
+`loop { thread::sleep(...) }` forever once armed, simulating F10's exact hazard
+class. Checked every loop iteration, before the event-id dispatch — with `N=0`
+it fires on the very first iteration, unconditionally, before that same
+iteration's dispatch can race it to an ordinary `exit(1)` (relevant under this
+file's mandatory `vid=no --opt aid=no` test convention, where mpv reaches
+"nothing to play" fast).
+
+**Verification — Mac (`cargo check --all-targets`, `cargo clippy --all-targets --
+-D warnings`, `cargo test --lib`):** all clean, 91 lib tests including 19 new
+`watchdog::tests` (env-handshake resolution — no socket, no `$WATCHDOG_PID`/
+`$WATCHDOG_USEC` edge cases; the exact wire payload; `interpret_send_result`'s
+Ok/WouldBlock/other-error → Sent/Dropped mapping, pure; `socket_addr`'s
+path/abstract construction, cfg-gated for non-Linux; and two REAL-SOCKET tests —
+`send_ping` delivers the exact payload to a bound receiver, and a flood test
+that proves the actual non-blocking property against an unread receiver's
+UNMODIFIED default `SO_RCVBUF`, bounded at 200k attempts — see `src/watchdog.rs`'s
+module doc for why this deviates from shrinking `SO_RCVBUF` via `setsockopt`: the
+crate is `#![forbid(unsafe_code)]`, which cannot be locally overridden even in a
+test). `heartbeat.rs` gained 2 new tests for the `watchdog=armed pings-dropped=N`
+/ `watchdog=inert` rendering.
+
+**Verification — Pi (dexpi4, tmux, 2026-08-17):** `cargo clippy --all-targets --
+-D warnings` and `cargo test --release` both clean (91 lib + 5 ffi_constants + 27
+cli passed, 1 pre-existing `#[ignore]`d test skipped as expected) — including the
+new `socket_addr_resolves_an_abstract_target_on_linux` test (the one path the Mac
+cannot exercise) and 4 new `tests/cli.rs` gate/mechanism tests for
+`--bench-wedge-after-secs` (missing-value, non-numeric, requires-bench-no-sidecar,
+and `bench_wedge_flag_actually_hangs_the_event_thread_forever` — proves the probe
+genuinely, permanently parks the thread; the harness's own deadline-kill is the
+only way that test ends).
+
+Then the watchdog itself, live, via three throwaway `systemd-run` transient
+units (unprivileged `User=dex`, matching production, `WatchdogSec` shortened for
+a fast bench cycle — real values would take the full 180 s):
+
+1. **`WatchdogSec=15` + `--bench-wedge-after-secs 0`, twice in a row:**
+   ```
+   f10-wedge-test.service: Watchdog timeout (limit 15s)!
+   f10-wedge-test.service: Killing process 52281 (dex-loop) with signal SIGABRT.
+   f10-wedge-test.service: Main process exited, code=killed, status=6/ABRT
+   ```
+   — fired again identically on the auto-restart (`Restart=on-failure`), 18 s
+   later. **The watchdog fires and tier 1 recovers — the two-cycle reproduction
+   this task explicitly demanded ("a watchdog never seen to fire is
+   indistinguishable from one wired to nothing").**
+2. **`WatchdogSec=8`, `ExecStartPre=/bin/sleep 15`, `ExecStart=/bin/sleep 30`
+   (no pinging at all):** `Starting...` 14:50:21 → `Started...` 14:50:36 (exactly
+   the 15 s `ExecStartPre` sleep) → `Watchdog timeout (limit 8s)!` 14:50:44 —
+   exactly 8 s after `Started`, NOT 8 s after `Starting` (which would have fired
+   at 14:50:29). **Confirms `ExecStartPre` consumes none of the watchdog
+   budget** — previously stated as inference from systemd semantics; now
+   measured.
+3. **`WatchdogSec=15`, healthy run, real software HEVC decode (`--opt vo=null
+   --opt aid=no`, vid enabled), sampled every ~8 s for 40 s+:** `WatchdogTimestamp`
+   advanced every sample (~10-11 s apart, matching the ping cadence),
+   `NRestarts=0` throughout, journal showed the `watchdog=armed pings-dropped=0`
+   heartbeat line and zero further watchdog-related lines. **Confirms real pings
+   register with PID 1 under `NotifyAccess=main` + an unprivileged `User=dex`,
+   and a healthy run is never falsely killed.**
+
+**Interaction with F1 (tier 0):** by construction, not by suppression — pings
+fire on every completed tick regardless of `HealthAction` ∈ {Healthy,
+AttemptRecovery}, so a mid-recovery player is still completing duty cycles,
+still pinging; there is no window where "F1 mid-recovery" and "watchdog counting
+down" can race, because the same loop iteration that advances F1's state also
+feeds the watchdog.
+
+**`.deb` impact: none.** No new crate, no new soname, `$auto`'s derived `Depends`
+unchanged. The only shipped change is `deploy/dex-loop.service` gaining
+`WatchdogSec=180`/`NotifyAccess=main`.
 
 ### F3 addendum — sidecar JSON subset: deliberately NOT widened to arbitrary JSON types
 **2026-08-15:** two reviews independently flagged that a non-subset *value* under
