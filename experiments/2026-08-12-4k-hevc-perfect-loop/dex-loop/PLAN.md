@@ -410,6 +410,50 @@ thing in this crate that writes boot config. `deploy/dex-loop.service` no
 longer passes `--mode`. Full detail in README.md's "Exhibit config (F6)"
 section and this task's session notes.
 
+> **RESOLVED 2026-08-17 (later). The conflict below is history — read it for the
+> reasoning, not for the current state.** Both halves of the conflict were
+> settled by doing them, on `experiment/4k-hevc-perfect-loop`:
+>
+> * **Both formats, extension-dispatched.** `.json` is strict JSON, `.yaml`/
+>   `.yml` is YAML, and `ConfigFormat::from_path` decides — never the bytes.
+>   YAML inside a `.json` file is refused even though a YAML parser would take
+>   it, because the extension is a promise to `jq` and every other consumer;
+>   strict JSON inside a `.yaml` is fine, since it *is* YAML. Sharing is total
+>   below the dispatch: both parsers produce the sidecar's existing flat
+>   `Vec<(String, Value)>` and `ExhibitConfig::from_pairs` does all mapping and
+>   validation, so the formats cannot drift into two dialects. `yaml-rust2`,
+>   `default-features = false` (drops `encoding_rs`; the file is read with
+>   `read_to_string`, which already requires UTF-8) → **+5 crates, not +8**.
+>   It also *removes* code: its loader errors on a duplicate mapping key, the
+>   one rule the JSON side needed a hand-rolled serde visitor for.
+> * **The asset reference, which was the actual point.** `asset` names which
+>   file plays, resolved by `exhibit::resolve_asset` with the same decision
+>   table as `resolve_display`/`resolve_fps`. `ExecStart` is now
+>   `/usr/bin/dex-loop` with **no arguments at all**. Nothing defaults to
+>   `/opt/dex/loop.265`: the shipped conffile names it, and a config without an
+>   `asset` refuses to start rather than guess an artwork (postinst warns on
+>   upgrade, since dpkg preserves an admin-edited config that predates the key).
+> * **Discovery**, so a hand-written `.yaml` is reachable without editing the
+>   unit: `/etc/dex/exhibit.yaml` then `.json`, **exactly one may exist**, both
+>   present refuses naming both. Switching to YAML therefore needs
+>   `sudo rm /etc/dex/exhibit.json`, which the refusal message says outright.
+>   `dex-exhibit-apply` shares the loader — a tool that reconciles the boot
+>   cmdline *to* the config would be a drift generator if it could read a
+>   different file than the player.
+>
+> Two facts found by driving rather than reasoning, both of which contradicted
+> something written first: (1) `yaml-rust2` 0.11 resolves scalars under the YAML
+> **1.2 core schema**, so only `true`/`false` are booleans and the "Norway
+> problem" does not arise — `kms_force: no` is the string `"no"`, refused by the
+> grammar; both directions are now pinned by test. (2) `if args.is_empty() {
+> usage() }` at the top of `main` — harmless for the program's whole life, fatal
+> the moment `ExecStart` stopped passing a path. It would have been a permanent
+> exit-2 restart loop on the device while every Mac-side test passed, because
+> every test passes arguments.
+>
+> Max's remaining question is narrower than it was: **item 1 below is answered
+> (both, not either), item 2 is answered (in the exhibit config, as `asset`).**
+
 **The conflict:** this implementation is **JSON**, at **`/etc/dex/exhibit.json`**,
 and covers **display config only** — it does NOT let the exhibit file select
 *which asset* plays (the asset path is still the one baked into

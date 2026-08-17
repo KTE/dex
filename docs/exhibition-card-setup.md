@@ -1,7 +1,7 @@
 # Building an exhibition card — cheat sheet
 
 For a Raspberry Pi 4 playing one artwork on one display, unattended, switched off
-at the mains. Current as of 2026-08-17 (dex-loop 0.1.0, Debian trixie).
+at the mains. Current as of 2026-08-17 (dex-loop 0.1.0, Debian trixie), after F6 and F10.
 
 **Division of labour:** Max does §1 (physical: flash, boot, cable up). Everything
 from §2 is remote and the agent can do it. Hand over by saying the hostname and
@@ -93,9 +93,13 @@ ssh dexpi@<host> 'edid-decode /sys/class/drm/card1-HDMI-A-1/edid | grep -i "Disp
                   modetest -M vc4 -c | grep -m3 "^  #"'
 ```
 
-> **This section is a stopgap.** F6 replaces it with an **exhibit `dex.yaml`** that
-> names the asset and the mode in one human-editable file. Once F6 lands, prefer
-> that and treat this table as the fallback.
+> **F6 has landed (2026-08-17), and this table is now the reference data, not the
+> procedure.** The mode lives in the exhibit config — `/etc/dex/exhibit.json`, or
+> `/etc/dex/exhibit.yaml` if you want comments beside the values (exactly one may
+> exist; the `.deb` ships the `.json`). Set `display_mode` and `kms_force` from the
+> table above, run `sudo dex-exhibit-apply`, reboot if it says to. `cmdline.txt` is
+> no longer hand-edited: that tool owns it, idempotently, and the player refuses to
+> start if the two disagree.
 
 ---
 
@@ -104,13 +108,19 @@ ssh dexpi@<host> 'edid-decode /sys/class/drm/card1-HDMI-A-1/edid | grep -i "Disp
 The player **refuses to start without a sidecar** (F3) rather than guessing a
 frame rate — a wrong guess plays slow forever with every metric green.
 
+The **exhibit config names which asset plays** (F6), so the file no longer has to
+be called `loop.265` — several can sit in `/opt/dex` with the exhibit choosing one.
+`ExecStart` passes no path at all.
+
 ```bash
 scp artwork.265 dexpi@<host>:/tmp/
-ssh dexpi@<host> 'sudo install -m644 /tmp/artwork.265 /opt/dex/loop.265'
+ssh dexpi@<host> 'sudo install -m644 /tmp/artwork.265 /opt/dex/artwork.265'
+# then point the exhibit at it (the stock config says /opt/dex/loop.265):
+ssh dexpi@<host> 'sudo sed -i "s|/opt/dex/loop.265|/opt/dex/artwork.265|" /etc/dex/exhibit.json'
 # generate + verify the sidecar with the crate's REAL parser, not by hand
 ssh dexpi@<host> 'cd ~/dex/experiments/2026-08-12-4k-hevc-perfect-loop &&
-                  ./scripts/make-sidecar.sh /opt/dex/loop.265 &&
-                  ./scripts/make-sidecar.sh --check /opt/dex/loop.265'
+                  ./scripts/make-sidecar.sh /opt/dex/artwork.265 &&
+                  ./scripts/make-sidecar.sh --check /opt/dex/artwork.265'
 ```
 
 Ingest requirements, if the asset is being encoded fresh:
@@ -141,9 +151,12 @@ ssh dexpi@<host> '
 Look for, in order:
 
 1. `dex-loop 0.1.0 (<commit>)` — a real hash, never `(nogit)`
-2. `fps <rate> (sidecar)` — **`(sidecar)`**, not a bench override
-3. `Using HW-overlay mode` — the zero-copy KMS path; without it decode misses realtime
-4. After ~10 min: `heartbeat ... frame-drops=0 vo-delayed=0`
+2. `asset /opt/dex/... (exhibit config ...)` — **`exhibit config`**, not
+   `COMMAND LINE`: the latter means someone hand-started it and the journal is
+   not describing the deployed configuration
+3. `fps <rate> (sidecar)` — **`(sidecar)`**, not a bench override
+4. `Using HW-overlay mode` — the zero-copy KMS path; without it decode misses realtime
+5. After ~10 min: `heartbeat ... frame-drops=0 vo-delayed=0 watchdog=armed`
 
 Then **power-cycle it at the wall** and confirm it comes back playing on its own.
 That is the actual operating condition, and it is the only test of it.
@@ -152,10 +165,14 @@ That is the actual operating condition, and it is the only test of it.
 
 ## Known gaps (2026-08-17)
 
-- **F6** — the mode lives in `cmdline.txt` and a systemd drop-in rather than a
-  config file. In progress.
-- **F10** — no systemd watchdog yet: nothing acts if the player stops being
-  healthy without exiting. In progress.
+- ~~**F6**~~ — **done.** Both the asset and the mode live in
+  `/etc/dex/exhibit.{json,yaml}`; `ExecStart` passes no arguments. If you have an
+  older card, note that a config predating the `asset` key will refuse to start
+  after the upgrade (deliberately — guessing an artwork is the one guess this
+  package will not make); `postinst` warns about it during the upgrade, and the
+  fix is one line.
+- ~~**F10**~~ — **done.** `WatchdogSec=180` with a hand-rolled `sd_notify`; a
+  player that stops being healthy without exiting is now killed and restarted.
 - **F8** — every failure is journal-only, so on site a fault photographs as a
   black rectangle. Post-1.0.
 - **Same-version packages do not upgrade.** `apt` skips an identical version
