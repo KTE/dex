@@ -308,7 +308,18 @@ stays `#[ignore]`d (so a Pi mid-soak's plain `cargo test` still never picks it u
 the CI step is what runs it automatically instead. What this proves: the process
 survives its own recovery under software decode with no display. What it does not
 prove: the picture actually comes back with `hwdec=drm` / `drmprime-overlay` / the
-DRM plane swap on real hardware — that is still the manual on-Pi run's job.
+DRM plane swap on real hardware.
+
+**2026-08-17, that manual on-Pi run happened.** `--force-recovery-after-secs`
+against `~/bench/loop4k.265` with defaults ON (the real `hwdec=drm` /
+`drmprime-overlay` / DRM-plane path, not CI's `vo=null` stand-in): the forced
+recovery fired, was absorbed cleanly, and the process kept running — sampled
+CPU stayed at realtime-decode levels (~25–27%, not idle) for minutes
+afterward, with zero FATAL lines and zero organic second recovery. What it
+does **not** yet prove: an independent camera witness that the picture itself
+came back, which the Cam Link capture instrumentation could not get running
+this session (a macOS-side AVFoundation hang, not a player issue). See
+PLAN.md's T7 entry for the full record, including exactly what remains open.
 
 ## Reviewed 2026-08-15
 

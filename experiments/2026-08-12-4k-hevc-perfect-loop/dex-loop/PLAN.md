@@ -661,6 +661,98 @@ does not get silently claimed as already covered. See `tests/cli.rs`'s doc
 comment on `force_recovery_survives_against_real_mpv` for the same note in
 context.
 
+**2026-08-17, on-Pi live-fire against the real display -- T7's actual job.**
+Ran the forced probe against **real** hardware for the first time: the full
+Pi 4 zero-copy path (`hwdec=drm`, `gpu-context=drm`,
+`gpu-hwdec-interop=drmprime-overlay`, the DRM plane swap), not CI's
+`--no-defaults --opt vo=null` software-decode stand-in, which skips all of
+that by construction.
+
+```
+dex-loop ~/bench/loop4k.265 --bench-no-sidecar --fps 30 --mode 3840x2160@30 --force-recovery-after-secs 15
+```
+
+Mirrors the real deployment argv (`deploy/dex-loop.service`'s
+`--mode 3840x2160@30`, defaults ON) plus the two bench-only escape-hatch
+flags T7 requires. `~/bench/loop4k.265` -- not `/opt/dex/loop.265` -- barcode-
+verified 0..89 with zero nulls against the CURRENT geometry (`sha256
+8eb4bfac...`) before the run, via `bin/capture.mjs --source` against the file
+directly. Two runs, each bounded by `timeout` (100 s, then 660 s) so nothing
+was left holding the display unattended; both on Pi build `61f3600d553d`
+(`dex-loop --version`, stderr):
+
+- Forced recovery fired exactly once, ~15 s after the loadfile request, in
+  both runs. `END_FILE(reason=stop)` absorbed as expected -- C1's exact fix
+  path -- and the demuxer/decoder re-initialized cleanly with no errors.
+- Zero FATAL/panic lines in either run. Zero *organic* second "attempting
+  in-place recovery" -- across 84 s (run 1) and ~10 min (run 2) post-recovery,
+  the health monitor's own ~10 s ticks never re-flagged a stall.
+- A direct, sampled answer to the residual gap two paragraphs up (not the
+  permanent instrumented signal proposed there, but real evidence for real
+  runs): CPU sampled straight from the Pi process, not inferred from log
+  silence, was ~25-27% sustained across multiple post-recovery samples with
+  `TIME` climbing steadily between them -- what continuous realtime 4K decode
+  actually costs on this Pi. A wedged event loop would read ~0% and flat
+  `TIME`. `vcgencmd get_throttled`=`0x0` throughout; temp 43.8-45C.
+- Run 2's own 10-minute heartbeat landed ~9m45s after the recovery and closes
+  the residual gap even more directly than the CPU sampling above: `wraps=198
+  uptime=600s temp=45.2C frame-drops=0 vo-delayed=0 pos=584.0s pos-age=0s`.
+  `pos-age=0s` is the load-bearing field -- it is time-since-last-observed-
+  position-sample, so a wedged `mpv_wait_event` (the exact failure shape the
+  residual-gap paragraph above describes, where every log-based assertion
+  passes vacuously) would show a large, growing `pos-age`, not `0s`. `wraps`
+  tracking 600s at ~3.03s/wrap (mid-recovery re-init cost included) and
+  `frame-drops=0`/`vo-delayed=0` from mpv's own counters corroborate the same
+  conclusion from a second, independent instrument.
+
+**What this closes:** the recovery's mpv-facing mechanics (`loadfile ...
+replace`, the `END_FILE` absorption, the VO reconfigure) were exercised
+against the actual Pi 4 zero-copy path for the first time and survived, on
+every signal reachable from the Pi side -- strictly more than CI proves,
+since CI's software path never touches DRM/hwdec/the plane swap at all.
+
+**What remains unproven, stated rather than assumed closed:** whether the
+*picture itself* reappeared on the physical display was **not** independently
+witnessed. The Cam Link instrumentation this task exists to use
+(`bin/capture.mjs`, `scripts/record-capture.sh`) could not be exercised this
+session -- every attempt (8, over roughly 15 minutes, both single-frame grabs
+and the lossless band recorder) hung indefinitely inside ffmpeg's
+AVFoundation device-open call, Mac-side, after ruling out the usual suspects:
+`check-capture-link.sh` passed (SuperSpeed, 5000 Mb/s) before and after; the
+device correctly reported its one supported mode as `3840x2160@30`, meaning
+it *was* receiving a valid signal from the Pi; and no other app held it
+(QuickTime Player, which was running, was quit and the hang persisted
+unchanged). Confirmed **not Cam-Link-specific**: the Mac's own built-in
+FaceTime HD Camera hung identically on the same host, at the same time, once
+asked for an actual capture (a supported-pixel-format probe on it returned
+fast, matching the Cam Link's own fast probe failures -- only the real
+capture attempts, on either device, hung). So this is a host-wide AVFoundation
+capture-session wedge, not a Cam-Link/USB-link problem -- ruling out re-
+seating the dongle as a fix. The hang sits below ffmpeg, in the CoreMediaIO
+daemon stack (`VDCAssistant`/`UVCAssistant`/`cameracaptured`, owned by system
+user `_cmiodalassistants`); the standard fix -- bouncing those daemons, or a
+reboot -- needs `sudo` or console access, unavailable non-interactively this
+session. So: the CI-vs-real-hardware gap this task exists to close is
+**narrowed, not closed**. Process
+survival and continued, correctly-costed resource activity are now proven on
+real hardware; the picture's actual return still rests on inference (a
+healthy, ticking event loop with a locked DRM plane has no known way to
+present a black screen instead), not direct observation. A re-run with a
+cleared capture path is the natural follow-up -- nothing about the player,
+the flag, or the procedure above needs to change for it.
+
+**Incidental fix, found en route, unrelated to T7 itself:**
+`scripts/record-capture.sh`'s device-name lookup (`ffmpeg -list_devices
+true`) always exits 251 (ffmpeg's own behaviour, after printing the list) --
+under the script's `set -euo pipefail` that non-zero code was propagating
+through `NAME=$(... | awk ...)`'s command substitution and killing the
+script via `set -e` before it ever recorded a frame, unconditionally, every
+time it was run this way. Fixed with a trailing `; true` inside the
+substitution (awk's own exit status -- the thing that actually reflects
+whether the name was found -- is unaffected). Did not turn out to be this
+session's actual blocker (the deeper AVFoundation hang was), but it was a
+real, previously-latent bug in the bench tooling and is fixed now.
+
 ### T6 — `run_id` column, and a header guard
 **Observed 2026-08-15.** The soak was restarted against the same output file
 when its duration was changed from 12 h to 3 h. The monitor appends and only
