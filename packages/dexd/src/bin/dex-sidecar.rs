@@ -510,7 +510,11 @@ fn write_atomically(out: &Path, contents: &str) -> std::io::Result<()> {
     let mut tmp = out.as_os_str().to_os_string();
     tmp.push(format!(".tmp{}", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, contents)?;
+    // Whatever fails, no partial temp file is left beside the stream.
+    if let Err(e) = fs::write(&tmp, contents) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     if let Err(e) = fs::rename(&tmp, out) {
         let _ = fs::remove_file(&tmp);
         return Err(e);

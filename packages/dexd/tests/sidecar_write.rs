@@ -6,8 +6,12 @@
 //! stream, and one whose encoder did not — the second is the case where no
 //! frame rate can be read back out and the tool has to insist on being told.
 //!
-//! Without ffmpeg and ffprobe on PATH these tests SKIP, loudly, rather than
-//! pass on nothing. CI installs both so they really run there.
+//! Without ffmpeg and ffprobe on PATH these tests FAIL with a message that
+//! says what to install. A machine that cannot make a test stream may set
+//! DEXD_ALLOW_MEDIA_SKIP=1 to skip them instead; the skip note is only shown
+//! under `cargo test -- --nocapture`, which is why skipping is opt-in and not
+//! the default. CI installs both tools and checks for them, so the tests
+//! really run there.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -30,18 +34,27 @@ fn media_tools_present() -> bool {
     })
 }
 
-/// Skip the calling test, with a reason on stderr, when ffmpeg is missing.
-/// A skipped test must be visible: a silent pass would mean this whole file
-/// could stop testing anything without anyone noticing.
+/// Fail the calling test when ffmpeg is missing — unless the caller has opted
+/// into skipping with DEXD_ALLOW_MEDIA_SKIP=1. The test runner hides stderr
+/// from passing tests, so a skip that merely prints a note would look exactly
+/// like a pass; failing by default is what keeps this file from quietly
+/// testing nothing.
 macro_rules! needs_ffmpeg {
     () => {
         if !media_tools_present() {
-            eprintln!(
-                "SKIP {}: ffmpeg and ffprobe are not both on PATH, so no test stream \
-                 can be made",
-                module_path!()
+            if std::env::var_os("DEXD_ALLOW_MEDIA_SKIP").is_some() {
+                eprintln!(
+                    "SKIP {}: ffmpeg and ffprobe are not both on PATH, so no test \
+                     stream can be made (DEXD_ALLOW_MEDIA_SKIP is set)",
+                    module_path!()
+                );
+                return;
+            }
+            panic!(
+                "ffmpeg and ffprobe are not both on PATH, so no test stream can be \
+                 made. Install them (Debian: apt install ffmpeg; macOS: brew install \
+                 ffmpeg), or set DEXD_ALLOW_MEDIA_SKIP=1 to skip these tests."
             );
-            return;
         }
     };
 }
@@ -192,7 +205,10 @@ fn an_existing_sidecar_is_not_replaced_without_force() {
     stream_with_timing(&stream);
     let stream = stream.to_str().unwrap();
 
-    assert_eq!(exit_code(&dex_sidecar(&["write", stream, "--fps", "30"])), 0);
+    assert_eq!(
+        exit_code(&dex_sidecar(&["write", stream, "--fps", "30"])),
+        0
+    );
 
     let again = dex_sidecar(&["write", stream, "--fps", "30"]);
     assert_eq!(
@@ -315,6 +331,49 @@ fn a_stream_that_is_not_there_is_reported_as_such() {
         "the error must name the file: {}",
         stderr(&out)
     );
+}
+
+/// With no ffprobe on PATH nothing can be read from the stream, so the tool
+/// insists on --fps, and once told the rate it writes a sidecar without the
+/// width and height it could not learn. Any bytes serve as the stream here:
+/// nothing gets probed, so this test does not need ffmpeg itself.
+#[test]
+fn without_ffprobe_the_rate_must_be_given_and_dimensions_are_left_out() {
+    let dir = work_dir("noffprobe");
+    let stream = dir.join("bytes.265");
+    std::fs::write(&stream, b"\x00\x00\x00\x01not really a stream").unwrap();
+    let stream = stream.to_str().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_dex-sidecar"))
+            .args(args)
+            .env("PATH", "")
+            .output()
+            .expect("run dex-sidecar")
+    };
+
+    let refused = run(&["write", stream]);
+    assert_eq!(
+        exit_code(&refused),
+        EXIT_REFUSED,
+        "stderr: {}",
+        stderr(&refused)
+    );
+    assert!(
+        stderr(&refused).contains("--fps"),
+        "the refusal must say what to pass: {}",
+        stderr(&refused)
+    );
+
+    let written = run(&["write", stream, "--fps", "30"]);
+    assert_eq!(exit_code(&written), 0, "stderr: {}", stderr(&written));
+    let json = stdout(&written);
+    assert!(json.contains("\"fps\":\"30\""), "stdout: {json}");
+    assert!(
+        !json.contains("width") && !json.contains("height"),
+        "dimensions cannot be known without ffprobe: {json}"
+    );
+    let checked = run(&["check", &format!("{stream}.json"), stream]);
+    assert_eq!(exit_code(&checked), 0, "stderr: {}", stderr(&checked));
 }
 
 #[test]
