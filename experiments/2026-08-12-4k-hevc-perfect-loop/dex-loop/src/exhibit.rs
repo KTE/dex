@@ -68,7 +68,7 @@
 //!   idempotently, preserving every other token untouched.
 
 use crate::sidecar::{parse_flat_json, Value};
-use yaml_rust2::{Yaml, YamlLoader};
+use yaml_rust2::{Event, Yaml, YamlLoader};
 
 /// Default path for the exhibit config the `.deb` SHIPS, as a dpkg conffile.
 /// JSON rather than YAML because a conffile is a fixed path installed by a
@@ -335,7 +335,9 @@ impl ConfigFormat {
 /// (a nested mapping, a list, an anchor) is one that could not be written in
 /// the `.json` form of the same config, and a config whose meaning depends on
 /// which extension it was saved under would defeat the point of supporting
-/// both.
+/// both. Anchors and aliases are refused BEFORE the load, by
+/// [`refuse_anchors_and_aliases`] — see there for why the node-type check
+/// below cannot do it.
 ///
 /// Three YAML-specific hazards, all refused rather than coerced:
 ///
@@ -376,6 +378,7 @@ impl ConfigFormat {
 /// the JSON side had to hand-roll a serde visitor for. Pinned by test, not
 /// assumed: see `yaml_duplicate_key_refused`.
 pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
+    refuse_anchors_and_aliases(text)?;
     let docs = YamlLoader::load_from_str(text).map_err(|e| format!("exhibit config YAML: {e}"))?;
     let doc = match docs.len() {
         // load_from_str returns zero documents for empty or comment-only
@@ -403,7 +406,7 @@ pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
         Yaml::Hash(h) => h,
         other => {
             return Err(format!(
-                "exhibit config YAML: top level is {}, expected a mapping of key: value pairs",
+                "exhibit config YAML: top level is a {}, expected a mapping of key: value pairs",
                 yaml_type_name(other)
             ))
         }
@@ -414,7 +417,7 @@ pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
             Yaml::String(s) => s.clone(),
             other => {
                 return Err(format!(
-                    "exhibit config YAML: key is {}, expected a string",
+                    "exhibit config YAML: key is a {}, expected a string",
                     yaml_type_name(other)
                 ))
             }
@@ -452,19 +455,93 @@ pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
     Ok(out)
 }
 
+/// Refuse a document that declares an anchor (`&name`) or uses an alias
+/// (`*name`), BEFORE it is loaded.
+///
+/// Must happen at the event level, because by the time `YamlLoader` hands back
+/// a tree the aliases are gone: it resolves `*name` to a *copy* of the anchored
+/// node, so a config using them arrives looking exactly like one that spelled
+/// the value out. [`Yaml::Alias`] therefore never appears in a loaded document,
+/// and the `Alias` arm in [`yaml_type_name`] was unreachable — this function is
+/// what makes that documented refusal real. (Found 2026-08-17 by driving the
+/// classic YAML footguns through the shipped parser rather than reasoning about
+/// them: `note: &a hello` / `venue: *a` was silently ACCEPTED, with `venue`
+/// carrying a value the file never assigns to it.)
+///
+/// Refused for the reason the whole subset exists: **a config must not mean
+/// something different from what it appears to say, and must not mean something
+/// different depending on which extension it was saved under.** JSON has no
+/// anchors, so a `.yaml` file using them could not be expressed as the `.json`
+/// form of the same config — which is this module's stated test for whether a
+/// YAML feature belongs in the subset.
+///
+/// It also removes the one unbounded cost in this parser. Alias expansion is
+/// what makes "billion laughs" possible: nested aliases expand exponentially
+/// during LOADING, before any of this crate's node-type checks can run. The
+/// exposure here is small (a root-owned local file on a device) — but a player
+/// whose entire design is refusing to guess should not have a startup path that
+/// can be made to allocate without bound by a config typo.
+fn refuse_anchors_and_aliases(text: &str) -> Result<(), String> {
+    let mut parser = yaml_rust2::parser::Parser::new_from_str(text);
+    loop {
+        // A syntax error is not this function's business -- return Ok and let
+        // YamlLoader produce the real, marked parse error a line later, so the
+        // operator gets one good message instead of two half-ones.
+        let Ok((event, _marker)) = parser.next_token() else {
+            return Ok(());
+        };
+        let anchor_id = match &event {
+            Event::Alias(_) => {
+                return Err(
+                    "exhibit config YAML: uses an alias (`*name`), which this format refuses. An \
+                     alias makes the file mean something it does not say -- the loader replaces \
+                     it with a copy of the anchored value -- and it has no JSON equivalent, so \
+                     the same config could not be written in the .json form. Write the value out."
+                        .into(),
+                )
+            }
+            Event::Scalar(_, _, id, _) => *id,
+            Event::MappingStart(id, _) | Event::SequenceStart(id, _) => *id,
+            Event::StreamEnd => return Ok(()),
+            _ => 0,
+        };
+        // Anchor ids start at 1; 0 means "no anchor". An anchor with no alias
+        // is harmless in itself, but it is the half of the feature that makes
+        // the other half possible, and leaving it accepted would mean the
+        // refusal above depends on how far the operator got.
+        if anchor_id > 0 {
+            return Err(
+                "exhibit config YAML: declares an anchor (`&name`), which this format refuses. \
+                 Anchors exist to be referenced by aliases, which make a file mean something it \
+                 does not say and have no JSON equivalent. Write the value out."
+                    .into(),
+            );
+        }
+    }
+}
+
 /// Name a `Yaml` node's kind for an error message, in the vocabulary an
 /// operator editing YAML would recognise — not the Rust variant name.
+///
+/// Returns the noun WITHOUT an article, so call sites choose their own
+/// ("top level is a list" vs "has a list value"). An earlier revision baked
+/// "a " into these and produced "has a a nested mapping value" at one of the
+/// three call sites.
 fn yaml_type_name(y: &Yaml) -> &'static str {
     match y {
-        Yaml::Real(_) => "a decimal number (this format takes integers only)",
-        Yaml::Integer(_) => "an integer",
-        Yaml::String(_) => "a string",
-        Yaml::Boolean(_) => "a boolean",
-        Yaml::Array(_) => "a list",
-        Yaml::Hash(_) => "a nested mapping",
-        Yaml::Alias(_) => "an alias (`*anchor`)",
+        Yaml::Real(_) => "decimal number (this format takes integers only)",
+        Yaml::Integer(_) => "integer",
+        Yaml::String(_) => "string",
+        Yaml::Boolean(_) => "boolean",
+        Yaml::Array(_) => "list",
+        Yaml::Hash(_) => "nested mapping",
+        // Unreachable in a loaded document -- see refuse_anchors_and_aliases,
+        // which rejects both halves of the feature before the load. Kept so
+        // the match stays exhaustive without a catch-all that would silently
+        // absorb a future variant.
+        Yaml::Alias(_) => "alias (`*anchor`)",
         Yaml::Null => "null (an empty value)",
-        Yaml::BadValue => "unreadable",
+        Yaml::BadValue => "unreadable value",
     }
 }
 
@@ -1708,6 +1785,62 @@ mod tests {
             ExhibitConfig::from_yaml("display_mode: auto\nvenue: \"2026\"\n").unwrap(),
             ExhibitConfig::from_json(r#"{"display_mode":"auto","venue":"2026"}"#).unwrap()
         );
+    }
+
+    /// Anchors and aliases are refused, and this test exists because the
+    /// original implementation only *documented* that it refused them.
+    ///
+    /// `YamlLoader` resolves `*name` into a copy of the anchored node, so
+    /// `Yaml::Alias` never reaches the node-type check and the config below was
+    /// silently ACCEPTED -- with `venue` carrying "hello", a value the file
+    /// never assigns to it. Exactly the "means something other than it says"
+    /// failure the subset exists to prevent, hidden by the fact that the
+    /// refusal had been written down.
+    #[test]
+    fn yaml_anchors_and_aliases_are_refused_not_silently_expanded() {
+        // The case that used to pass: venue is never assigned in the text.
+        let e =
+            ExhibitConfig::from_yaml("display_mode: auto\nnote: &a hello\nvenue: *a\n").unwrap_err();
+        assert!(e.contains("anchor") || e.contains("alias"), "{e}");
+
+        // An anchor with no alias is refused too -- it is the half that makes
+        // the other half possible, and accepting it would make the refusal
+        // depend on how far the operator got.
+        let e = ExhibitConfig::from_yaml("display_mode: auto\nnote: &unused hello\n").unwrap_err();
+        assert!(e.contains("anchor"), "{e}");
+
+        // ...while the spelled-out equivalent is fine, which is the point: the
+        // refusal costs the operator one retyped value, not a capability.
+        let ok =
+            ExhibitConfig::from_yaml("display_mode: auto\nnote: hello\nvenue: hello\n").unwrap();
+        assert_eq!(ok.note.as_deref(), Some("hello"));
+        assert_eq!(ok.venue.as_deref(), Some("hello"));
+    }
+
+    /// A syntax error must still produce YamlLoader's own marked message, not
+    /// a vaguer one from the anchor pre-scan that now runs first.
+    #[test]
+    fn the_anchor_prescan_does_not_swallow_real_syntax_errors() {
+        let e = ExhibitConfig::from_yaml("display_mode: auto\nnote:\n\tx: 1\n").unwrap_err();
+        assert!(e.contains("tab"), "expected the scanner's own diagnostic: {e}");
+    }
+
+    /// Error messages must read as English. `yaml_type_name` returns bare
+    /// nouns and each call site supplies its own article -- an earlier
+    /// revision baked "a " into the names and emitted "has a a nested mapping
+    /// value" at one of the three sites.
+    #[test]
+    fn type_names_do_not_double_their_article() {
+        for text in [
+            "display_mode: auto\nnote:\n  a: b\n",
+            "display_mode: auto\nnote:\n  - a\n",
+            "- a\n- b\n",
+            "just a string\n",
+        ] {
+            let e = ExhibitConfig::from_yaml(text).unwrap_err();
+            assert!(!e.contains(" a a "), "doubled article: {e}");
+            assert!(!e.contains(" a an "), "doubled article: {e}");
+        }
     }
 
     #[test]
