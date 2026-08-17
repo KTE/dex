@@ -81,7 +81,17 @@ fn fresh_backup_path(cmdline_path: &str, stamp: u64) -> String {
 /// Best-effort and loud about what it removes; a failure here never fails
 /// the apply (the reconcile already succeeded), it only means one extra
 /// backup survives until the next run.
-fn prune_old_backups(cmdline_path: &str) {
+///
+/// Ordered by modification time, NOT by name, and `just_written` is never a
+/// prune candidate at all. Both matter for the same reason, caught live on
+/// the bench (dexpi4, 2026-08-17): once pruning frees an unsuffixed
+/// `bak-<stamp>` name, a later same-second apply reuses it — and that name
+/// sorts lexically BEFORE its older `.1`/`.2` siblings, so a name sort would
+/// classify the NEWEST backup as oldest and delete the one backup that
+/// still matches the file just replaced. FAT mtime granularity (2 s) can
+/// still tie same-second backups, which the explicit `just_written`
+/// exclusion makes harmless.
+fn prune_old_backups(cmdline_path: &str, just_written: &str) {
     let path = Path::new(cmdline_path);
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return };
     let prefix = format!("{}.bak-", name.to_string_lossy());
@@ -89,22 +99,29 @@ fn prune_old_backups(cmdline_path: &str) {
     else {
         return;
     };
-    let mut backups: Vec<String> = entries
+    let mut backups: Vec<(std::time::SystemTime, String)> = entries
         .flatten()
         .filter_map(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
-            n.starts_with(&prefix).then(|| e.path().to_string_lossy().into_owned())
+            if !n.starts_with(&prefix) {
+                return None;
+            }
+            let p = e.path().to_string_lossy().into_owned();
+            if p == just_written {
+                return None;
+            }
+            let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+            Some((mtime, p))
         })
         .collect();
-    if backups.len() <= BACKUPS_TO_KEEP {
+    // just_written is excluded above but still counts toward the kept total.
+    let keep_others = BACKUPS_TO_KEEP.saturating_sub(1);
+    if backups.len() <= keep_others {
         return;
     }
-    // Unix-seconds stamps are fixed-width (10 digits) until 2286, so a
-    // lexical sort orders them chronologically; collision suffixes (".1")
-    // sort after their base, which is also chronological.
     backups.sort();
-    let excess = backups.len() - BACKUPS_TO_KEEP;
-    for old in backups.into_iter().take(excess) {
+    let excess = backups.len() - keep_others;
+    for (_, old) in backups.into_iter().take(excess) {
         match fs::remove_file(&old) {
             Ok(()) => println!("  pruned old backup: {old}"),
             Err(e) => eprintln!("warning: could not prune old backup {old}: {e}"),
@@ -250,7 +267,7 @@ fn main() -> ExitCode {
     println!("  old: {current_trimmed}");
     println!("  new: {desired}");
     println!("  backup: {backup_path}");
-    prune_old_backups(&cmdline_path);
+    prune_old_backups(&cmdline_path, &backup_path);
     println!(
         "REBOOT REQUIRED -- dex-loop binds the display from the RUNNING kernel's /proc/cmdline"
     );
