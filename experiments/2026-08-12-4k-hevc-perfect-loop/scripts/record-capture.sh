@@ -56,8 +56,16 @@ done
 
 # The device index is NOT stable: plugging in a webcam renumbers everything.
 # Resolve by name so a recording can never silently come from the wrong device.
+#
+# `-list_devices true` always makes ffmpeg exit non-zero (it prints the list,
+# then fails to open "" as an actual input -- confirmed exit 251 on this
+# ffmpeg build) -- that failure is expected, not a probe error, but under
+# `pipefail` it was propagating through `NAME=$(...)` and killing the script
+# via `set -e` before a single frame was ever recorded. `; true` absorbs it;
+# awk's own exit status (the thing that actually reflects whether NAME was
+# found) is unaffected.
 NAME=$(ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 |
-  awk -v d="\\[$DEVICE\\]" '/AVFoundation video devices/{v=1;next} /AVFoundation audio devices/{v=0} v && $0 ~ d {sub(/.*\] /,""); print; exit}')
+  awk -v d="\\[$DEVICE\\]" '/AVFoundation video devices/{v=1;next} /AVFoundation audio devices/{v=0} v && $0 ~ d {sub(/.*\] /,""); print; exit}'; true)
 echo "recording from avfoundation:${DEVICE} (${NAME:-unknown})" >&2
 
 # -fps_mode passthrough is load-bearing: without it ffmpeg synthesises a
