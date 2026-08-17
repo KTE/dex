@@ -1,0 +1,5 @@
+{
+  "display_mode": "auto",
+  "kms_force": "none",
+  "note": "F6 stock default: inert on purpose (see man dex-exhibit-apply). auto asks mpv for the connector-preferred mode; none forces nothing at the KMS layer. Set display_mode explicitly for a real exhibit -- e.g. \"3840x2160@30\" -- and kms_force if the sink needs one (some panels, e.g. an Elgato Cam Link 4K, advertise 4K as their preferred mode and the driver still declines to build it unforced -- see PLAN.md F6)."
+}

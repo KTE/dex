@@ -1,0 +1,148 @@
+.TH DEX\-EXHIBIT\-APPLY 1 "2026-08-17" "dex-loop 0.1.0" "dex"
+.SH NAME
+dex\-exhibit\-apply \- reconcile the kernel cmdline with the F6 exhibit config
+.SH SYNOPSIS
+.B sudo dex\-exhibit\-apply
+.RB [ \-\-exhibit\-config
+.IR PATH ]
+.RB [ \-\-cmdline\-path
+.IR PATH ]
+.SH DESCRIPTION
+Rewrites
+.IR /boot/firmware/cmdline.txt 's
+.B video=<connector>:<mode>
+token to match
+.IR /etc/dex/exhibit.json 's
+.B kms_force
+\(em idempotently: every other token, its order, and every OTHER connector's
+.B video=
+token are preserved untouched. Writes one timestamped backup before any
+change.
+.PP
+.B dex\-loop (1)
+itself never writes boot config \(em it runs as an unprivileged user under
+.B ProtectSystem=strict
+and that sandbox is a design feature, not an oversight to route around here.
+This tool is the deliberate, separate, privileged step an operator runs by
+hand after editing the exhibit config. Deploys in this project are manual
+throughout (see README.md); this is no exception.
+.SH WHY BOTH A KERNEL FORCE AND AN EXHIBIT CONFIG
+Some sinks advertise a mode in their own EDID and the DRM driver still
+declines to build it unforced \(em measured on an Elgato Cam Link 4K, which
+lists 3840x2160@30 as its
+.I preferred
+detailed timing, yet
+.B vc4
+built zero 3840x2160 modes from it unforced; forced, the identical timing
+works. Other sinks (a 2560x1440 desktop monitor, in this project's own field
+record) must
+.B NOT
+carry the force, because transmitting a mode the panel cannot show reads as a
+player fault, not a config problem. The same
+.I cmdline.txt
+line is therefore correct for one venue and wrong for another, which is why it
+is exhibit config \(em stated explicitly per install \(em rather than something
+to remember in a comment.
+.SH OPTIONS
+.TP
+.BI \-\-exhibit\-config " PATH"
+Default:
+.IR /etc/dex/exhibit.json .
+.TP
+.BI \-\-cmdline\-path " PATH"
+Default:
+.IR /boot/firmware/cmdline.txt .
+Override exists for testing on a bench without touching real boot config.
+.SH EXHIBIT CONFIG SCHEMA
+.I /etc/dex/exhibit.json
+is a dpkg conffile (a hand edit survives a package upgrade) with a STRICT
+schema \(em unlike the F3 asset sidecar, an unknown key is refused rather than
+ignored, because this file has no independent producer to stay compatible
+with: a typo here (\fBkms_forse\fR for \fBkms_force\fR) must be a startup
+refusal, not a silently dropped force.
+.TP
+.B display_mode
+(required) \fBauto\fR, or \fBWxH@R\fR e.g. \fB3840x2160@30\fR. What
+.B dex\-loop
+asks mpv for via
+.BR \-\-drm\-mode .
+.TP
+.B kms_force
+(default \fBnone\fR) \fBnone\fR, or \fBWxH@R\fR/\fBWxH@RD\fR with an INTEGER
+refresh (the kernel's
+.B video=
+grammar has no fractional refresh, unlike \fBdisplay_mode\fR). The trailing
+.B D
+forces the connector to read \fBconnected\fR even before a sink is actually
+attached \(em the boot\-order insurance for a projector that presents EDID
+late. What
+.B dex\-exhibit\-apply
+writes into
+.IR cmdline.txt .
+.TP
+.B connector
+(default \fBHDMI\-A\-1\fR) e.g. \fBHDMI\-A\-2\fR.
+.TP
+.BR display ", " venue ", " note
+Informational only, logged verbatim by
+.B dex\-loop
+at every start \(em this is where the WHY that used to live in a
+.I config.txt
+comment block belongs now, since it travels with the config that is actually
+enforced instead of a comment nobody updates.
+.SH THE CMDLINE GATE
+.B dex\-loop
+refuses to start (exit 2) if the exhibit config's
+.B kms_force
+disagrees with the token actually present in the RUNNING kernel's
+.IR /proc/cmdline .
+An edit to
+.I exhibit.json
+with no matching
+.B dex\-exhibit\-apply
++ reboot is exactly this disagreement \(em caught at the next start rather
+than black\-screening the venue for the run of the exhibition. The error names
+both values and this command.
+.SH EXAMPLE: SWAPPING THE PANEL
+.nf
+sudoedit /etc/dex/exhibit.json     # display_mode/kms_force for the new panel
+sudo dex\-exhibit\-apply
+sudo reboot                        # only if it printed REBOOT REQUIRED
+.fi
+.SH MIGRATION FROM THE PRE\-F6 ARRANGEMENT
+Before F6, the display mode lived in three places at once, none of them a
+config file: a hand\-edited
+.IR cmdline.txt ,
+a systemd drop\-in overriding
+.B \-\-mode
+in
+.IR dex\-loop.service ,
+and a comment block in
+.I config.txt
+carrying the reasoning \(em which drifted out of sync with the other two
+within days of being written (see PLAN.md's F6 entry for the exact incident).
+.B dex\-loop.service
+no longer passes
+.BR \-\-mode ,
+so a leftover drop-in either agrees with the exhibit config (harmless until
+removed; \fBdex-loop\fR's postinst warns if one still mentions
+\fB\-\-mode\fR) or disagrees (refused loudly at the next start, naming both).
+Remove it either way:
+.nf
+sudo rm /etc/systemd/system/dex\-loop.service.d/*.conf
+sudo systemctl daemon\-reload
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+cmdline.txt reconciled, or already correct ("no change").
+.TP
+.B 1
+An I/O failure (cannot read or write a file) \(em not a bad config.
+.TP
+.B 2
+Refused: not running as root, an invalid exhibit config, or a rewrite that
+would produce an empty or multi\-line cmdline.txt.
+.SH SEE ALSO
+.BR dex-loop (1),
+.BR dex-wait-hdmi (1)

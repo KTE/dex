@@ -43,7 +43,16 @@ ExecStartPre=/usr/bin/dex-wait-hdmi
 # ingest and hash-bound to the asset. Deploy BOTH files. A missing or stale
 # sidecar makes the player refuse (exit 2) rather than guess a rate -- a
 # wrong guess would play slow forever with every metric green.
-ExecStart=/usr/bin/dex-loop /opt/dex/loop.265 --mode 3840x2160@30
+#
+# No --mode either, as of F6 (PLAN.md): the display mode is a property of the
+# INSTALLATION (the venue's panel), not of this unit, so it lives in
+# /etc/dex/exhibit.json -- a conffile an operator edits with `sudoedit
+# /etc/dex/exhibit.json && sudo dex-exhibit-apply` (see man dex-exhibit-apply)
+# rather than a value baked into this file that every future panel swap would
+# require re-touching. A `--mode` here would additionally FIGHT the exhibit
+# config: main.rs treats an explicit --mode as a cross-check against it and
+# refuses to start on any disagreement.
+ExecStart=/usr/bin/dex-loop /opt/dex/loop.265
 
 Restart=always
 RestartSec=2

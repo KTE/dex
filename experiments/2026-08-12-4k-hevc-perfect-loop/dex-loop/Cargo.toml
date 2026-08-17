@@ -98,16 +98,33 @@ assets = [
     # local administrator, and a package that writes there is a policy
     # violation. The systemd unit was updated to match.
     ["target/release/dex-loop", "usr/bin/", "755"],
+    # F6's privileged sibling. Shipped (unlike sidecar-check below) because it
+    # runs ON THE DEVICE, as root, whenever an operator changes the exhibit --
+    # see src/bin/dex-exhibit-apply.rs and man dex-exhibit-apply.
+    ["target/release/dex-exhibit-apply", "usr/bin/", "755"],
     ["deploy/dex-wait-hdmi", "usr/bin/", "755"],
+    # F6's conffile default. `auto`/`none` is deliberately inert -- it asks
+    # mpv for the connector-preferred mode and forces nothing at the KMS
+    # layer -- so a fresh install with the stock config never black-screens a
+    # panel it has not been told about; see deploy/exhibit.json.default.
+    ["deploy/exhibit.json.default", "etc/dex/exhibit.json", "644"],
     ["README.md", "usr/share/doc/dex-loop/", "644"],
     ["deploy/man/dex-loop.1", "usr/share/man/man1/", "644"],
     ["deploy/man/dex-wait-hdmi.1", "usr/share/man/man1/", "644"],
+    ["deploy/man/dex-exhibit-apply.1", "usr/share/man/man1/", "644"],
     ["deploy/lintian-overrides", "usr/share/lintian/overrides/dex-loop", "644"],
 ]
 
 # sidecar-check is deliberately NOT shipped: it is an INGEST tool (it validates
 # a sidecar against an asset while building one), and ingest happens on a
 # workstation, never on the gallery device.
+
+# F6 -- /etc/dex/exhibit.json is a CONFFILE, not merely a shipped file: dpkg's
+# conffile semantics guarantee a hand-edited exhibit config survives a package
+# upgrade (and prompts on a genuine conflict) BY MACHINERY, not by convention
+# -- the exact property F6 exists to give the display mode, the same F3
+# already gives the sidecar's file layout implicitly by never touching /etc.
+conf-files = ["/etc/dex/exhibit.json"]
 
 maintainer-scripts = "deploy/maintainer-scripts"
 # A non-native package without a Debian changelog is a lintian error, and

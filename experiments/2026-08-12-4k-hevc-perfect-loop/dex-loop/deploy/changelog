@@ -1,3 +1,20 @@
+dex-loop (0.1.0-2) unstable; urgency=medium
+
+  * F6: the display mode is now exhibit config, not a systemd-unit or
+    cmdline.txt hand-edit. New conffile /etc/dex/exhibit.json (binds
+    display_mode, kms_force, connector) and new privileged sibling binary
+    dex-exhibit-apply(1), which reconciles cmdline.txt's video= token with
+    it. dex-loop.service no longer passes --mode. Two new startup gates,
+    both before the asset is read: the exhibit config vs. running-kernel
+    cmdline.txt cross-check, and a sysfs pre-flight that refuses a
+    display_mode absent from the connector's own mode list. Fail-closed,
+    same contract as F3's sidecar: a missing or invalid exhibit config
+    refuses rather than guesses the display.
+  * postinst warns (non-fatal) if a leftover systemd drop-in still
+    overrides --mode.
+
+ -- Max Albrecht <1@178.is>  Mon, 17 Aug 2026 12:00:00 +0200
+
 dex-loop (0.1.0-1) unstable; urgency=medium
 
   * Initial packaged release. Gapless 4K HEVC loop player for Raspberry Pi
