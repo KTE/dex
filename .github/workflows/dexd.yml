@@ -146,17 +146,22 @@ jobs:
           # libmpv-dev is what the crate links; dpkg-dev provides
           # dpkg-shlibdeps, which is what turns those links into Depends.
           # rustc/cargo come from DEBIAN, not rustup -- see "Toolchain" below.
-          # libmpv-dev is what the crate links; dpkg-dev provides
-          # dpkg-shlibdeps, which is what turns those links into Depends.
+          # ffmpeg supplies ffmpeg and ffprobe, which tests/sidecar_write.rs
+          # needs: it makes real HEVC streams to run `dex-sidecar write`
+          # against, and skips itself when they are missing. Without this line
+          # those tests would skip here and the writer would ship untested.
           apt-get install -y --no-install-recommends \
             build-essential pkg-config ca-certificates git \
-            rustc cargo rust-clippy libmpv-dev dpkg-dev lintian
+            rustc cargo rust-clippy libmpv-dev dpkg-dev lintian ffmpeg
           # Record what we built and linked against. When a future .deb refuses
           # to install on a device, these lines in the log are the first thing
           # to compare against the device's own `dpkg -s libmpv2` / rustc -V.
           dpkg -s libmpv2 | grep -E '^(Package|Version):'
           rustc --version
           cargo --version
+          # Fails the step if ffprobe is missing, so the sidecar-writer tests
+          # can never quietly skip their way to a green run.
+          ffprobe -version | head -n1
 
       - uses: actions/checkout@v4
 

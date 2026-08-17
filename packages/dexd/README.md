@@ -8,8 +8,7 @@ honest count is 228 shared objects, not zero.
 # once, at ingest -- mpv needs a raw elementary stream, not MP4:
 ffmpeg -i card.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc loop.265
 # and the binding sidecar (fps + hash travel WITH the asset):
-printf '{"fps":"30","sha256":"%s","width":3840,"height":2160}\n' \
-  "$(shasum -a 256 loop.265 | cut -d' ' -f1)" > loop.265.json   # Linux: sha256sum
+dex-sidecar write loop.265 --fps 30
 
 # once, on the device -- WHICH asset and WHICH display mode are both exhibit
 # config, not asset metadata (F6). /etc/dex/exhibit.json, or .yaml if you want
