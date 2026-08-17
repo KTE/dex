@@ -94,20 +94,32 @@ NotifyAccess=main
 # intends. If DEX_HDMI_TIMEOUT is ever raised, raise this with it.
 TimeoutStartSec=150
 ExecStartPre=/usr/bin/dex-wait-hdmi
-# No --fps here: the frame rate comes from /opt/dex/loop.265.json, written at
-# ingest and hash-bound to the asset. Deploy BOTH files. A missing or stale
-# sidecar makes the player refuse (exit 2) rather than guess a rate -- a
-# wrong guess would play slow forever with every metric green.
+# NO ARGUMENTS AT ALL, and each absence is deliberate. This unit states HOW to
+# run the player; everything about WHAT it plays and WHERE lives in one
+# operator-editable file, /etc/dex/exhibit.{yaml,json}.
 #
-# No --mode either, as of F6 (PLAN.md): the display mode is a property of the
-# INSTALLATION (the venue's panel), not of this unit, so it lives in
-# /etc/dex/exhibit.json -- a conffile an operator edits with `sudoedit
-# /etc/dex/exhibit.json && sudo dex-exhibit-apply` (see man dex-exhibit-apply)
-# rather than a value baked into this file that every future panel swap would
-# require re-touching. A `--mode` here would additionally FIGHT the exhibit
-# config: main.rs treats an explicit --mode as a cross-check against it and
-# refuses to start on any disagreement.
-ExecStart=/usr/bin/dex-loop /opt/dex/loop.265
+# No asset path, as of 2026-08-17 (F6): WHICH artwork plays comes from the
+# exhibit config's `asset` key. This line hardcoded /opt/dex/loop.265 until
+# then, which meant changing the artwork required either overwriting that one
+# path or editing a unit file the package owns -- and made "several assets in
+# storage, the exhibit picks one" impossible, which was the stated reason for
+# having an exhibit file at all. The shipped conffile's `asset` is that same
+# /opt/dex/loop.265, so a stock install behaves exactly as it did.
+#
+# No --fps: the frame rate comes from <asset>.json (F3), written at ingest and
+# hash-bound to the asset bytes. Deploy BOTH files. A missing or stale sidecar
+# makes the player refuse (exit 2) rather than guess a rate -- a wrong guess
+# would play slow forever with every metric green.
+#
+# No --mode (F6): the display mode is a property of the INSTALLATION (the
+# venue's panel), not of this unit, so it lives in the same exhibit config an
+# operator edits with `sudoedit /etc/dex/exhibit.json && sudo dex-exhibit-apply`
+# (see man dex-exhibit-apply), rather than a value baked in here that every
+# panel swap would require re-touching. A `--mode` here would additionally
+# FIGHT the exhibit config: main.rs treats an explicit --mode as a cross-check
+# against it and refuses to start on any disagreement. The same is now true of
+# an asset path passed here.
+ExecStart=/usr/bin/dex-loop
 
 Restart=always
 RestartSec=2

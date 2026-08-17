@@ -50,6 +50,42 @@ configure)
   # a drop-in that happens to agree, or one that has gone stale in some other
   # way (see 2026-08-17's config.txt-vs-cmdline.txt drift on dexpi4) -- purely
   # so the leftover gets noticed and removed rather than outliving its reason.
+  # F6, 2026-08-17: ExecStart no longer passes an asset path -- WHICH artwork
+  # plays now comes from the exhibit config's `asset` key. A FRESH install is
+  # fine (the shipped conffile has it), but dpkg conffile semantics keep an
+  # admin-edited /etc/dex/exhibit.json exactly as it was, so an upgraded device
+  # can end up with a config that predates the key. The player then refuses to
+  # start -- correctly and loudly, since guessing an artwork is the one guess
+  # this package will not make (see src/exhibit.rs's resolve_asset) -- but it
+  # would refuse at the next power cycle, in a gallery, with nobody watching.
+  # Warning here converts that into a message during the upgrade someone is
+  # sitting through. Non-fatal: the package must not edit an admin's /etc file.
+  #
+  # grep, not a JSON/YAML parser: a maintainer script may use only what the
+  # package depends on, and this is a "did you notice" prompt, not a gate. A
+  # false positive costs one glance at a file; the real gate is in the player.
+  #
+  # The key must start a line or follow a `{`/`,`, which covers pretty-printed
+  # JSON, single-line JSON, and YAML -- and, the reason for the anchor, does
+  # NOT match a commented-out `# asset:` in a YAML file. Driven against all
+  # eight shapes before shipping, not reasoned about: an unanchored pattern
+  # stayed silent on the commented case, which is precisely the config whose
+  # owner most needs the prompt.
+  for cfg in /etc/dex/exhibit.yaml /etc/dex/exhibit.json; do
+    [ -e "$cfg" ] || continue
+    if ! grep -qE '(^|[{,])[[:space:]]*"?asset"?[[:space:]]*:' "$cfg" 2>/dev/null; then
+      echo "dex-loop: NOTE: $cfg names no asset, and ExecStart no longer" >&2
+      echo "  passes one (F6). The player will refuse to start until it does --" >&2
+      echo "  deliberately: guessing which artwork to play is the one guess this" >&2
+      echo "  package will not make. Add the line, then restart:" >&2
+      case "$cfg" in
+      *.yaml) echo "    asset: /opt/dex/loop.265" >&2 ;;
+      *) echo "    \"asset\": \"/opt/dex/loop.265\"," >&2 ;;
+      esac
+      echo "    sudo systemctl restart dex-loop" >&2
+    fi
+  done
+
   dropin_dir=/etc/systemd/system/dex-loop.service.d
   if [ -d "$dropin_dir" ] && grep -q -- '--mode' "$dropin_dir"/*.conf 2>/dev/null; then
     echo "dex-loop: NOTE: $dropin_dir still overrides --mode -- that setting" >&2

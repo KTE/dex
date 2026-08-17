@@ -214,6 +214,27 @@ pub fn is_valid_kms_force(s: &str) -> bool {
     }
 }
 
+/// `asset` grammar: an ABSOLUTE path to a file, with no trailing slash and no
+/// ASCII control characters.
+///
+/// Absolute because the player runs as a systemd service whose working
+/// directory is `/`: a relative path would resolve somewhere the operator did
+/// not type, and — being a *plausible* path — would fail with "no such file"
+/// pointing at a name that looks right. Control characters because this string
+/// is printed into the journal at every start, and the journal is the only
+/// diagnostic channel a gallery device has; a newline inside it would forge a
+/// second log line.
+///
+/// Deliberately NOT checked here: whether the file exists, or what extension
+/// it has. Existence is main.rs's job (it produces the read error, which is
+/// more informative than a grammar refusal), and this crate has no business
+/// deciding that an artwork must be called `.265`.
+pub fn is_valid_asset(s: &str) -> bool {
+    s.starts_with('/')
+        && !s.ends_with('/')
+        && !s.chars().any(|c| c.is_ascii_control())
+}
+
 /// `connector` grammar: `"HDMI-A-<n>"`, n a plain digit run. Also governs the
 /// `video=<connector>:...` token dex-exhibit-apply writes and the
 /// `/sys/class/drm/card*-<connector>` glob the sysfs pre-flight reads, so
@@ -494,6 +515,9 @@ pub fn load_exhibit_config(
 /// A parsed, validated exhibit config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExhibitConfig {
+    /// WHICH artwork this exhibit plays. Optional in the file, but something
+    /// must supply it -- see [`resolve_asset`].
+    pub asset: Option<String>,
     pub display_mode: String,
     pub kms_force: String,
     pub connector: String,
@@ -540,6 +564,7 @@ impl ExhibitConfig {
     /// this is the one place this parser's contract deliberately differs
     /// from `Sidecar::from_json`'s.
     fn from_pairs(kv: Vec<(String, Value)>) -> Result<ExhibitConfig, String> {
+        let mut asset = None;
         let mut display_mode = None;
         let mut kms_force = None;
         let mut connector = None;
@@ -548,6 +573,10 @@ impl ExhibitConfig {
         let mut note = None;
         for (k, v) in kv {
             match (k.as_str(), v) {
+                ("asset", Value::Str(s)) => asset = Some(s),
+                ("asset", Value::Num(_)) => {
+                    return Err("exhibit config: asset must be a string".into())
+                }
                 ("display_mode", Value::Str(s)) => display_mode = Some(s),
                 ("display_mode", Value::Num(_)) => {
                     return Err("exhibit config: display_mode must be a string".into())
@@ -575,8 +604,8 @@ impl ExhibitConfig {
                 (other, _) => {
                     return Err(format!(
                         "exhibit config: unknown key {other:?} (strict schema, unlike the \
-                         sidecar — known keys: display_mode, kms_force, connector, display, \
-                         venue, note; a typo here must not silently drop a force)"
+                         sidecar — known keys: asset, display_mode, kms_force, connector, \
+                         display, venue, note; a typo here must not silently drop a force)"
                     ))
                 }
             }
@@ -602,7 +631,17 @@ impl ExhibitConfig {
                 "exhibit config: invalid connector {connector:?} (expect \"HDMI-A-<n>\")"
             ));
         }
+        if let Some(a) = &asset {
+            if !is_valid_asset(a) {
+                return Err(format!(
+                    "exhibit config: invalid asset {a:?} (expect an absolute path to the file \
+                     to play, e.g. \"/opt/dex/loop.265\" -- no trailing slash, no control \
+                     characters)"
+                ));
+            }
+        }
         Ok(ExhibitConfig {
+            asset,
             display_mode,
             kms_force,
             connector,
@@ -696,6 +735,100 @@ pub fn resolve_display(
                 cfg.display_mode
             )),
         },
+    }
+}
+
+/// Where the asset path came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetSource {
+    /// The exhibit config's `asset` key — the deployment path.
+    Config,
+    /// A path given on the command line. Legitimate on a bench, and as a
+    /// one-off on a device without editing `/etc`; never how a show runs.
+    Cli,
+}
+
+/// The resolved asset: which file to play, and who said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAsset {
+    pub path: String,
+    pub source: AssetSource,
+}
+
+/// Decide WHICH ASSET to play — the capability the exhibit file exists for.
+///
+/// Before this, `dex-loop.service`'s `ExecStart` hardcoded
+/// `/opt/dex/loop.265`, so changing the artwork meant overwriting that one
+/// path or editing a systemd unit the package owns. Several assets could not
+/// sit in storage with the exhibit choosing one, which was Max's stated reason
+/// for wanting an exhibit file at all: an exhibit is a pairing of a venue with
+/// an artwork, and it could previously express only the venue half.
+///
+/// The table mirrors [`resolve_display`] and `sidecar::resolve_fps` exactly,
+/// because a third decision surface with its own idiom is how invariants get
+/// forgotten:
+///
+/// | config `asset` | CLI path | bench | result |
+/// |---|---|---|---|
+/// | present | absent | no | config binds |
+/// | present | == config | no | config binds (cross-check) |
+/// | present | != config | no | refuse, naming both |
+/// | absent | present | no | CLI binds (one-off, logged as such) |
+/// | absent | absent | no | refuse: nothing names an asset |
+/// | any | present | yes | CLI binds; config ignored |
+/// | any | absent | yes | refuse: bench must be explicit |
+///
+/// The row that could have gone the other way is the fifth. Defaulting to
+/// `/opt/dex/loop.265` would carry every existing deployment through untouched
+/// — and would be the worst guess in the program: it would silently play LAST
+/// season's artwork for an operator who edited the config but mistyped the
+/// key, with every metric green. Every other guess this crate refuses (frame
+/// rate, display mode) is refused for a weaker version of that reason. So:
+/// refuse, name the exact line to add, and warn at package-install time (see
+/// `deploy/maintainer-scripts/postinst`) so an upgrade surfaces it while
+/// someone is watching rather than at the next power cycle.
+pub fn resolve_asset(
+    config: Option<&ExhibitConfig>,
+    cli_path: Option<&str>,
+    bench_no_sidecar: bool,
+) -> Result<ResolvedAsset, String> {
+    if bench_no_sidecar {
+        return match cli_path {
+            Some(p) => Ok(ResolvedAsset {
+                path: p.to_string(),
+                source: AssetSource::Cli,
+            }),
+            None => Err(
+                "--bench-no-sidecar consults no exhibit config, so the asset must be given on \
+                 the command line: dex-loop <stream.265> --bench-no-sidecar --fps <F>"
+                    .into(),
+            ),
+        };
+    }
+    match (config.and_then(|c| c.asset.as_deref()), cli_path) {
+        (Some(a), None) => Ok(ResolvedAsset {
+            path: a.to_string(),
+            source: AssetSource::Config,
+        }),
+        (Some(a), Some(p)) if a == p => Ok(ResolvedAsset {
+            path: a.to_string(),
+            source: AssetSource::Config,
+        }),
+        (Some(a), Some(p)) => Err(format!(
+            "command-line asset {p:?} contradicts the exhibit config's asset {a:?}; drop the \
+             path (the exhibit config is authoritative) or fix the config"
+        )),
+        (None, Some(p)) => Ok(ResolvedAsset {
+            path: p.to_string(),
+            source: AssetSource::Cli,
+        }),
+        (None, None) => Err(
+            "no asset: the exhibit config does not name one and none was given on the command \
+             line. Add it to the exhibit config -- `asset: /opt/dex/loop.265` (YAML) or \
+             `\"asset\": \"/opt/dex/loop.265\"` (JSON) -- which is what lets several assets sit \
+             in /opt/dex with the exhibit choosing one"
+                .into(),
+        ),
     }
 }
 
@@ -962,6 +1095,17 @@ mod tests {
         let c = ExhibitConfig::from_json(text).expect("shipped default must parse");
         assert_eq!(c.display_mode, "auto");
         assert_eq!(c.kms_force, "none");
+        // The shipped default MUST name an asset. Without one, a stock install
+        // now refuses at startup -- ExecStart no longer passes a path, and the
+        // code deliberately has no fallback (see resolve_asset). This assert is
+        // the gate on that: the conffile is the only thing standing between a
+        // fresh install and "no asset" on first start.
+        assert_eq!(c.asset.as_deref(), Some("/opt/dex/loop.265"));
+        // ...and it must actually resolve, not merely parse.
+        assert_eq!(
+            resolve_asset(Some(&c), None, false).unwrap().path,
+            "/opt/dex/loop.265"
+        );
     }
 
     #[test]
@@ -1030,12 +1174,21 @@ mod tests {
 
     fn cfg(display_mode: &str, kms_force: &str) -> ExhibitConfig {
         ExhibitConfig {
+            asset: None,
             display_mode: display_mode.to_string(),
             kms_force: kms_force.to_string(),
             connector: DEFAULT_CONNECTOR.to_string(),
             display: None,
             venue: None,
             note: None,
+        }
+    }
+
+    /// `cfg`, plus an asset — for the `resolve_asset` table.
+    fn cfg_with_asset(asset: &str) -> ExhibitConfig {
+        ExhibitConfig {
+            asset: Some(asset.to_string()),
+            ..cfg("auto", "none")
         }
     }
 
@@ -1561,6 +1714,108 @@ mod tests {
     fn the_leftover_conffile_hint_only_appears_when_a_json_is_involved() {
         let e = pick_default_config(&["/srv/a.yaml", "/srv/b.yml"]).unwrap_err();
         assert!(!e.contains("sudo rm"), "{e}");
+    }
+
+    // ---- resolve_asset: the whole decision table -------------------------
+
+    #[test]
+    fn deploy_path_takes_the_asset_from_the_config() {
+        let c = cfg_with_asset("/opt/dex/spring.265");
+        let r = resolve_asset(Some(&c), None, false).unwrap();
+        assert_eq!(r.path, "/opt/dex/spring.265");
+        assert_eq!(r.source, AssetSource::Config);
+    }
+
+    #[test]
+    fn an_agreeing_cli_path_cross_checks_and_the_config_still_binds() {
+        let c = cfg_with_asset("/opt/dex/spring.265");
+        let r = resolve_asset(Some(&c), Some("/opt/dex/spring.265"), false).unwrap();
+        assert_eq!(r.source, AssetSource::Config);
+    }
+
+    #[test]
+    fn a_contradicting_cli_path_is_refused_naming_both() {
+        let c = cfg_with_asset("/opt/dex/spring.265");
+        let e = resolve_asset(Some(&c), Some("/opt/dex/autumn.265"), false).unwrap_err();
+        assert!(e.contains("spring.265") && e.contains("autumn.265"), "{e}");
+    }
+
+    /// A config with no `asset` key still accepts a hand-given path -- the
+    /// one-off case (try another file on a deployed device without editing
+    /// /etc), reported as CLI-sourced so the journal cannot be misread.
+    #[test]
+    fn a_cli_path_works_when_the_config_names_no_asset() {
+        let c = cfg("auto", "none");
+        let r = resolve_asset(Some(&c), Some("/opt/dex/try.265"), false).unwrap();
+        assert_eq!(r.source, AssetSource::Cli);
+    }
+
+    /// THE fail-closed row: nothing names an asset, so nothing is guessed --
+    /// specifically NOT /opt/dex/loop.265, which would silently play last
+    /// season's artwork for someone who mistyped the key.
+    #[test]
+    fn no_asset_anywhere_refuses_rather_than_defaulting_to_loop_265() {
+        let c = cfg("auto", "none");
+        let e = resolve_asset(Some(&c), None, false).unwrap_err();
+        assert!(e.contains("no asset"), "{e}");
+        // ...and it names the exact line to add, in both formats.
+        assert!(e.contains("asset: /opt/dex/loop.265"), "{e}");
+        assert!(e.contains(r#""asset": "/opt/dex/loop.265""#), "{e}");
+        // Also with NO config at all (that case refuses earlier, at
+        // resolve_display -- but this function must not invent a path either).
+        assert!(resolve_asset(None, None, false).is_err());
+    }
+
+    #[test]
+    fn bench_takes_the_cli_path_and_ignores_the_config() {
+        let c = cfg_with_asset("/opt/dex/spring.265");
+        let r = resolve_asset(Some(&c), Some("/tmp/bench.265"), true).unwrap();
+        assert_eq!(r.path, "/tmp/bench.265");
+        assert_eq!(r.source, AssetSource::Cli);
+    }
+
+    #[test]
+    fn bench_without_a_path_refuses_rather_than_falling_back_to_the_config() {
+        let c = cfg_with_asset("/opt/dex/spring.265");
+        let e = resolve_asset(Some(&c), None, true).unwrap_err();
+        assert!(e.contains("command line"), "{e}");
+    }
+
+    // ---- the asset grammar ----------------------------------------------
+
+    #[test]
+    fn asset_must_be_an_absolute_path() {
+        assert!(is_valid_asset("/opt/dex/loop.265"));
+        assert!(is_valid_asset("/srv/art/Karte–Süd.265")); // non-ASCII is fine
+        // A relative path would resolve against the service's working
+        // directory (`/`), i.e. somewhere the operator did not type.
+        assert!(!is_valid_asset("loop.265"));
+        assert!(!is_valid_asset("./loop.265"));
+        assert!(!is_valid_asset(""));
+        assert!(!is_valid_asset("/opt/dex/")); // a directory, not a file
+    }
+
+    /// The asset path is printed into the journal at every start, and the
+    /// journal is the only diagnostic channel a gallery device has -- a
+    /// newline in it would forge a second log line.
+    #[test]
+    fn asset_with_a_control_character_is_refused() {
+        assert!(!is_valid_asset("/opt/dex/loop.265\ndex-loop: all fine here"));
+        assert!(!is_valid_asset("/opt/dex/loop\t.265"));
+    }
+
+    #[test]
+    fn asset_parses_from_both_formats_and_is_grammar_checked() {
+        let j = ExhibitConfig::from_json(
+            r#"{"asset":"/opt/dex/spring.265","display_mode":"auto"}"#,
+        )
+        .unwrap();
+        let y = ExhibitConfig::from_yaml("asset: /opt/dex/spring.265\ndisplay_mode: auto\n").unwrap();
+        assert_eq!(j, y);
+        assert_eq!(j.asset.as_deref(), Some("/opt/dex/spring.265"));
+
+        let e = ExhibitConfig::from_yaml("asset: loop.265\ndisplay_mode: auto\n").unwrap_err();
+        assert!(e.contains("invalid asset"), "{e}");
     }
 
     // ---- load_exhibit_config, against a real temp directory --------------

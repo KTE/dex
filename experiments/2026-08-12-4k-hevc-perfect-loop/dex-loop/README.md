@@ -11,12 +11,14 @@ ffmpeg -i card.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc loop.265
 printf '{"fps":"30","sha256":"%s","width":3840,"height":2160}\n' \
   "$(shasum -a 256 loop.265 | cut -d' ' -f1)" > loop.265.json   # Linux: sha256sum
 
-# once, on the device -- the display mode is exhibit config, not asset
-# metadata (F6): /etc/dex/exhibit.json (the .deb ships an inert default)
-printf '{"display_mode":"3840x2160@30"}\n' | sudo tee /etc/dex/exhibit.json
+# once, on the device -- WHICH asset and WHICH display mode are both exhibit
+# config, not asset metadata (F6). /etc/dex/exhibit.json, or .yaml if you want
+# comments; the .deb ships a stock .json.
+printf '{"asset":"/opt/dex/loop.265","display_mode":"3840x2160@30"}\n' \
+  | sudo tee /etc/dex/exhibit.json
 
-# then
-dex-loop loop.265
+# then -- no arguments: the exhibit says what to play and how
+dex-loop
 ```
 
 ## What it does
@@ -283,6 +285,26 @@ Both files above mean exactly the same thing, and produce the same struct: only 
 every mapping, default and grammar check for both. That is what keeps the formats from
 drifting into two dialects.
 
+**The exhibit names its own asset.** `asset` is what makes this an *exhibit* file
+rather than a display file: an exhibit is a pairing of a venue with an artwork, and
+until 2026-08-17 it could only express the venue half — `ExecStart` hardcoded
+`/opt/dex/loop.265`, so changing the artwork meant overwriting that one path or
+editing a unit the package owns. Now several assets can sit in `/opt/dex` and the
+exhibit picks one:
+
+```yaml
+asset: /opt/dex/spring-2026.265
+display_mode: 3840x2160@30
+```
+
+`ExecStart` is therefore just `/usr/bin/dex-loop`, with no arguments at all: the unit
+says *how* to run the player, and one editable file says *what* it plays and *where*.
+A path given on the command line anyway must agree with the config or startup refuses
+naming both — the same cross-check `--mode` gets. And if neither names an asset,
+startup refuses rather than falling back to `/opt/dex/loop.265`: that fallback would
+silently play last season's artwork for someone who mistyped the key, which is the
+worst guess this program could make.
+
 **The extension is honoured, not sniffed.** YAML is a superset of JSON, so parsing
 everything with the YAML parser would work — and would be wrong: it would accept
 comments and unquoted keys inside a file named `.json`, and that file would then break
@@ -309,6 +331,7 @@ debugging session.
 
 | key | required | meaning |
 |---|---|---|
+| `asset` | see below | absolute path to the file to play, e.g. `"/opt/dex/loop.265"` — **which artwork this exhibit shows**. Optional in the file, but something must supply it: a path on the command line agrees or contradicts it, and if neither names an asset, startup refuses rather than guessing one |
 | `display_mode` | yes | `"auto"` or `"WxH@R"` (R a positive INTEGER, same rule as `kms_force` — bench-verified 2026-08-17: mpv's `--drm-mode` rejects a rational refresh at option parse (-7, a guaranteed restart loop) and silently rounds a decimal to the integer vrefresh, so non-integer forms are refused at config parse instead) — what `dex-loop` asks mpv for via `--drm-mode` |
 | `kms_force` | no (default `"none"`) | `"none"` or `"WxH@R"`/`"WxH@RD"` (integer R only — the kernel `video=` grammar has no fractional refresh) — what the kernel cmdline is expected to carry for this connector |
 | `connector` | no (default `"HDMI-A-1"`) | which DRM connector, e.g. `"HDMI-A-2"` |
@@ -486,9 +509,11 @@ sudo apt install ./dex-loop_0.1.0_arm64.deb   # apt, not dpkg -i: it resolves De
 
 The package installs `dex-loop`, `dex-exhibit-apply` and `dex-wait-hdmi` to
 `/usr/bin`, installs and enables the unit, creates the unprivileged `dex` user
-with `video`/`render`, creates `/opt/dex`, and ships an inert stock
-`/etc/dex/exhibit.json` (`display_mode: "auto"`, conffile — a hand edit
-survives a package upgrade). It does **not** start the unit (that takes DRM
+with `video`/`render`, creates `/opt/dex`, and ships a stock
+`/etc/dex/exhibit.json` (`display_mode: "auto"`, `asset: "/opt/dex/loop.265"`,
+conffile — a hand edit survives a package upgrade). The display half is
+deliberately inert; the `asset` is the path `ExecStart` used to hardcode, so a
+stock install behaves exactly as it did before F6. It does **not** start the unit (that takes DRM
 master, which an operator on an SSH console should time themselves) and it
 ships **no asset** — the video and its sidecar are content, and baking one in
 would mean rebuilding the software to change the artwork:
@@ -497,7 +522,9 @@ would mean rebuilding the software to change the artwork:
 scp loop.265 loop.265.json <host>:/opt/dex/
 sudoedit /etc/dex/exhibit.json         # F6: set display_mode (and kms_force if
                                         # the sink needs one -- see README's
-                                        # "Exhibit config (F6)" section above)
+                                        # "Exhibit config (F6)" section above),
+                                        # and `asset` if the file is not
+                                        # /opt/dex/loop.265
 sudo dex-exhibit-apply                 # reconciles cmdline.txt; reboot if it says to
 sudo systemctl set-default multi-user.target   # no desktop; nothing else may own DRM
 sudo systemctl start dex-loop

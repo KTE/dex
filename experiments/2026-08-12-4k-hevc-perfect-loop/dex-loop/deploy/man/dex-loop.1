@@ -1,9 +1,9 @@
-.TH DEX\-LOOP 1 "2026-08-15" "dex-loop 0.1.0" "dex"
+.TH DEX\-LOOP 1 "2026-08-17" "dex-loop 0.1.0" "dex"
 .SH NAME
 dex\-loop \- gapless HEVC loop player for unattended installations
 .SH SYNOPSIS
 .B dex\-loop
-.I stream.265
+.RI [ stream.265 ]
 .RB [ \-\-fps
 .IR F ]
 .RB [ \-\-mode
@@ -18,6 +18,19 @@ dex\-loop \- gapless HEVC loop player for unattended installations
 Plays a raw Annex\-B HEVC elementary stream in an endless loop with no visible
 seam. The stream is presented to libmpv through a callback that never reports
 end\-of\-file, so the decoder never seeks and the wrap costs no frame.
+.PP
+.I stream.265
+is OPTIONAL: in a deployment the exhibit config's
+.B asset
+key names it, which is what lets several assets sit in
+.I /opt/dex
+with the exhibit choosing one \(em the packaged unit runs
+.B dex\-loop
+with no arguments at all. Given here as well, the path must AGREE with the
+config or startup is refused, naming both; it is REQUIRED with
+.B \-\-bench\-no\-sidecar
+(which consults no config). If neither names an asset, startup refuses rather
+than guessing an artwork.
 .PP
 Intended for gallery devices that run for weeks unattended and are switched off
 at the mains. There is no graceful shutdown path by design.
@@ -59,11 +72,14 @@ Required sidecar beside the asset, binding \fBfps\fR and \fBsha256\fR to the
 exact bytes. A missing, stale or mismatched sidecar refuses startup.
 .TP
 .I /opt/dex/loop.265
-Asset read by the packaged systemd service.
+The asset path the stock exhibit config names, and the one
+.B ExecStart
+hardcoded before F6. Nothing in the code defaults to it: it is a value in a
+conffile the operator may change to any absolute path.
 .TP
 .I /etc/dex/exhibit.json \fRor\fI /etc/dex/exhibit.yaml
-F6 exhibit config: binds \fBdisplay_mode\fR, and optionally \fBkms_force\fR and
-\fBconnector\fR. The \fB.json\fR form is what the package ships, as a dpkg
+F6 exhibit config: binds \fBasset\fR (which artwork plays) and
+\fBdisplay_mode\fR, and optionally \fBkms_force\fR and \fBconnector\fR. The \fB.json\fR form is what the package ships, as a dpkg
 conffile so a hand edit survives an upgrade; the \fB.yaml\fR form is for hand
 editing on site and takes comments. Exactly one may exist. Required
 outside \fB\-\-bench\-no\-sidecar\fR \(em a missing

@@ -1090,6 +1090,130 @@ fn yaml_exhibit_config_binds_the_display_like_json_does() {
     assert!(r.stderr.contains("7680x4320"), "stderr: {}", r.stderr);
 }
 
+/// **The shipped deployment invocation shape**: no positional asset path at
+/// all, everything from the exhibit config. `ExecStart=/usr/bin/dex-loop`
+/// passes exactly this, so if a no-argument run were rejected on argv shape,
+/// the packaged unit would exit 2 in a permanent restart loop on the device
+/// while every other test here — all of which pass arguments — stayed green.
+///
+/// Uses `--exhibit-config` (never the real default) so the test does not
+/// depend on the host having, or lacking, `/etc/dex`; and an implausible mode,
+/// so it lands on the sysfs pre-flight rather than starting playback.
+#[test]
+fn no_positional_asset_is_accepted_and_reaches_the_config() {
+    let cfg = temp_path("f6-noposition-exhibit.yaml");
+    std::fs::write(
+        &cfg,
+        "asset: /nonexistent/f6-fromconfig.265\ndisplay_mode: 7680x4320@60\n",
+    )
+    .unwrap();
+    let cl = write_no_video_cmdline("f6-noposition-cmdline");
+    let r = run_with_deadline(
+        &[
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    // Reached a real gate, NOT the usage text.
+    assert!(
+        !r.stderr.contains("usage:"),
+        "a no-argument run must not be refused on argv shape -- that is how the \
+         packaged unit invokes the player: {}",
+        r.stderr
+    );
+    assert!(r.stderr.contains("7680x4320"), "stderr: {}", r.stderr);
+}
+
+/// The asset actually comes FROM the config: with a valid display and a config
+/// naming a nonexistent asset, the run gets as far as failing to read that
+/// exact path — which only happens if `resolve_asset` took it from the file.
+#[test]
+fn the_exhibit_config_names_which_asset_plays() {
+    let cfg = temp_path("f6-assetfromconfig-exhibit.yaml");
+    std::fs::write(
+        &cfg,
+        "asset: /nonexistent/f6-named-by-config.265\ndisplay_mode: auto\n",
+    )
+    .unwrap();
+    let cl = write_no_video_cmdline("f6-assetfromconfig-cmdline");
+    let r = run_with_deadline(
+        &[
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("f6-named-by-config.265"),
+        "the asset named by the config must be the one the player tried to read: {}",
+        r.stderr
+    );
+}
+
+/// A positional path that CONTRADICTS the config is refused naming both — the
+/// asset analogue of `mode_contradicting_exhibit_config_refused_naming_both`.
+#[test]
+fn positional_asset_contradicting_the_config_refused_naming_both() {
+    let cfg = temp_path("f6-assetconflict-exhibit.yaml");
+    std::fs::write(
+        &cfg,
+        "asset: /nonexistent/f6-config-asset.265\ndisplay_mode: auto\n",
+    )
+    .unwrap();
+    let cl = write_no_video_cmdline("f6-assetconflict-cmdline");
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-cli-asset.265",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("f6-config-asset.265") && r.stderr.contains("f6-cli-asset.265"),
+        "stderr must name both assets: {}",
+        r.stderr
+    );
+}
+
+/// A config with no `asset`, and no path given: refuses rather than falling
+/// back to /opt/dex/loop.265. The fail-closed row of `resolve_asset`'s table,
+/// driven through the real binary.
+#[test]
+fn no_asset_named_anywhere_refused_without_guessing_loop_265() {
+    let cfg = temp_path("f6-noasset-exhibit.yaml");
+    std::fs::write(&cfg, "display_mode: auto\n").unwrap();
+    let cl = write_no_video_cmdline("f6-noasset-cmdline");
+    let r = run_with_deadline(
+        &[
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("no asset"), "stderr: {}", r.stderr);
+    // The load-bearing negative: it must not have quietly tried the old
+    // hardcoded path.
+    assert!(
+        !r.stderr.contains("cannot read /opt/dex/loop.265"),
+        "a missing asset must never fall back to the pre-F6 hardcoded path: {}",
+        r.stderr
+    );
+}
+
 /// The dispatch, at the CLI level: YAML syntax inside a `.json` file is
 /// refused rather than quietly accepted by a permissive parser.
 #[test]

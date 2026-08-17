@@ -46,8 +46,8 @@
 
 use dex_loop::chunk::{clamp_want, next_chunk};
 use dex_loop::exhibit::{
-    check_cmdline_matches, load_exhibit_config, mode_resolution, resolve_display,
-    sysfs_modes_contains, DisplaySource, DEFAULT_EXHIBIT_CONFIG_PATH,
+    check_cmdline_matches, load_exhibit_config, mode_resolution, resolve_asset, resolve_display,
+    sysfs_modes_contains, AssetSource, DisplaySource, DEFAULT_EXHIBIT_CONFIG_PATH,
     DEFAULT_EXHIBIT_CONFIG_PATHS,
 };
 use dex_loop::ffi_consts::{
@@ -705,9 +705,16 @@ fn act_on_health_action(
 
 fn usage() -> ! {
     eprintln!(
-        "usage: dex-loop <stream.265> [--fps <F>] [--mode WxH@R] [--bench-no-sidecar] [--no-defaults] [--opt K=V ...]
+        "usage: dex-loop [<stream.265>] [--fps <F>] [--mode WxH@R] [--bench-no-sidecar] [--no-defaults] [--opt K=V ...]
 
-  <stream.265>        raw Annex-B HEVC elementary stream, looped endlessly
+  <stream.265>        raw Annex-B HEVC elementary stream, looped endlessly.
+                      OPTIONAL in a deployment: the exhibit config's `asset`
+                      key names it, which is what lets several assets sit in
+                      /opt/dex with the exhibit choosing one. Given here too,
+                      it must AGREE with the config or startup refuses, naming
+                      both. REQUIRED with --bench-no-sidecar, which consults no
+                      config. If neither names an asset, startup refuses rather
+                      than guessing an artwork.
   <stream.265>.json   ingest sidecar, REQUIRED: {{\"fps\":\"30\",\"sha256\":\"<64 hex>\"}}
                       fps comes from it; the sha256 must match the asset bytes
   --fps F             optional cross-check; must equal the sidecar fps exactly
@@ -783,9 +790,14 @@ fn main() -> ExitCode {
     );
 
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() {
-        usage();
-    }
+    // NO `if args.is_empty() { usage() }`. Since F6 moved the asset into the
+    // exhibit config, an EMPTY argv is the normal deployment invocation --
+    // `ExecStart=/usr/bin/dex-loop`, everything else in
+    // /etc/dex/exhibit.{yaml,json}. That guard survived the asset change for
+    // about ten minutes and would have put the shipped unit into a permanent
+    // exit-2 restart loop on the device while every Mac-side test passed,
+    // because every test passes arguments. A bare `dex-loop` now proceeds to
+    // the config, and refuses there if the config cannot answer.
 
     let mut path: Option<String> = None;
     let mut cli_fps: Option<String> = None;
@@ -868,7 +880,11 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    let Some(path) = path else { usage() };
+    // No `let Some(path) = path else { usage() }` any more: since F6 the asset
+    // may come from the exhibit config instead, so "which asset" is a
+    // RESOLUTION (exhibit::resolve_asset, below, after the config is read) and
+    // not an argv shape. usage() here would refuse the normal deployment
+    // invocation -- `ExecStart=/usr/bin/dex-loop` with no path at all.
 
     // T7 (PLAN.md) -- the "impossible to enable accidentally in a
     // deployment" requirement, enforced as a gate rather than left to
@@ -1020,6 +1036,31 @@ fn main() -> ExitCode {
         } else {
             display.kms_force.clone()
         },
+    );
+
+    // F6 -- WHICH asset. Resolved from the exhibit config and/or the command
+    // line by the same decision table shape as the display and the frame rate
+    // (exhibit::resolve_asset). This is what lets several assets sit in
+    // /opt/dex with the exhibit choosing one, instead of ExecStart naming a
+    // single hardcoded path.
+    let asset = match resolve_asset(exhibit_config.as_ref(), path.as_deref(), bench_no_sidecar) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let path = asset.path;
+    eprintln!(
+        "dex-loop: asset {path} ({})",
+        match asset.source {
+            AssetSource::Config => format!("exhibit config {exhibit_config_path}"),
+            // Loud on purpose. A show must run off the config; a CLI path is
+            // either a bench or a hand-started one-off, and either way the
+            // journal should say so rather than let someone read a
+            // hand-invoked run as evidence about the deployed one.
+            AssetSource::Cli => "COMMAND LINE, not the exhibit config".to_string(),
+        }
     );
 
     // Read the loop once. These are small (1.3 MB at 1080p, 14.8 MB at 4K for a

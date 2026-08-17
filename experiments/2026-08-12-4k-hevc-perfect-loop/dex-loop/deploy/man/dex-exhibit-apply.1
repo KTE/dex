@@ -84,6 +84,20 @@ ignored, because this file has no independent producer to stay compatible
 with: a typo here (\fBkms_forse\fR for \fBkms_force\fR) must be a startup
 refusal, not a silently dropped force.
 .TP
+.B asset
+Absolute path to the file to play, e.g.
+.IR /opt/dex/loop.265 .
+This is the key that makes the file an EXHIBIT config rather than a display
+config: an exhibit pairs a venue with an artwork, and several assets can sit in
+.I /opt/dex
+with this choosing one.
+.B dex\-exhibit\-apply
+itself does not use it \(em it reconciles the boot cmdline, which is a display
+concern \(em but it is listed here because this page documents the whole schema.
+Optional in the file; something must supply it, or
+.BR dex\-loop (1)
+refuses to start rather than guess an artwork.
+.TP
 .B display_mode
 (required) \fBauto\fR, or \fBWxH@R\fR with an INTEGER refresh, e.g.
 \fB3840x2160@30\fR. What
