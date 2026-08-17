@@ -55,7 +55,7 @@
 //!   privileged sibling binary) uses to keep `cmdline.txt` in sync,
 //!   idempotently, preserving every other token untouched.
 
-use crate::sidecar::{is_valid_fps, parse_flat_json, Value};
+use crate::sidecar::{parse_flat_json, Value};
 
 /// Default path for the exhibit config, overridable with `--exhibit-config`
 /// for tests and, in principle, an unusual install layout.
@@ -86,20 +86,35 @@ fn split_mode(s: &str) -> Option<(&str, &str, &str)> {
     Some((w, h, r))
 }
 
-/// `display_mode` grammar: `"auto"`, or `"WxH@R"` with W, H positive
-/// integers and R passing the SAME grammar `--fps`/the sidecar use
-/// (`is_valid_fps`) — so `@29.97` and `@30000/1001` are representable,
-/// because mpv's `--drm-mode` accepts a fractional refresh and an exhibit
-/// states its cadence exactly, the same way the asset does. The `@R` part is
-/// mandatory: `"3840x2160"` alone would let mpv pick between 30.00 and 29.97
-/// by list order, which is exactly the silent-wrongness class this crate
-/// exists to close.
+/// `display_mode` grammar: `"auto"`, or `"WxH@R"` with W, H, R positive
+/// INTEGERS — the same refresh rule as `kms_force`, and deliberately NOT the
+/// `--fps` grammar an earlier revision borrowed. That revision reasoned
+/// "mpv's `--drm-mode` accepts a fractional refresh, so `@29.97` and
+/// `@30000/1001` are representable"; bench-driving both through the real
+/// deploy path (dexpi4, mpv 0.40, 2026-08-17) disproved it twice over:
+///
+/// * `@30000/1001` fails mpv's OPTION PARSER outright (`set
+///   drm-mode=3840x2160@30000/1001: error setting option (-7)`) — a config
+///   value this grammar accepted could NEVER play, only produce a 2 s-cadence
+///   restart loop. Fail-closed belongs at config parse, not at VO init.
+/// * `@29.97` parses and PLAYS — because mpv matches DRM modes by integer
+///   `vrefresh` rounding, i.e. it silently drove the same 30 Hz mode that
+///   `@30` names honestly. A decimal buys nothing over its rounded integer
+///   (the kernel mode's timing is what it is) while implying a precision
+///   that does not exist — the silent-wrongness class this crate refuses.
+///
+/// (An INTEGER refresh the connector does not offer is caught loudly at VO
+/// init — `Could not find mode matching 3840x2160@60`, same bench — since
+/// the sysfs pre-flight can only validate the resolution half; see
+/// `mode_resolution`.) The `@R` part is mandatory: `"3840x2160"` alone would
+/// let mpv pick among same-resolution timings by list order, which is again
+/// silent wrongness.
 pub fn is_valid_display_mode(s: &str) -> bool {
     if s == "auto" {
         return true;
     }
     match split_mode(s) {
-        Some((w, h, r)) => positive_int(w) && positive_int(h) && is_valid_fps(r),
+        Some((w, h, r)) => positive_int(w) && positive_int(h) && positive_int(r),
         None => false,
     }
 }
@@ -486,8 +501,6 @@ mod tests {
         for ok in [
             "auto",
             "3840x2160@30",
-            "2560x1440@59.95",
-            "3840x2160@30000/1001",
             "1x1@1",
             // Leading zeros are accepted -- positive_int only requires "all
             // digits, at least one nonzero", the same rule sidecar::is_valid_fps
@@ -509,6 +522,12 @@ mod tests {
             "3840x2160@-30", // negative R
             "3840x2160@30D", // D suffix is a kms_force thing, not display_mode
             "auto@30",
+            // Bench-disproven forms an earlier revision accepted (dexpi4,
+            // mpv 0.40, 2026-08-17 -- see is_valid_display_mode's docs):
+            // rational fails mpv's option parser (-7, guaranteed restart
+            // loop), decimal silently rounds to the integer vrefresh.
+            "3840x2160@30000/1001",
+            "2560x1440@59.95",
         ] {
             assert!(!is_valid_display_mode(bad), "{bad:?} should be invalid");
         }

@@ -62,16 +62,22 @@ with: a typo here (\fBkms_forse\fR for \fBkms_force\fR) must be a startup
 refusal, not a silently dropped force.
 .TP
 .B display_mode
-(required) \fBauto\fR, or \fBWxH@R\fR e.g. \fB3840x2160@30\fR. What
+(required) \fBauto\fR, or \fBWxH@R\fR with an INTEGER refresh, e.g.
+\fB3840x2160@30\fR. What
 .B dex\-loop
 asks mpv for via
 .BR \-\-drm\-mode .
+Non\-integer refresh forms are refused at config parse: bench\-verified
+(2026\-08\-17), mpv rejects a rational refresh (\fB@30000/1001\fR) at option
+parsing \(em a guaranteed restart loop \(em and silently rounds a decimal
+(\fB@29.97\fR) to the integer vrefresh it names anyway.
 .TP
 .B kms_force
 (default \fBnone\fR) \fBnone\fR, or \fBWxH@R\fR/\fBWxH@RD\fR with an INTEGER
 refresh (the kernel's
 .B video=
-grammar has no fractional refresh, unlike \fBdisplay_mode\fR). The trailing
+grammar has no fractional refresh \(em and since 2026\-08\-17 neither does
+\fBdisplay_mode\fR, see above). The trailing
 .B D
 forces the connector to read \fBconnected\fR even before a sink is actually
 attached \(em the boot\-order insurance for a projector that presents EDID

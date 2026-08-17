@@ -472,6 +472,25 @@ this branch).** Fixed here:
   is grammar-checked and settled by mpv's `--drm-mode` at VO init (the
   kernel's sysfs `modes` file has no refresh column — verified on dexpi4, six
   indistinguishable `3840x2160` lines).
+* **Refresh behavior bench-verified on dexpi4** (2026-08-17, real deploy path,
+  installed .deb, Cam Link forced to 4K30), answering the review's open
+  question three ways:
+  1. `display_mode: 3840x2160@60` (integer, not offered): mpv REFUSES at VO
+     init — `mpv/vo/gpu/drm: Could not find mode matching 3840x2160@60` →
+     exit 1 → 2 s restart loop. Loud, not silent — but mpv-voiced, not
+     gate-voiced.
+  2. `display_mode: 3840x2160@30000/1001` (rational): mpv's OPTION PARSER
+     rejects it — `set drm-mode=...@30000/1001: error setting option (-7)` →
+     exit 2 loop. A value the old grammar accepted could NEVER play.
+  3. `display_mode: 3840x2160@29.97` (decimal): parses and PLAYS — mpv
+     matches DRM modes by integer vrefresh rounding, i.e. it silently drove
+     the same 30 Hz mode `@30` names honestly.
+  Consequence, fixed here: `display_mode`'s refresh grammar is now INTEGER
+  ONLY (same rule as `kms_force`), refusing at config parse the rational
+  form that could never play and the decimal form that only pretended to
+  mean something. The old doc claim "mpv's `--drm-mode` accepts a fractional
+  refresh" was written from mpv's manual, never driven, and is false in
+  practice.
 * usage() no longer calls `--mode` "REQUIRED alongside --bench-no-sidecar"
   while stating its default (`bench_with_no_mode_defaults_to_auto` pins the
   actual behavior: optional, defaults to auto).
@@ -488,10 +507,11 @@ Deferred, with reasons:
   config** — a real behavior change to the shipped default, entangled with
   the parked JSON-vs-`dex.yaml` design questions above. Max's call.
 * **Refresh-half pre-flight extension** (mpv mode enumeration, or `modetest`
-  parsing at apply time) — needs the bench data on what mpv actually does
-  with an unoffered refresh (refuse vs snap) first; see "needs on-device
-  verification" in the review-response notes. Grammar-only validation is now
-  documented in the man page and README instead of overclaimed.
+  parsing at apply time) — the bench data above settles what it would buy: an
+  unoffered INTEGER refresh already fails loudly at VO init (restart loop
+  with mpv's error in the journal), so the extension would only upgrade the
+  error's voice from mpv's to the gate's operator-grade message. Worth doing
+  eventually, not load-bearing; belongs with whichever F6 design Max lands.
 * **postinst warning when the fresh default conffile is installed over a
   cmdline that already carries a `video=` token** — the predictable upgrade
   collision. Packaging design (conffile semantics, upgrade vs fresh install

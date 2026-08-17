@@ -260,7 +260,7 @@ file has no independent producer to stay compatible with, so a typo (`kms_forse`
 
 | key | required | meaning |
 |---|---|---|
-| `display_mode` | yes | `"auto"` or `"WxH@R"` (fractional/rational R allowed, same grammar as `--fps`) — what `dex-loop` asks mpv for via `--drm-mode` |
+| `display_mode` | yes | `"auto"` or `"WxH@R"` (R a positive INTEGER, same rule as `kms_force` — bench-verified 2026-08-17: mpv's `--drm-mode` rejects a rational refresh at option parse (-7, a guaranteed restart loop) and silently rounds a decimal to the integer vrefresh, so non-integer forms are refused at config parse instead) — what `dex-loop` asks mpv for via `--drm-mode` |
 | `kms_force` | no (default `"none"`) | `"none"` or `"WxH@R"`/`"WxH@RD"` (integer R only — the kernel `video=` grammar has no fractional refresh) — what the kernel cmdline is expected to carry for this connector |
 | `connector` | no (default `"HDMI-A-1"`) | which DRM connector, e.g. `"HDMI-A-2"` |
 | `display`, `venue`, `note` | no | informational, logged verbatim at every start — this is where the *why* that used to live in a `config.txt` comment block belongs now |
@@ -280,8 +280,9 @@ with every metric green. Two more gates keep the config honest against reality:
   before the asset is even opened. **Resolution only:** the kernel's `modes` file
   has no refresh column, so the `@R` half of `display_mode` is validated by grammar
   alone and is settled by mpv's `--drm-mode` matching at VO init — a refresh the
-  connector does not offer fails (or snaps) there, with mpv's error in the journal
-  rather than this gate's. See `man dex-exhibit-apply`.
+  connector does not offer fails there (bench-verified: `Could not find mode
+  matching 3840x2160@60`, a 2s-cadence restart loop), with mpv's error in the
+  journal rather than this gate's. See `man dex-exhibit-apply`.
 
 Changing the mode is two steps: edit the file, then run `sudo dex-exhibit-apply`
 (a separate, privileged binary — `dex-loop` itself runs unprivileged under
