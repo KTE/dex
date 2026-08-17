@@ -38,6 +38,16 @@ allow = [
     "Apache-2.0", # 14 crates
     "MIT",        # 16 crates
     "MIT-0",      # dex-loop itself
+    # Waved through deliberately, 2026-08-17 — which is exactly the one-line
+    # review this list exists to force, and the whole reason it is trimmed to
+    # what the graph actually contains. Arrived via
+    # yaml-rust2 -> hashlink -> hashbrown -> foldhash, and was the ONLY new
+    # licence in that entire subtree (yaml-rust2, arraydeque, hashlink and
+    # hashbrown are all already-allowed MIT/Apache-2.0).
+    # Zlib is permissive, OSI-approved and FSF Free/Libre, with no copyleft and
+    # no attribution obligation, so it constrains nothing about dex staying
+    # packageable everywhere — the property this allow-list protects.
+    "Zlib", # 1 crate (foldhash)
 ]
 confidence-threshold = 0.9
 

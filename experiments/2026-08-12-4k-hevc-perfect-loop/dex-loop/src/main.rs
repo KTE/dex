@@ -46,8 +46,9 @@
 
 use dex_loop::chunk::{clamp_want, next_chunk};
 use dex_loop::exhibit::{
-    check_cmdline_matches, mode_resolution, resolve_display, sysfs_modes_contains, DisplaySource,
-    ExhibitConfig, DEFAULT_EXHIBIT_CONFIG_PATH,
+    check_cmdline_matches, load_exhibit_config, mode_resolution, resolve_display,
+    sysfs_modes_contains, DisplaySource, DEFAULT_EXHIBIT_CONFIG_PATH,
+    DEFAULT_EXHIBIT_CONFIG_PATHS,
 };
 use dex_loop::ffi_consts::{
     MPV_END_FILE_REASON_STOP, MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE,
@@ -714,7 +715,11 @@ fn usage() -> ! {
                       optional alongside --bench-no-sidecar, where it is the only
                       source instead (defaults to auto there)
   --exhibit-config PATH
-                      F6: path to the exhibit config (default: {DEFAULT_EXHIBIT_CONFIG_PATH}).
+                      F6: path to the exhibit config. Default: whichever of
+                      {DEFAULT_EXHIBIT_CONFIG_PATHS:?} exists -- exactly one may,
+                      and two at once is refused rather than resolved by
+                      precedence. THE EXTENSION DECIDES THE PARSER: .json is
+                      strict JSON, .yaml/.yml is YAML; same schema either way.
                       Binds the display mode, the expected KMS force, and the
                       connector -- see man dex-exhibit-apply.
   --bench-no-sidecar  BENCH ONLY: skip the sidecar AND the exhibit config, take
@@ -910,40 +915,23 @@ fn main() -> ExitCode {
     // presence (a wrong-panel install is worth catching even if the asset
     // path is also wrong). Order: config parse -> cmdline gate -> sysfs mode
     // pre-flight. See src/exhibit.rs module docs and PLAN.md's F6 entry.
-    let exhibit_config_path = exhibit_config_path
-        .clone()
-        .unwrap_or_else(|| DEFAULT_EXHIBIT_CONFIG_PATH.to_string());
-    let exhibit_config: Option<ExhibitConfig> = if bench_no_sidecar {
+    let found = if bench_no_sidecar {
         None
     } else {
-        match fs::read_to_string(&exhibit_config_path) {
-            Ok(text) => match ExhibitConfig::from_json(&text) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    eprintln!("error: {exhibit_config_path}: {e}");
-                    return ExitCode::from(2);
-                }
-            },
-            // A MISSING file is deferred to resolve_display below, which is
-            // the single place that states the "no exhibit config" refusal
-            // (mirroring how sidecar::resolve_fps states the analogous "no
-            // sidecar" message). Any OTHER read error is a different
-            // operational fact and gets its own message here: an
-            // EXISTING-but-unreadable file (root-edited and saved 0600, a
-            // restored backup with the wrong owner) is fixed by chmod/chown,
-            // not by creating a file the operator can see already exists --
-            // telling them to create it would be actively misleading, the
-            // message class this crate's principles forbid.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        match load_exhibit_config(exhibit_config_path.as_deref(), &DEFAULT_EXHIBIT_CONFIG_PATHS) {
+            Ok(found) => found,
             Err(e) => {
-                eprintln!(
-                    "error: cannot read {exhibit_config_path}: {e} -- the file exists but is \
-                     not readable; check its owner/permissions (the dex user must be able to \
-                     read it)"
-                );
+                eprintln!("error: {e}");
                 return ExitCode::from(2);
             }
         }
+    };
+    // When nothing was found there is no path to name, so the startup line
+    // falls back to the installed default -- which is also the file
+    // resolve_display's refusal tells the operator to create.
+    let (exhibit_config, exhibit_config_path) = match found {
+        Some((cfg, path)) => (Some(cfg), path),
+        None => (None, DEFAULT_EXHIBIT_CONFIG_PATH.to_string()),
     };
 
     let display = match resolve_display(exhibit_config.as_ref(), mode.as_deref(), bench_no_sidecar)

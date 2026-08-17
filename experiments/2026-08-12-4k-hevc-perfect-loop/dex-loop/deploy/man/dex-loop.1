@@ -35,8 +35,12 @@ source (no exhibit config is consulted): omitted there, it defaults to
 \fBauto\fR (the connector's preferred mode).
 .TP
 .BI \-\-exhibit\-config " PATH"
-Path to the exhibit config (F6). Default: \fI/etc/dex/exhibit.json\fR. See
-\fBFILES\fR and \fBdex-exhibit-apply\fR(1).
+Path to the exhibit config (F6). Default: whichever of
+\fI/etc/dex/exhibit.yaml\fR and \fI/etc/dex/exhibit.json\fR exists \(em exactly
+one may, and both present is refused rather than resolved by precedence. The
+file EXTENSION decides the parser: \fB.json\fR is strict JSON,
+\fB.yaml\fR/\fB.yml\fR is YAML, same schema either way. See \fBFILES\fR and
+\fBdex-exhibit-apply\fR(1).
 .TP
 .B \-\-bench\-no\-sidecar
 Run without a sidecar AND without the exhibit config. Requires an explicit
@@ -57,10 +61,12 @@ exact bytes. A missing, stale or mismatched sidecar refuses startup.
 .I /opt/dex/loop.265
 Asset read by the packaged systemd service.
 .TP
-.I /etc/dex/exhibit.json
-F6 exhibit config (a dpkg conffile, so a hand edit survives a package
-upgrade): binds \fBdisplay_mode\fR, and optionally \fBkms_force\fR and
-\fBconnector\fR. Required outside \fB\-\-bench\-no\-sidecar\fR \(em a missing
+.I /etc/dex/exhibit.json \fRor\fI /etc/dex/exhibit.yaml
+F6 exhibit config: binds \fBdisplay_mode\fR, and optionally \fBkms_force\fR and
+\fBconnector\fR. The \fB.json\fR form is what the package ships, as a dpkg
+conffile so a hand edit survives an upgrade; the \fB.yaml\fR form is for hand
+editing on site and takes comments. Exactly one may exist. Required
+outside \fB\-\-bench\-no\-sidecar\fR \(em a missing
 or invalid one refuses startup rather than guessing the display, the same
 fail\-closed contract the sidecar has for frame rate. See
 \fBdex-exhibit-apply\fR(1) for the schema and the migration from the

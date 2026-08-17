@@ -46,17 +46,40 @@ to remember in a comment.
 .SH OPTIONS
 .TP
 .BI \-\-exhibit\-config " PATH"
-Default:
-.IR /etc/dex/exhibit.json .
+Default: whichever of
+.I /etc/dex/exhibit.yaml
+and
+.I /etc/dex/exhibit.json
+exists \(em exactly one may, and both present is refused. This is deliberately
+the same discovery
+.BR dex\-loop (1)
+does, and shares its implementation: a tool whose job is to make the boot
+cmdline agree with the config the player reads would be a drift GENERATOR if
+it could read a different file.
 .TP
 .BI \-\-cmdline\-path " PATH"
 Default:
 .IR /boot/firmware/cmdline.txt .
 Override exists for testing on a bench without touching real boot config.
 .SH EXHIBIT CONFIG SCHEMA
-.I /etc/dex/exhibit.json
-is a dpkg conffile (a hand edit survives a package upgrade) with a STRICT
-schema \(em unlike the F3 asset sidecar, an unknown key is refused rather than
+The exhibit config comes in two formats and
+.B the file extension decides which:
+.B .json
+is strict JSON (what the package ships, as a dpkg conffile so a hand edit
+survives an upgrade),
+.BR .yaml / .yml
+is YAML (for hand editing on site \(em it takes comments). The schema is
+identical; only the parser differs. YAML is a superset of JSON, so a
+.B .json
+file containing YAML is REFUSED rather than quietly accepted: the extension is
+a promise to
+.BR jq (1)
+and every other consumer about what the bytes are. Strict JSON inside a
+.B .yaml
+file is fine, since it is valid YAML.
+.PP
+Either way the schema is STRICT \(em unlike the F3 asset sidecar, an unknown
+key is refused rather than
 ignored, because this file has no independent producer to stay compatible
 with: a typo here (\fBkms_forse\fR for \fBkms_force\fR) must be a startup
 refusal, not a silently dropped force.

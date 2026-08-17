@@ -252,23 +252,75 @@ The display mode is a property of the **installation** (the venue's panel), not 
 asset — the same 2160p30 asset plays correctly on a 4K projector and a 1440p desktop
 monitor, and one measured sink (an Elgato Cam Link 4K) advertises 4K30 as its own
 *preferred* EDID timing while the DRM driver still declines to build the mode
-unforced. So the mode lives in `/etc/dex/exhibit.json` — a dpkg **conffile** (a hand
-edit survives a package upgrade), parsed with the same hardened flat-JSON subset
+unforced. So the mode lives in an exhibit config — a dpkg **conffile** (a hand
+edit survives a package upgrade), parsed with the same hardened flat subset
 grammar as the sidecar, but with **unknown keys refused** rather than ignored: this
 file has no independent producer to stay compatible with, so a typo (`kms_forse` for
 `kms_force`) must be a startup refusal, not a silently dropped force.
+
+**Two formats, and the file extension decides which.** `.json` is strict JSON — the
+format the `.deb` ships, and what a machine should write. `.yaml`/`.yml` is YAML, for
+the case this file actually exists to serve: a human editing it in a venue, possibly
+on a phone over SSH, who wants a comment next to the value explaining why this panel
+needs a force.
 
 ```json
 {"display_mode":"3840x2160@30","kms_force":"3840x2160@30","connector":"HDMI-A-1",
  "display":"Elgato Cam Link 4K","venue":"gallery east wall","note":"..."}
 ```
 
+```yaml
+display_mode: 3840x2160@30       # what mpv is asked for
+kms_force:    3840x2160@30       # what the kernel cmdline must carry
+connector:    HDMI-A-1
+display:      Elgato Cam Link 4K
+venue:        gallery east wall
+note:         vc4 builds no 4K mode from this sink's EDID unforced
+```
+
+Both files above mean exactly the same thing, and produce the same struct: only the
+~40 lines that turn text into a key/value list differ, and one shared function does
+every mapping, default and grammar check for both. That is what keeps the formats from
+drifting into two dialects.
+
+**The extension is honoured, not sniffed.** YAML is a superset of JSON, so parsing
+everything with the YAML parser would work — and would be wrong: it would accept
+comments and unquoted keys inside a file named `.json`, and that file would then break
+`jq`, `python -m json.tool`, and every other consumer that trusts the name. An
+extension is a promise about what the bytes are. A `.json` file containing YAML is
+therefore refused, while strict JSON inside a `.yaml` file is fine (it *is* YAML) —
+which is what lets a machine emit one format under either name.
+
+By default the player looks for `/etc/dex/exhibit.yaml`, then `/etc/dex/exhibit.json`.
+**Exactly one may exist.** Both present is refused naming both, rather than resolved by
+precedence — "the other file wins silently" is how someone edits a config all afternoon
+while the player reads a different one, the exact drift F6 exists to end. Point
+`--exhibit-config` at a specific file to override.
+
+So **switching to YAML is two commands**, because the package installs the `.json`:
+
+```bash
+sudoedit /etc/dex/exhibit.yaml      # write it
+sudo rm  /etc/dex/exhibit.json      # remove the shipped one, or startup refuses
+```
+
+The refusal names that second command, so getting it wrong costs one restart, not a
+debugging session.
+
 | key | required | meaning |
 |---|---|---|
 | `display_mode` | yes | `"auto"` or `"WxH@R"` (R a positive INTEGER, same rule as `kms_force` — bench-verified 2026-08-17: mpv's `--drm-mode` rejects a rational refresh at option parse (-7, a guaranteed restart loop) and silently rounds a decimal to the integer vrefresh, so non-integer forms are refused at config parse instead) — what `dex-loop` asks mpv for via `--drm-mode` |
 | `kms_force` | no (default `"none"`) | `"none"` or `"WxH@R"`/`"WxH@RD"` (integer R only — the kernel `video=` grammar has no fractional refresh) — what the kernel cmdline is expected to carry for this connector |
 | `connector` | no (default `"HDMI-A-1"`) | which DRM connector, e.g. `"HDMI-A-2"` |
-| `display`, `venue`, `note` | no | informational, logged verbatim at every start — this is where the *why* that used to live in a `config.txt` comment block belongs now |
+| `display`, `venue`, `note` | no | informational, logged verbatim at every start — this is where the *why* that used to live in a `config.txt` comment block belongs now (in a `.yaml` file, a real comment works too) |
+
+Values are strings or non-negative integers, one level deep, in either format. YAML
+extras that JSON could not express — nested mappings, lists, anchors, `---` multi-doc
+streams — are refused, so a config cannot mean something different depending on which
+extension it was saved under. One YAML-specific note, measured rather than assumed:
+`yaml-rust2` resolves scalars under the **YAML 1.2 core schema**, so only `true`/`false`
+are booleans and the "Norway problem" (`no` → `false`) does not arise here — `kms_force:
+no` arrives as the string `"no"` and is refused by the grammar, naming the valid values.
 
 Outside `--bench-no-sidecar`, a missing or invalid exhibit config refuses startup —
 the same fail-closed contract F3 has for frame rate: a wrong guess plays wrong forever

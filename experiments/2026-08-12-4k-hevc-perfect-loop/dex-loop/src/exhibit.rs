@@ -9,9 +9,9 @@
 //! refuses to build a 4K mode for unforced even though the sink's own EDID
 //! prefers it) and wrong for another (Dell U2719DC, which must NOT carry the
 //! force or it transmits a signal the panel cannot show). So the mode
-//! belongs to an `/etc/dex/exhibit.json` conffile — venue truth, not asset
-//! truth — parsed with the F3 sidecar's own hardened, fail-closed
-//! subset-JSON grammar (`sidecar::parse_flat_json`).
+//! belongs to an `/etc/dex/exhibit.{json,yaml}` conffile — venue truth, not
+//! asset truth — parsed with the F3 sidecar's own hardened, fail-closed flat
+//! subset grammar.
 //!
 //! CORRECTION (2026-08-17): an earlier draft of this doc comment claimed "the
 //! M5 soak played a 2160p30 asset on a 1440p Dell" as field evidence that one
@@ -20,9 +20,21 @@
 //! to mislead a future reader; the Cam-Link-vs-Dell force disagreement above
 //! is real, bench-verified evidence and stands on its own.
 //!
+//! TWO FORMATS, AND THE EXTENSION DECIDES WHICH — see [`ConfigFormat`] for
+//! why that dispatch is a correctness rule and not a convenience. `.json` is
+//! strict JSON (machine-writable, and what the `.deb` ships); `.yaml` is YAML
+//! (comments, no quoting ceremony — this file gets hand-edited in a venue,
+//! possibly on a phone over SSH). The two are the same schema: only the ~40
+//! lines that turn text into a flat key/value list differ, and
+//! [`ExhibitConfig::from_pairs`] validates both.
+//!
 //! Format:
 //!   {"display_mode":"3840x2160@30","kms_force":"3840x2160@30",
 //!    "connector":"HDMI-A-1","display":"...","venue":"...","note":"..."}
+//! or, identically:
+//!   display_mode: 3840x2160@30    # what mpv is asked for
+//!   kms_force: 3840x2160@30       # what the kernel cmdline must carry
+//!   connector: HDMI-A-1
 //! Required: `display_mode`. Optional: `kms_force` (default `"none"`),
 //! `connector` (default `"HDMI-A-1"`), and the informational `display`,
 //! `venue`, `note` strings, journal-logged at startup so the WHY that used to
@@ -56,10 +68,76 @@
 //!   idempotently, preserving every other token untouched.
 
 use crate::sidecar::{parse_flat_json, Value};
+use yaml_rust2::{Yaml, YamlLoader};
 
-/// Default path for the exhibit config, overridable with `--exhibit-config`
-/// for tests and, in principle, an unusual install layout.
+/// Default path for the exhibit config the `.deb` SHIPS, as a dpkg conffile.
+/// JSON rather than YAML because a conffile is a fixed path installed by a
+/// machine: the shipped artifact should be the machine-writable format, and
+/// an operator who prefers YAML replaces it (see
+/// [`DEFAULT_EXHIBIT_CONFIG_PATHS`]) rather than editing what dpkg tracks.
 pub const DEFAULT_EXHIBIT_CONFIG_PATH: &str = "/etc/dex/exhibit.json";
+
+/// Where the player looks when `--exhibit-config` is not given, in order.
+///
+/// YAML first, so an operator who writes `exhibit.yaml` beside the shipped
+/// `exhibit.json` gets what they wrote — the alternative (JSON wins, YAML
+/// ignored) would let someone edit a file for an afternoon while the player
+/// reads a different one, which is the exact "config drift" failure F6 exists
+/// to end. `pick_default_config` refuses outright when both are present, so
+/// "first wins" never silently decides anything: the order only fixes which
+/// name the refusal calls the intended one.
+pub const DEFAULT_EXHIBIT_CONFIG_PATHS: [&str; 2] =
+    ["/etc/dex/exhibit.yaml", "/etc/dex/exhibit.json"];
+
+/// Choose the default config among those that actually exist on disk.
+///
+/// `existing` is the subset of [`DEFAULT_EXHIBIT_CONFIG_PATHS`] that exists,
+/// in that array's order; main.rs does the `Path::exists` calls so this stays
+/// pure and testable without a filesystem.
+///
+/// * exactly one → that one
+/// * none → `None`, and the caller states the "no exhibit config" refusal
+///   (one message, one place — `resolve_display`'s)
+/// * both → **refuse**. Two configs for one player is the same class of fact
+///   as a `--mode` that contradicts the config: there is a real, answerable
+///   question about which the operator meant, and answering it by precedence
+///   would hide it. Deleting the loser is one command; debugging a venue
+///   running yesterday's mode is a day.
+pub fn pick_default_config<'a>(existing: &[&'a str]) -> Result<Option<&'a str>, String> {
+    match existing {
+        [] => Ok(None),
+        [only] => Ok(Some(only)),
+        several => {
+            // Name the LIKELY cause, not just the rule. The overwhelmingly
+            // common way to reach this is switching to YAML: writing
+            // exhibit.yaml leaves the .deb's own exhibit.json conffile sitting
+            // beside it, so the operator did one correct thing and got a
+            // refusal. A message that only restates the invariant would make
+            // that look like a bug in the player.
+            let shipped: Vec<&str> = several
+                .iter()
+                .copied()
+                .filter(|p| p.ends_with(".json"))
+                .collect();
+            let hint = if shipped.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " If you have just switched to YAML, the leftover is the one the package \
+                     installs: sudo rm {}.",
+                    shipped.join(" ")
+                )
+            };
+            Err(format!(
+                "{} exhibit configs exist at once ({}) and nothing here can know which one you \
+                 meant. Keep exactly one — delete or rename the others — or name the intended \
+                 file explicitly with --exhibit-config.{hint}",
+                several.len(),
+                several.join(", ")
+            ))
+        }
+    }
+}
 pub const DEFAULT_CONNECTOR: &str = "HDMI-A-1";
 pub const DEFAULT_KMS_FORCE: &str = "none";
 
@@ -147,6 +225,272 @@ pub fn is_valid_connector(s: &str) -> bool {
     }
 }
 
+/// Which parser reads an exhibit config — decided by the FILE EXTENSION, never
+/// by sniffing the bytes.
+///
+/// YAML is a superset of JSON, so "parse everything as YAML" would pass every
+/// test this file could write and still be wrong: it would accept comments,
+/// anchors and unquoted keys inside a file named `.json`, and that file would
+/// then break `jq`, `python -m json.tool`, and any other consumer that trusts
+/// the name. **An extension is a promise to the rest of the world about what
+/// the bytes are.** Honouring it is the entire reason for offering two formats
+/// instead of one, so the dispatch is here, at the outermost layer, where it
+/// cannot be bypassed by a convenience helper.
+///
+/// Everything after tree-building is shared: both parsers produce the same
+/// `Vec<(String, Value)>` flat map that [`crate::sidecar::parse_flat_json`]
+/// already produces, and [`ExhibitConfig::from_pairs`] does 100% of the
+/// mapping and validation for both. Only the ~40 lines that turn text into
+/// pairs differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFormat {
+    Json,
+    Yaml,
+}
+
+impl ConfigFormat {
+    /// Decide the format from a path's extension, case-insensitively (an
+    /// operator's editor may have written `EXHIBIT.YAML`, and refusing that
+    /// would be pedantry rather than safety — the promise the extension makes
+    /// is the same either way).
+    ///
+    /// An unrecognised or absent extension REFUSES rather than defaulting to
+    /// either parser. Defaulting is how a `.txt` full of YAML ends up being
+    /// read as JSON, or worse, the reverse: silently accepting YAML in a file
+    /// the rest of the toolchain will read as JSON is precisely the failure
+    /// this type exists to make impossible.
+    ///
+    /// Uses `Path::extension` rather than splitting on the last `.`, so a
+    /// DOTFILE named `.json` has no extension and refuses — which is what the
+    /// rest of the world thinks too, and the point of this function is to
+    /// agree with the rest of the world about what a file name means.
+    pub fn from_path(path: &str) -> Result<ConfigFormat, String> {
+        let ext = std::path::Path::new(path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        match ext.as_deref() {
+            Some("json") => Ok(ConfigFormat::Json),
+            Some("yaml") | Some("yml") => Ok(ConfigFormat::Yaml),
+            _ => Err(format!(
+                "exhibit config {path:?}: cannot tell the format from the file name — name it \
+                 .json (strict JSON) or .yaml/.yml (YAML). The extension decides the parser, so \
+                 that whatever else reads this file gets the format its name promises"
+            )),
+        }
+    }
+}
+
+/// Parse `text` as a single flat YAML mapping under the SAME subset grammar
+/// [`crate::sidecar::parse_flat_json`] enforces for JSON — strings and
+/// non-negative integers only, one level deep, no duplicate keys — returning
+/// its key/value pairs in source order.
+///
+/// The subset is not a limitation grudgingly inherited from the JSON side; it
+/// is what keeps the two formats interchangeable. A YAML feature this refuses
+/// (a nested mapping, a list, an anchor) is one that could not be written in
+/// the `.json` form of the same config, and a config whose meaning depends on
+/// which extension it was saved under would defeat the point of supporting
+/// both.
+///
+/// Three YAML-specific hazards, all refused rather than coerced:
+///
+/// * **Booleans.** `display_mode: true` is a boolean, not the string
+///   `"true"`, and refuses with a message naming the quoting fix.
+///
+///   MEASURED, not assumed, because the received wisdom here is wrong for
+///   this library: `yaml-rust2` 0.11 resolves scalars under the **YAML 1.2
+///   core schema**, where ONLY `true`/`false` (any of three casings) are
+///   booleans. The famous "Norway problem" — `no` silently becoming `false` —
+///   is a YAML **1.1** behaviour and does not occur here, so `kms_force: no`
+///   arrives as the string `"no"` and is refused a step later by
+///   [`is_valid_kms_force`]'s grammar, naming the valid values. Both paths
+///   refuse; only the message differs. Pinned by test in both directions, so
+///   a version bump that adopted 1.1 resolution could not slip through.
+/// * **Floats.** `29.97` is `Yaml::Real`. The JSON side already refuses
+///   non-integers, and the bench evidence in [`is_valid_display_mode`] is why:
+///   a decimal refresh silently means its rounded integer.
+/// * **Multiple documents.** A `---`-separated stream has no single answer to
+///   "what is the config", so it refuses instead of taking the first.
+///
+/// Duplicate keys are rejected by `yaml-rust2` itself (its loader errors on
+/// insert rather than last-wins, unlike most YAML libraries) — the one rule
+/// the JSON side had to hand-roll a serde visitor for. Pinned by test, not
+/// assumed: see `yaml_duplicate_key_refused`.
+pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
+    let docs = YamlLoader::load_from_str(text).map_err(|e| format!("exhibit config YAML: {e}"))?;
+    let doc = match docs.len() {
+        // load_from_str returns zero documents for empty or comment-only
+        // input. Treated as a parse failure, not an empty config: a config
+        // that parses to "no keys at all" would then fail on the missing
+        // required key with a message about `display_mode`, burying the real
+        // problem (the file is blank -- truncated write, wrong path, editor
+        // that saved nothing).
+        0 => {
+            return Err(
+                "exhibit config YAML: no document — the file is empty or contains only comments"
+                    .into(),
+            )
+        }
+        1 => &docs[0],
+        n => {
+            return Err(format!(
+                "exhibit config YAML: {n} documents in one file (`---` separators) — an exhibit \
+                 config must be exactly one mapping, since nothing here could say which document \
+                 is the authoritative one"
+            ))
+        }
+    };
+    let map = match doc {
+        Yaml::Hash(h) => h,
+        other => {
+            return Err(format!(
+                "exhibit config YAML: top level is {}, expected a mapping of key: value pairs",
+                yaml_type_name(other)
+            ))
+        }
+    };
+    let mut out = Vec::with_capacity(map.len());
+    for (k, v) in map {
+        let key = match k {
+            Yaml::String(s) => s.clone(),
+            other => {
+                return Err(format!(
+                    "exhibit config YAML: key is {}, expected a string",
+                    yaml_type_name(other)
+                ))
+            }
+        };
+        let value = match v {
+            Yaml::String(s) => Value::Str(s.clone()),
+            // Non-negative only, matching the JSON subset's u64. A negative
+            // number is not merely out of range for these keys, it is out of
+            // range for the FORMAT -- so it refuses here, in the same voice a
+            // `.json` file's `-1` would.
+            Yaml::Integer(i) if *i >= 0 => Value::Num(*i as u64),
+            Yaml::Integer(i) => {
+                return Err(format!(
+                    "exhibit config YAML: key {key:?} has negative value {i} — this format \
+                     carries strings and non-negative integers only"
+                ))
+            }
+            Yaml::Boolean(_) => {
+                return Err(format!(
+                    "exhibit config YAML: key {key:?} resolved to a BOOLEAN — YAML reads bare \
+                     true/false as booleans, not as the text \"true\"/\"false\". Quote the value \
+                     if you meant a string"
+                ))
+            }
+            other => {
+                return Err(format!(
+                    "exhibit config YAML: key {key:?} has a {} value — this format carries \
+                     strings and non-negative integers only, one level deep",
+                    yaml_type_name(other)
+                ))
+            }
+        };
+        out.push((key, value));
+    }
+    Ok(out)
+}
+
+/// Name a `Yaml` node's kind for an error message, in the vocabulary an
+/// operator editing YAML would recognise — not the Rust variant name.
+fn yaml_type_name(y: &Yaml) -> &'static str {
+    match y {
+        Yaml::Real(_) => "a decimal number (this format takes integers only)",
+        Yaml::Integer(_) => "an integer",
+        Yaml::String(_) => "a string",
+        Yaml::Boolean(_) => "a boolean",
+        Yaml::Array(_) => "a list",
+        Yaml::Hash(_) => "a nested mapping",
+        Yaml::Alias(_) => "an alias (`*anchor`)",
+        Yaml::Null => "null (an empty value)",
+        Yaml::BadValue => "unreadable",
+    }
+}
+
+/// Does `p` exist, distinguishing "not there" from "cannot tell"?
+///
+/// `Path::exists()` would be one line, but it maps EVERY error to `false` —
+/// including EACCES on a parent directory. That is the same misreport the F6
+/// review already caught once on the read path (an unreadable config
+/// producing "create this file" for a file the operator can see exists), and
+/// the convenient call would quietly reintroduce it.
+fn config_exists(p: &str) -> Result<bool, String> {
+    match std::fs::metadata(p) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!(
+            "cannot stat {p}: {e} -- this is not \"missing\", it is \"cannot tell\"; check the \
+             permissions on {p} and on every directory above it (the dex user must be able to \
+             traverse them)"
+        )),
+    }
+}
+
+/// Locate, read and parse the exhibit config, returning it with the path it
+/// actually came from. `Ok(None)` means no config exists.
+///
+/// **The one function in this module that touches the filesystem**, and it
+/// earns the exception: WHICH FILE IS THE CONFIG is a policy, and both
+/// binaries that answer it — `dex-loop`, which enforces the config, and
+/// `dex-exhibit-apply`, which reconciles the boot cmdline *to* the config —
+/// must answer it identically. Two copies of this logic would drift, and the
+/// specific way they would drift is that the apply tool writes a cmdline for
+/// one file while the player reads another: F6's own failure mode, produced by
+/// F6's own implementation. (The module's testability rule is about libmpv and
+/// real DRM, not about `stat` — `defaults` is injectable precisely so this is
+/// testable against a temp directory.)
+///
+/// `Ok(None)` is deliberately NOT an error: [`resolve_display`] is the single
+/// place that states the "no exhibit config" refusal, mirroring how
+/// `sidecar::resolve_fps` states the analogous "no sidecar" one. Every OTHER
+/// failure is stated here, because each is a distinct operational fact with a
+/// distinct repair.
+pub fn load_exhibit_config(
+    override_path: Option<&str>,
+    defaults: &[&str],
+) -> Result<Option<(ExhibitConfig, String)>, String> {
+    let path = match override_path {
+        // An EXPLICITLY NAMED file that is not there is not the same fact as
+        // "no config was ever installed", and must not borrow the latter's
+        // message: "create /etc/dex/exhibit.json" is actively wrong advice for
+        // an operator who just told us to read something else.
+        Some(p) => {
+            if !config_exists(p)? {
+                return Err(format!(
+                    "--exhibit-config {p:?}: no such file. (This is the explicitly named path; \
+                     drop --exhibit-config to use the installed default.)"
+                ));
+            }
+            p.to_string()
+        }
+        None => {
+            let mut existing = Vec::new();
+            for p in defaults {
+                if config_exists(p)? {
+                    existing.push(*p);
+                }
+            }
+            match pick_default_config(&existing)? {
+                Some(p) => p.to_string(),
+                None => return Ok(None),
+            }
+        }
+    };
+    let format = ConfigFormat::from_path(&path)?;
+    // Reaching this read means the file existed a moment ago, so NotFound is
+    // no longer the expected miss -- every error here is a real one.
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "cannot read {path}: {e} -- the file exists but is not readable; check its \
+             owner/permissions (the dex user must be able to read it)"
+        )
+    })?;
+    let cfg = ExhibitConfig::parse(&text, format).map_err(|e| format!("{path}: {e}"))?;
+    Ok(Some((cfg, path)))
+}
+
 /// A parsed, validated exhibit config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExhibitConfig {
@@ -159,16 +503,43 @@ pub struct ExhibitConfig {
 }
 
 impl ExhibitConfig {
-    /// Parse and validate an exhibit config's JSON text. Fail-closed, same
-    /// theory as the F3 sidecar: an unparseable exhibit config and a missing
-    /// one are the same operational fact — both refuse rather than run on a
-    /// display nobody stated.
+    /// Parse and validate an exhibit config, with `format` deciding the
+    /// parser. Fail-closed, same theory as the F3 sidecar: an unparseable
+    /// exhibit config and a missing one are the same operational fact — both
+    /// refuse rather than run on a display nobody stated.
+    ///
+    /// Callers get `format` from [`ConfigFormat::from_path`], never from the
+    /// bytes: see that type's docs for why sniffing would be wrong even though
+    /// it would always work.
+    pub fn parse(text: &str, format: ConfigFormat) -> Result<ExhibitConfig, String> {
+        match format {
+            ConfigFormat::Json => Self::from_json(text),
+            ConfigFormat::Yaml => Self::from_yaml(text),
+        }
+    }
+
+    /// Parse and validate an exhibit config's **strict JSON** text.
+    pub fn from_json(text: &str) -> Result<ExhibitConfig, String> {
+        Self::from_pairs(parse_flat_json(text).map_err(|e| format!("exhibit config JSON: {e}"))?)
+    }
+
+    /// Parse and validate an exhibit config's **YAML** text.
+    pub fn from_yaml(text: &str) -> Result<ExhibitConfig, String> {
+        Self::from_pairs(parse_flat_yaml(text)?)
+    }
+
+    /// Map a parsed flat key/value tree onto the struct, and validate it.
+    ///
+    /// **This is the whole schema, and both formats reach it unchanged.** The
+    /// two parsers above differ only in how text becomes `kv`; every key name,
+    /// default, grammar check and error message lives here exactly once, so a
+    /// `.json` and a `.yaml` file expressing the same config cannot diverge in
+    /// meaning or in what they refuse.
     ///
     /// UNLIKE the sidecar, unknown keys are refused (module docs above) —
     /// this is the one place this parser's contract deliberately differs
     /// from `Sidecar::from_json`'s.
-    pub fn from_json(text: &str) -> Result<ExhibitConfig, String> {
-        let kv = parse_flat_json(text).map_err(|e| format!("exhibit config JSON: {e}"))?;
+    fn from_pairs(kv: Vec<(String, Value)>) -> Result<ExhibitConfig, String> {
         let mut display_mode = None;
         let mut kms_force = None;
         let mut connector = None;
@@ -947,5 +1318,322 @@ mod tests {
     #[test]
     fn reconcile_rejects_an_invalid_kms_force() {
         assert!(reconcile_cmdline("console=ttyS0", "HDMI-A-1", "banana").is_err());
+    }
+
+    // ---- the format dispatch -------------------------------------------
+    //
+    // The rule under test is "the extension decides", so these check the
+    // DISPATCH, not the parsers. The parsers get their own sections below.
+
+    #[test]
+    fn extension_decides_the_parser() {
+        assert_eq!(
+            ConfigFormat::from_path("/etc/dex/exhibit.json").unwrap(),
+            ConfigFormat::Json
+        );
+        assert_eq!(
+            ConfigFormat::from_path("/etc/dex/exhibit.yaml").unwrap(),
+            ConfigFormat::Yaml
+        );
+        assert_eq!(
+            ConfigFormat::from_path("/etc/dex/exhibit.yml").unwrap(),
+            ConfigFormat::Yaml
+        );
+    }
+
+    #[test]
+    fn extension_match_is_case_insensitive() {
+        assert_eq!(
+            ConfigFormat::from_path("/tmp/EXHIBIT.JSON").unwrap(),
+            ConfigFormat::Json
+        );
+        assert_eq!(
+            ConfigFormat::from_path("/tmp/Exhibit.Yaml").unwrap(),
+            ConfigFormat::Yaml
+        );
+    }
+
+    #[test]
+    fn unknown_or_absent_extension_refuses_rather_than_defaulting() {
+        for p in [
+            "/etc/dex/exhibit",     // no extension at all
+            "/etc/dex/exhibit.txt", // an extension, but not one of ours
+            "/etc/dex/.json",       // a DOTFILE named .json -- no extension
+            "/etc/dex/exhibit.json.bak", // the backup, not the config
+        ] {
+            let e = ConfigFormat::from_path(p).unwrap_err();
+            assert!(e.contains(".json") && e.contains(".yaml"), "{p}: {e}");
+        }
+    }
+
+    /// THE point of the whole dispatch: YAML syntax inside a file named
+    /// `.json` must be refused, even though a YAML parser would accept it
+    /// happily. A `.json` file that only `dex-loop` can read is a broken
+    /// promise to `jq` and everything else downstream.
+    #[test]
+    fn yaml_syntax_in_a_json_file_is_refused() {
+        let yaml_text = "display_mode: 3840x2160@30\nkms_force: none\n";
+        // The YAML parser accepts it, proving the input is valid YAML...
+        assert!(ExhibitConfig::parse(yaml_text, ConfigFormat::Yaml).is_ok());
+        // ...and the JSON parser must still refuse it under a .json name.
+        assert!(ExhibitConfig::parse(yaml_text, ConfigFormat::Json).is_err());
+    }
+
+    /// The converse, which must NOT be an error: JSON is a subset of YAML, so
+    /// a machine that writes strict JSON into a `.yaml` file still parses.
+    /// This is what lets an ingest tool emit one format for both names.
+    #[test]
+    fn json_text_parses_under_the_yaml_parser_too() {
+        let json_text = r#"{"display_mode":"3840x2160@30","kms_force":"none"}"#;
+        let as_json = ExhibitConfig::parse(json_text, ConfigFormat::Json).unwrap();
+        let as_yaml = ExhibitConfig::parse(json_text, ConfigFormat::Yaml).unwrap();
+        assert_eq!(as_json, as_yaml);
+    }
+
+    /// Equivalence: the same config in either format produces the same
+    /// struct, byte for byte. This is the test that would fail first if the
+    /// two paths ever stopped sharing `from_pairs`.
+    #[test]
+    fn both_formats_agree_on_a_full_config() {
+        let json = ExhibitConfig::from_json(
+            r#"{"display_mode":"3840x2160@30","kms_force":"3840x2160@30D",
+                "connector":"HDMI-A-2","display":"Elgato Cam Link 4K",
+                "venue":"gallery east wall","note":"vc4 builds no 4K mode unforced"}"#,
+        )
+        .unwrap();
+        let yaml = ExhibitConfig::from_yaml(
+            "# the same thing, with the comments JSON cannot carry\n\
+             display_mode: 3840x2160@30\n\
+             kms_force: 3840x2160@30D    # trailing D: force `connected`\n\
+             connector: HDMI-A-2\n\
+             display: Elgato Cam Link 4K\n\
+             venue: gallery east wall\n\
+             note: vc4 builds no 4K mode unforced\n",
+        )
+        .unwrap();
+        assert_eq!(json, yaml);
+    }
+
+    /// Validation is shared, so a YAML file gets the JSON path's messages --
+    /// including the strict-schema unknown-key refusal that a typo'd
+    /// `kms_forse` must produce in either format.
+    #[test]
+    fn yaml_inherits_the_strict_schema_and_the_grammars() {
+        let e = ExhibitConfig::from_yaml("display_mode: auto\nkms_forse: none\n").unwrap_err();
+        assert!(e.contains("kms_forse") && e.contains("unknown key"), "{e}");
+
+        let e = ExhibitConfig::from_yaml("display_mode: 3840x2160@29.97\n").unwrap_err();
+        assert!(e.contains("invalid display_mode"), "{e}");
+
+        let e = ExhibitConfig::from_yaml("kms_force: none\n").unwrap_err();
+        assert!(e.contains("display_mode"), "{e}");
+    }
+
+    // ---- the YAML subset ------------------------------------------------
+
+    /// yaml-rust2's loader errors on a duplicate key rather than last-wins.
+    /// That is the ONE rule the JSON side needed a hand-written serde visitor
+    /// for, so it is load-bearing that the YAML side gets it for free --
+    /// pinned by test, because it is a property of the dependency and would
+    /// otherwise silently regress on a version bump.
+    #[test]
+    fn yaml_duplicate_key_refused() {
+        let e =
+            ExhibitConfig::from_yaml("display_mode: auto\ndisplay_mode: 3840x2160@30\n").unwrap_err();
+        assert!(e.contains("duplicate"), "{e}");
+    }
+
+    /// A bare `true`/`false` is a boolean, refused with the quoting fix.
+    #[test]
+    fn yaml_bare_true_false_are_booleans_and_refused() {
+        for text in [
+            "display_mode: true\n",
+            "display_mode: auto\nnote: FALSE\n",
+        ] {
+            let e = ExhibitConfig::from_yaml(text).unwrap_err();
+            assert!(e.contains("BOOLEAN"), "{text:?}: {e}");
+            assert!(e.contains("Quote the value"), "{text:?}: {e}");
+        }
+    }
+
+    /// The OTHER half, and the one that is easy to get wrong from memory:
+    /// yaml-rust2 0.11 resolves under the YAML **1.2 core schema**, so the
+    /// "Norway problem" does NOT apply -- `no` stays the string `"no"` and is
+    /// refused by the kms_force GRAMMAR, not by the boolean branch. Asserted
+    /// on the message so that a future version adopting 1.1 resolution (which
+    /// would make `kms_force: no` mean `false`) fails here rather than
+    /// changing what a deployed config means.
+    #[test]
+    fn yaml_bare_no_stays_a_string_under_the_1_2_core_schema() {
+        let e = ExhibitConfig::from_yaml("display_mode: auto\nkms_force: no\n").unwrap_err();
+        assert!(
+            e.contains("invalid kms_force \"no\""),
+            "expected the grammar refusal for the STRING \"no\", not a boolean one: {e}"
+        );
+        assert!(!e.contains("BOOLEAN"), "{e}");
+        // ...and stating it properly is the fix.
+        let ok = ExhibitConfig::from_yaml("display_mode: auto\nkms_force: none\n").unwrap();
+        assert_eq!(ok.kms_force, "none");
+    }
+
+    #[test]
+    fn yaml_nesting_lists_and_null_are_refused() {
+        let nested = ExhibitConfig::from_yaml("display_mode: auto\nnote:\n  a: b\n").unwrap_err();
+        assert!(nested.contains("nested mapping"), "{nested}");
+        let list = ExhibitConfig::from_yaml("display_mode: auto\nnote:\n  - a\n").unwrap_err();
+        assert!(list.contains("a list"), "{list}");
+        let null = ExhibitConfig::from_yaml("display_mode: auto\nnote:\n").unwrap_err();
+        assert!(null.contains("null"), "{null}");
+    }
+
+    #[test]
+    fn yaml_multiple_documents_refused_rather_than_taking_the_first() {
+        let e = ExhibitConfig::from_yaml(
+            "display_mode: auto\n---\ndisplay_mode: 3840x2160@30\n",
+        )
+        .unwrap_err();
+        assert!(e.contains("2 documents"), "{e}");
+    }
+
+    #[test]
+    fn yaml_empty_or_comment_only_says_so_rather_than_blaming_display_mode() {
+        for text in ["", "   \n", "# just a comment\n"] {
+            let e = ExhibitConfig::from_yaml(text).unwrap_err();
+            assert!(e.contains("no document"), "{text:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn yaml_top_level_scalar_or_list_refused() {
+        let e = ExhibitConfig::from_yaml("just a string\n").unwrap_err();
+        assert!(e.contains("top level"), "{e}");
+        let e = ExhibitConfig::from_yaml("- a\n- b\n").unwrap_err();
+        assert!(e.contains("top level") && e.contains("a list"), "{e}");
+    }
+
+    /// An integer VALUE parses (the shared mapper then refuses it for these
+    /// particular keys, in the same words the JSON path uses) -- but a
+    /// NEGATIVE one is out of range for the format itself.
+    #[test]
+    fn yaml_integers_follow_the_json_subset() {
+        let e = ExhibitConfig::from_yaml("display_mode: 30\n").unwrap_err();
+        assert!(e.contains("display_mode must be a string"), "{e}");
+        let e = ExhibitConfig::from_yaml("display_mode: auto\nnote: -1\n").unwrap_err();
+        assert!(e.contains("negative"), "{e}");
+    }
+
+    // ---- default-config discovery ---------------------------------------
+
+    #[test]
+    fn one_default_config_is_picked_none_is_none() {
+        assert_eq!(pick_default_config(&[]).unwrap(), None);
+        assert_eq!(
+            pick_default_config(&["/etc/dex/exhibit.yaml"]).unwrap(),
+            Some("/etc/dex/exhibit.yaml")
+        );
+        assert_eq!(
+            pick_default_config(&["/etc/dex/exhibit.json"]).unwrap(),
+            Some("/etc/dex/exhibit.json")
+        );
+    }
+
+    /// Two configs at once refuses, naming both -- never "YAML wins".
+    /// Precedence here would let an operator edit one file all afternoon
+    /// while the player reads the other.
+    #[test]
+    fn two_default_configs_refuse_naming_both() {
+        let e = pick_default_config(&DEFAULT_EXHIBIT_CONFIG_PATHS).unwrap_err();
+        assert!(e.contains("exhibit.yaml") && e.contains("exhibit.json"), "{e}");
+        assert!(e.contains("--exhibit-config"), "{e}");
+        // The likely cause, named: writing exhibit.yaml leaves the shipped
+        // conffile beside it, so the operator did the documented thing and
+        // still got refused. Without this the message reads like a bug.
+        assert!(
+            e.contains("sudo rm /etc/dex/exhibit.json"),
+            "must name the leftover conffile as the fix: {e}"
+        );
+    }
+
+    /// ...and that hint is CONDITIONAL, not glued on: a collision between two
+    /// non-shipped files must not tell the operator to remove a package file
+    /// that has nothing to do with it.
+    #[test]
+    fn the_leftover_conffile_hint_only_appears_when_a_json_is_involved() {
+        let e = pick_default_config(&["/srv/a.yaml", "/srv/b.yml"]).unwrap_err();
+        assert!(!e.contains("sudo rm"), "{e}");
+    }
+
+    // ---- load_exhibit_config, against a real temp directory --------------
+    //
+    // `defaults` is injectable, so the discovery policy both binaries share is
+    // testable here rather than only through the CLI on a machine that happens
+    // to have /etc/dex.
+
+    /// A unique temp path per call site, so tests never collide with each
+    /// other or with a previous run's leftovers.
+    fn tmp(name: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("dex-exhibit-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name).to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn load_finds_the_yaml_default_and_parses_it_as_yaml() {
+        let y = tmp("load-yaml.yaml");
+        std::fs::write(&y, "display_mode: 3840x2160@30 # venue panel\n").unwrap();
+        let (cfg, path) = load_exhibit_config(None, &[&y, &tmp("load-yaml-absent.json")])
+            .unwrap()
+            .unwrap();
+        assert_eq!(cfg.display_mode, "3840x2160@30");
+        assert_eq!(path, y);
+        let _ = std::fs::remove_file(&y);
+    }
+
+    #[test]
+    fn load_returns_none_when_no_default_exists() {
+        let found = load_exhibit_config(
+            None,
+            &[&tmp("load-absent.yaml"), &tmp("load-absent.json")],
+        )
+        .unwrap();
+        assert!(found.is_none(), "{found:?}");
+    }
+
+    /// The whole reason both binaries call this: with both names present it
+    /// refuses instead of picking, so `dex-exhibit-apply` can never reconcile
+    /// the cmdline against a file `dex-loop` will not read.
+    #[test]
+    fn load_refuses_when_both_defaults_exist() {
+        let (j, y) = (tmp("load-both.json"), tmp("load-both.yaml"));
+        std::fs::write(&j, r#"{"display_mode":"auto"}"#).unwrap();
+        std::fs::write(&y, "display_mode: auto\n").unwrap();
+        let e = load_exhibit_config(None, &[&y, &j]).unwrap_err();
+        assert!(e.contains("2 exhibit configs"), "{e}");
+        let _ = std::fs::remove_file(&j);
+        let _ = std::fs::remove_file(&y);
+    }
+
+    /// An explicitly named missing file must NOT borrow the "no exhibit
+    /// config, create the default" message -- the operator named a different
+    /// path, and telling them to create /etc/dex/exhibit.json is wrong advice.
+    #[test]
+    fn load_names_the_explicit_path_when_it_is_missing() {
+        let p = tmp("load-explicitly-absent.json");
+        let _ = std::fs::remove_file(&p);
+        let e = load_exhibit_config(Some(&p), &DEFAULT_EXHIBIT_CONFIG_PATHS).unwrap_err();
+        assert!(e.contains(&p), "{e}");
+        assert!(!e.contains("Create /etc/dex"), "{e}");
+    }
+
+    /// A config whose name promises neither format refuses at the dispatch,
+    /// before any parse is attempted -- even though its CONTENTS would parse
+    /// perfectly well as either.
+    #[test]
+    fn load_refuses_an_unrecognised_extension_even_with_valid_contents() {
+        let p = tmp("load-nameless.conf");
+        std::fs::write(&p, r#"{"display_mode":"auto"}"#).unwrap();
+        let e = load_exhibit_config(Some(&p), &DEFAULT_EXHIBIT_CONFIG_PATHS).unwrap_err();
+        assert!(e.contains("cannot tell the format"), "{e}");
+        let _ = std::fs::remove_file(&p);
     }
 }

@@ -1015,13 +1015,15 @@ fn force_recovery_survives_against_real_mpv() {
 // messages. All of them stay inside this file's mandatory `vo=null --opt
 // vid=no --opt aid=no` rule.
 
-/// No `/etc/dex/exhibit.json`-equivalent supplied (no `--exhibit-config`
-/// override points anywhere, and the real default path almost certainly does
-/// not exist on a CI/dev host) and no `--bench-no-sidecar`: refused before
-/// even the asset path is looked at. Pins the exact "no exhibit config"
-/// message from `exhibit::resolve_display`, and — the load-bearing part —
-/// that it fires INSTEAD OF the missing-file message a pre-F6 build would
-/// have printed for this same invocation.
+/// An `--exhibit-config` naming a file that is not there, and no
+/// `--bench-no-sidecar`: refused before even the asset path is looked at, and
+/// refused NAMING THE PATH THE OPERATOR GAVE.
+///
+/// The naming half is the point. Until the dual-format work this borrowed
+/// `resolve_display`'s "no exhibit config — create /etc/dex/exhibit.json"
+/// message, which is wrong advice for someone who just pointed the flag
+/// somewhere else: they would create a file the run they are debugging does
+/// not read. Same class as the EACCES fix on the read path.
 #[test]
 fn missing_exhibit_config_refused_exit_2_before_the_asset_is_read() {
     let improbable = temp_path("f6-default-exhibit-config-must-not-exist.json");
@@ -1036,8 +1038,8 @@ fn missing_exhibit_config_refused_exit_2_before_the_asset_is_read() {
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("no exhibit config"),
-        "stderr: {}",
+        r.stderr.contains("f6-default-exhibit-config-must-not-exist.json"),
+        "the refusal must name the path that was actually given: {}",
         r.stderr
     );
     // The load-bearing negative: the asset gate must NOT have run yet.
@@ -1047,6 +1049,63 @@ fn missing_exhibit_config_refused_exit_2_before_the_asset_is_read() {
          at, but the asset-missing message appeared too: {}",
         r.stderr
     );
+}
+
+// The complementary case -- NO --exhibit-config and no installed default, so
+// resolve_display's "no exhibit config, create the shipped one" message fires
+// -- is deliberately NOT tested here. It would depend on the HOST lacking
+// /etc/dex, which is true on the Mac and false on the Pi (where the .deb
+// installs exactly that file), so it would assert one thing in development and
+// silently something else on the device -- the vacuous-check class this file
+// has been bitten by before. It is covered where it is host-independent:
+// `load_returns_none_when_no_default_exists` and `resolve_display`'s own unit
+// tests in src/exhibit.rs.
+
+/// A YAML exhibit config drives the real binary end to end — the same gate
+/// order, from a `.yaml` file. Pins that the format dispatch is wired into
+/// main.rs and not merely unit-tested in the library.
+#[test]
+fn yaml_exhibit_config_binds_the_display_like_json_does() {
+    let cfg = temp_path("f6-yaml-exhibit.yaml");
+    std::fs::write(
+        &cfg,
+        "# a venue would really write this\ndisplay_mode: 7680x4320@60\nkms_force: none\n",
+    )
+    .unwrap();
+    let cl = write_no_video_cmdline("f6-yaml-cmdline");
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-yaml.265",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    // Reaching the sysfs pre-flight (which refuses this implausible 8K mode)
+    // proves the YAML parsed, validated, and bound the display: a config that
+    // had failed earlier could not produce THIS message.
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("7680x4320"), "stderr: {}", r.stderr);
+}
+
+/// The dispatch, at the CLI level: YAML syntax inside a `.json` file is
+/// refused rather than quietly accepted by a permissive parser.
+#[test]
+fn yaml_contents_in_a_json_named_config_refused() {
+    let cfg = temp_path("f6-yaml-in-json.json");
+    std::fs::write(&cfg, "display_mode: 3840x2160@30\n").unwrap();
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-yamlinjson.265",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("JSON"), "stderr: {}", r.stderr);
 }
 
 /// An unparseable exhibit config is refused with the specific parse error —

@@ -23,7 +23,10 @@
 //!   exit 2  -- refused: not running as root, an invalid exhibit config, or a
 //!              rewrite that would produce an empty/multi-line cmdline.txt.
 
-use dex_loop::exhibit::{reconcile_cmdline, ExhibitConfig, DEFAULT_EXHIBIT_CONFIG_PATH};
+use dex_loop::exhibit::{
+    load_exhibit_config, reconcile_cmdline, DEFAULT_EXHIBIT_CONFIG_PATH,
+    DEFAULT_EXHIBIT_CONFIG_PATHS,
+};
 
 use std::env;
 use std::fs::{self, File};
@@ -133,15 +136,17 @@ fn usage() -> ! {
     eprintln!(
         "usage: dex-exhibit-apply [--exhibit-config PATH] [--cmdline-path PATH]
 
-Reconciles the kernel cmdline's video=<connector>:<mode> token with
-/etc/dex/exhibit.json's kms_force (F6), idempotently -- every other token,
-its order, and every OTHER connector's video= token are preserved untouched.
+Reconciles the kernel cmdline's video=<connector>:<mode> token with the
+exhibit config's kms_force (F6), idempotently -- every other token, its
+order, and every OTHER connector's video= token are preserved untouched.
 Writes one timestamped backup before any change. Must run as root.
 
-  --exhibit-config PATH   default: {DEFAULT_EXHIBIT_CONFIG_PATH}
+  --exhibit-config PATH   default: whichever of {DEFAULT_EXHIBIT_CONFIG_PATHS:?}
+                          exists (exactly one may; the extension decides the
+                          parser -- .json is strict JSON, .yaml is YAML)
   --cmdline-path PATH     default: {DEFAULT_CMDLINE_PATH}   (test/bench override)
 
-Run this after editing /etc/dex/exhibit.json. It prints REBOOT REQUIRED iff
+Run this after editing the exhibit config. It prints REBOOT REQUIRED iff
 cmdline.txt actually changed -- dex-loop binds the display from the RUNNING
 kernel's /proc/cmdline, not from this file on disk, so an unrebooted change
 has no effect yet and the next start's cmdline gate will say so."
@@ -151,7 +156,9 @@ has no effect yet and the next start's cmdline gate will say so."
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let mut exhibit_config_path = DEFAULT_EXHIBIT_CONFIG_PATH.to_string();
+    // `None` means "discover it" -- not "use the JSON default" -- so this tool
+    // follows the same .json/.yaml discovery dex-loop does.
+    let mut exhibit_config_path: Option<String> = None;
     let mut cmdline_path = DEFAULT_CMDLINE_PATH.to_string();
 
     let mut i = 0;
@@ -160,7 +167,7 @@ fn main() -> ExitCode {
             "--exhibit-config" => {
                 i += 1;
                 let Some(v) = args.get(i) else { usage() };
-                exhibit_config_path = v.clone();
+                exhibit_config_path = Some(v.clone());
             }
             "--cmdline-path" => {
                 i += 1;
@@ -181,20 +188,30 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let config_text = match fs::read_to_string(&exhibit_config_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("error: cannot read {exhibit_config_path}: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let config = match ExhibitConfig::from_json(&config_text) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("error: {exhibit_config_path}: {e}");
-            return ExitCode::from(2);
-        }
-    };
+    // Deliberately the SAME loader dex-loop uses (exhibit::load_exhibit_config),
+    // not a local read: this tool's entire job is to make the boot cmdline
+    // agree with the config the player will read, so reading a different file
+    // than the player does would make it a drift GENERATOR. That includes the
+    // .json/.yaml discovery and the both-exist refusal.
+    let (config, exhibit_config_path) =
+        match load_exhibit_config(exhibit_config_path.as_deref(), &DEFAULT_EXHIBIT_CONFIG_PATHS) {
+            Ok(Some(found)) => found,
+            // Unlike the player, this tool has nothing useful to do without a
+            // config, so "none installed" is a plain refusal here rather than
+            // something deferred to a resolver.
+            Ok(None) => {
+                eprintln!(
+                    "error: no exhibit config found (looked for {}). Create one — the .deb \
+                     ships {DEFAULT_EXHIBIT_CONFIG_PATH} — or name it with --exhibit-config",
+                    DEFAULT_EXHIBIT_CONFIG_PATHS.join(", ")
+                );
+                return ExitCode::from(2);
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+        };
 
     let current = match fs::read_to_string(&cmdline_path) {
         Ok(t) => t,
@@ -203,6 +220,16 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+
+    // Name the file this run is applying FROM, before saying anything about
+    // what it did. With two possible config names and a --exhibit-config
+    // override, "which file did that apply use?" is the first question anyone
+    // debugging a wrong mode asks, and the answer belongs in the output rather
+    // than in a reconstruction from argv.
+    println!(
+        "dex-exhibit-apply: applying {exhibit_config_path} (connector {}, kms_force {})",
+        config.connector, config.kms_force
+    );
 
     let desired = match reconcile_cmdline(&current, &config.connector, &config.kms_force) {
         Ok(d) => d,
