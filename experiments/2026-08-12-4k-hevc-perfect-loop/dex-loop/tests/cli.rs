@@ -218,12 +218,26 @@ fn empty_file_exits_2() {
     assert!(r.stderr.contains("is empty"), "stderr: {}", r.stderr);
 }
 
-#[test]
-fn no_args_exits_2_with_usage() {
-    let r = run_with_deadline(&[], Duration::from_secs(10));
-    assert_eq!(r.exit_code, Some(GATE_EXIT));
-    assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
-}
+// REMOVED 2026-08-17: `no_args_exits_2_with_usage`, which asserted that a bare
+// `dex-loop` prints usage and exits 2.
+//
+// It was correct until F6 moved the asset into the exhibit config. Now
+// `ExecStart=/usr/bin/dex-loop` passes exactly zero arguments, so "no args" is
+// the SHIPPED invocation rather than an operator error -- and this test caught
+// that regression on the Pi within minutes, which it could only ever have done
+// there: the Mac cannot link these targets at all.
+//
+// Not merely inverted to "no args must NOT print usage", because on a card
+// whose config and asset are both complete, a bare run would START PLAYBACK
+// and take DRM master inside a test -- a visible glitch on a device that may
+// be mid-exhibition, and a failing assertion anyway (the harness deadline, not
+// an exit code). A test must not be able to interrupt a show.
+//
+// The property it protected -- a missing positional is not an argv error --
+// is covered host-independently by
+// `no_positional_asset_is_accepted_and_reaches_the_config` below, which
+// supplies its own --exhibit-config and lands on a gate rather than on
+// playback.
 
 /// A `--fps`/`--mode` with no following value used to evaporate silently
 /// (`args.get(i)` -> `None` -> the flag is just dropped) instead of refusing:
