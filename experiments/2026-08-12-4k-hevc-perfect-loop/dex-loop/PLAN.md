@@ -267,15 +267,56 @@ IRAP slice (16–23) before any non-IRAP slice. Refuse otherwise. The F3 hash
 covers truncation exactly; this covers *wrong-but-intact* assets (open GOP, no
 leading IDR) that would break the gaplessness premise.
 
-### F5 — Read-only rootfs + spare card
-Not code. Dozens of mains cuts on a stock ext4 root is the most likely way the
-installation dies permanently, and no `Restart=always` recovers a corrupt SD.
-Overlay FS, swap off, a flashed spare taped to the plinth. Accept volatile logs.
+### F5 — Read-only rootfs + spare card — CLOSED, not needed (Max, 2026-08-17)
 
-### F6 — Baked EDID
-Not code. `drm.edid_firmware=HDMI-A-1:edid/dex.bin` +
+Not code, and not a new risk. **Already proven in production runs**: existing dex
+installations have survived mains-cut cycling on the current image arrangement,
+and neither the new player nor the new OS base changes that exposure. Closing
+rather than re-litigating a question the field has already answered.
+
+The original concern is preserved for context: dozens of mains cuts on a stock
+ext4 root is the most likely way an installation dies permanently, and no
+`Restart=always` recovers a corrupt SD. Overlay FS, swap off, a flashed spare
+taped to the plinth.
+
+**One caveat worth re-checking rather than assuming, if it ever bites.** The
+production evidence comes from *dexOS* images. The M5 bench card is plain Debian
+trixie + this `.deb`, which does **not** inherit dexOS's arrangement. If the
+shipping card stays plain-trixie rather than becoming a trixie dexOS image, the
+"already proven" argument is about a different filesystem setup than the one
+deployed. Not a reason to reopen F5 now; a reason to notice if a card ever comes
+back corrupt.
+
+### F6 — Display mode belongs to the exhibit config (Max, 2026-08-17: DO IT)
+
+**Decision: the target display is part of the "exhibit" configuration.** An
+explicit mode is the default because an exhibition wants stability, and `auto`
+stays available for flexibility (bench work, an unknown venue panel, a swap
+mid-install).
+
+Not code at the KMS layer: `drm.edid_firmware=HDMI-A-1:edid/dex.bin` +
 `video=HDMI-A-1:3840x2160@30D` in `cmdline.txt`, so boot order stops mattering
 at the KMS layer rather than being worked around in userland.
+
+**Why this is not merely boot-order insurance — measured 2026-08-15/16, in both
+directions on one bench:**
+
+- The **Cam Link 4K** advertises `3840x2160@30` as its *preferred detailed
+  timing* (plus CTA VIC 95/94/93 and HDMI VIC 1/2), and `vc4` builds **zero**
+  3840x2160 modes from it. Forced, the identical 297 MHz timing works. So a
+  correct EDID is not sufficient — the driver declines a mode the sink asks for.
+- The **Dell U2719DC** is 2560x1440 and its EDID never mentions 2160. It must
+  **not** carry the force, or the Pi transmits a signal the panel cannot show
+  and it reads as a player fault.
+
+So the same `cmdline.txt` line is correct for one sink and wrong for the other,
+and "remove it as stale" is a change of target rather than cleanup — a mistake
+made and reverted within four hours on 2026-08-15. Hence: **per-exhibit config,
+stated explicitly, not negotiated.**
+
+Current stopgap, which this replaces: a systemd drop-in overriding `--mode`,
+plus a hand-edited `cmdline.txt`, plus a comment block in `config.txt` carrying
+the reasoning. Three places, none of them a config file.
 
 ### F7 — Nits
 Version/git hash in the startup line; heartbeat log every ~10 min (loop count,
@@ -294,7 +335,7 @@ appended if the source checkout has local changes) to
 `~/bench/dex-loop/.dex-build-id` before the rsync. Until that lands, the Pi binary
 still reports `nogit`.
 
-### F8 — On-site photographable failure signal (deferred — device config, needs on-device verification)
+### F8 — On-site photographable failure signal (Max, 2026-08-17: YES, but POST-1.0)
 **Why (gallery-ops review, 2026-08-15):** every refusal this crate can produce — gate
 (exit 2) or runtime (exit 1) — is journal-only. On tty1 there is no getty (conflicted
 away so the player can take DRM) and stderr goes to journald, so on site every one of
