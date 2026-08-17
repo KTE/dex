@@ -37,11 +37,20 @@
 //! that can still hang (`Escalate`'s own `eprintln!` before `exit(1)`, or a
 //! hang anywhere else in the loop body), STOPS pinging entirely — because
 //! the ping sits at the very end of a duty cycle that a genuine hang, by
-//! definition, never completes again. There is no way to keep the process
-//! "looking alive" to this criterion while the display stays black:
-//! either progress continues (pings continue, correctly, nothing to do), or
-//! the duty cycle stops completing (pings stop, watchdog fires), with no
-//! third state.
+//! definition, never completes again. Within this hazard class — a wedged
+//! mpv core or a hung event thread — there is no third state: either
+//! progress continues (pings continue, correctly, nothing to do), or the
+//! duty cycle stops completing (pings stop, watchdog fires). The loop
+//! cannot both hang and ping.
+//!
+//! Scope, stated precisely: that guarantee covers wedged-core/wedged-thread
+//! failures ONLY. A player whose `time-pos` keeps advancing while no photons
+//! reach the wall — HDMI signal lost mid-run, panel powered off, the plane
+//! presenting to a disconnected sink — reads as healthy to F1 (decode and
+//! present proceed internally) and therefore pings forever. No in-process
+//! liveness criterion can see that; it is a signal-level failure, explicitly
+//! out of F10's scope — see PLAN.md's F10 entry ("residual states") for the
+//! record and a possible future closure (DRM connector-status polling).
 //!
 //! # Gate placement: the ping is emitted OUTSIDE the health `Option` gate
 //!

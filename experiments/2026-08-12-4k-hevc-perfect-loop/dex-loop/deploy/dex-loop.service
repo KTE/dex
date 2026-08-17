@@ -84,6 +84,15 @@ NotifyAccess=main
 # point, which for `Type=simple` is exec of ExecStart) -- so this wait, however
 # long, consumes none of the 180s budget above. Verified on the Pi, not just
 # inferred: see PLAN.md's F10 entry for the bench unit that pins this.
+#
+# TimeoutStartSec MUST exceed dex-wait-hdmi's own bounded wait (DEX_HDMI_TIMEOUT,
+# default 120s) with margin. Without this line, Debian's DefaultTimeoutStartSec=
+# (90s) applies to ExecStartPre: a projector needing 91-120s would get the script
+# SIGTERMed at ~90s with a generic "start-pre operation timed out" -- the script's
+# own purpose-written "no connected HDMI connector after 120s" diagnostic would be
+# dead code under this unit, and every retry would wait 30s less than the script
+# intends. If DEX_HDMI_TIMEOUT is ever raised, raise this with it.
+TimeoutStartSec=150
 ExecStartPre=/usr/bin/dex-wait-hdmi
 # No --fps here: the frame rate comes from /opt/dex/loop.265.json, written at
 # ingest and hash-bound to the asset. Deploy BOTH files. A missing or stale

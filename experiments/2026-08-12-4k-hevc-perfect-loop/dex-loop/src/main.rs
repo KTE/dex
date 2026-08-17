@@ -449,17 +449,80 @@ struct WatchdogRuntime {
     pings_dropped: u64,
 }
 
+/// One policy for every "resolve() said Armed but the ping socket cannot be
+/// established" arm of [`setup_watchdog`]. Which way it goes depends on
+/// whether systemd's kill timer is demonstrably running (`$WATCHDOG_USEC`
+/// present -- systemd exports it exactly when `WatchdogSec=` is configured):
+///
+/// - **Timer armed: `exit(1)` now.** Nothing this process logs can disarm
+///   the timer on systemd's side -- "running without pings" under an armed
+///   `WatchdogSec=` means being SIGABRT-killed every window, forever (a ~2 s
+///   black hiccup every 3 min under the shipped unit), while a
+///   "watchdog DISABLED" journal line actively hides the cause of every one
+///   of those kills. `Restart=always` + `RestartSec=2` retries in seconds,
+///   and this failure class (address resolution, fd exhaustion,
+///   `set_nonblocking`) is transient -- a clean fast retry strictly beats a
+///   `WatchdogSec`-cadence kill loop with a lying journal line.
+/// - **No timer: run without pings.** Nothing will kill us for not pinging,
+///   so pings are genuinely pointless; be loud once and play the asset.
+fn watchdog_setup_failed(
+    cause: &str,
+    kill_timer_armed: bool,
+    window_secs: Option<u64>,
+) -> Option<WatchdogRuntime> {
+    if kill_timer_armed {
+        let window =
+            window_secs.map(|w| format!("{w}s")).unwrap_or_else(|| "WatchdogSec".to_string());
+        eprintln!(
+            "error: dex-loop: watchdog: {cause} -- systemd's WatchdogSec timer IS armed \
+             ($WATCHDOG_USEC is set) and cannot be disarmed from inside this process: without \
+             pings, systemd would SIGABRT this process every {window} while it plays normally. \
+             Exiting now so Restart= retries cleanly instead."
+        );
+        std::process::exit(1);
+    }
+    eprintln!(
+        "warning: dex-loop: watchdog: {cause} -- no WatchdogSec timer is armed ($WATCHDOG_USEC \
+         absent), so pings would prove nothing; running WITHOUT watchdog pings for this run"
+    );
+    None
+}
+
 /// Resolve the systemd watchdog handshake and, if armed, open the
-/// non-blocking socket it needs. Every failure along the way (address
-/// resolution, socket creation, `set_nonblocking`) DISABLES the watchdog for
-/// this run rather than aborting startup -- a systemd unit misconfigured in
-/// a way this program cannot fix is not a reason to refuse playing the
-/// asset; per principle 2, it is loud instead, once, here.
+/// non-blocking socket it needs. Failures along the way (address resolution,
+/// socket creation, `set_nonblocking`) follow [`watchdog_setup_failed`]'s
+/// policy: they only downgrade to "no pings" when systemd's own kill timer
+/// is NOT running -- when it is, no in-process downgrade exists (the timer
+/// keeps counting regardless of what we log), so the process exits for a
+/// clean fast retry rather than limping into a guaranteed
+/// `WatchdogSec`-cadence kill loop.
 fn setup_watchdog(tick_secs: u64) -> Option<WatchdogRuntime> {
-    let decision = watchdog::resolve(&WatchdogEnv::from_process_env(), std::process::id(), tick_secs);
+    let env = WatchdogEnv::from_process_env();
+    // systemd exports $WATCHDOG_USEC exactly when WatchdogSec= is configured
+    // on the unit -- its presence means a kill timer is counting RIGHT NOW,
+    // no matter what this process does or logs about its own pings.
+    let kill_timer_armed = env.watchdog_usec.is_some();
+    let decision = watchdog::resolve(&env, std::process::id(), tick_secs);
     let (addr, window_secs, warning) = match decision {
         WatchdogDecision::Inert(reason) => {
             eprintln!("dex-loop: watchdog: inert ({reason})");
+            // The pid-mismatch arm is a NORMAL inert condition when no timer
+            // is armed -- but under an armed WatchdogSec= it is a death
+            // sentence on a schedule: systemd expects pings from the unit's
+            // main pid, this process (rightly) refuses to ping under someone
+            // else's identity, and the timer fires every window regardless.
+            // Say so, so the journal explains the SIGABRT kills that follow
+            // (e.g. a future edit wrapping ExecStart in a shell).
+            if kill_timer_armed
+                && matches!(reason, watchdog::InertReason::WatchdogPidMismatch { .. })
+            {
+                eprintln!(
+                    "warning: dex-loop: watchdog: $WATCHDOG_USEC is set, so systemd's WatchdogSec \
+                     timer IS armed and expects pings from the unit's MAIN pid -- with none \
+                     arriving, systemd will kill this process every watchdog window; expect a \
+                     kill/restart loop until the unit is fixed (is ExecStart wrapped in a shell?)"
+                );
+            }
             return None;
         }
         WatchdogDecision::Armed { addr, window_secs, warning } => (addr, window_secs, warning),
@@ -468,21 +531,21 @@ fn setup_watchdog(tick_secs: u64) -> Option<WatchdogRuntime> {
     let sockaddr = match watchdog::socket_addr(&addr) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!(
-                "warning: dex-loop: watchdog: cannot resolve $NOTIFY_SOCKET address ({addr:?}): \
-                 {e} -- watchdog DISABLED for this run"
+            return watchdog_setup_failed(
+                &format!("cannot resolve $NOTIFY_SOCKET address ({addr:?}): {e}"),
+                kill_timer_armed,
+                window_secs,
             );
-            return None;
         }
     };
     let socket = match UnixDatagram::unbound() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "warning: dex-loop: watchdog: UnixDatagram::unbound failed: {e} -- watchdog \
-                 DISABLED for this run"
+            return watchdog_setup_failed(
+                &format!("UnixDatagram::unbound failed: {e}"),
+                kill_timer_armed,
+                window_secs,
             );
-            return None;
         }
     };
     // LOAD-BEARING: see dex_loop::watchdog's module doc §"no new blocking
@@ -490,11 +553,11 @@ fn setup_watchdog(tick_secs: u64) -> Option<WatchdogRuntime> {
     // way for THIS feature to hang the event thread, exactly the class of
     // bug F9 already had to fix once for the heartbeat.
     if let Err(e) = socket.set_nonblocking(true) {
-        eprintln!(
-            "warning: dex-loop: watchdog: set_nonblocking failed: {e} -- watchdog DISABLED for \
-             this run (refusing to arm a socket that could block the event thread)"
+        return watchdog_setup_failed(
+            &format!("set_nonblocking failed: {e} (refusing a socket that could block the event thread)"),
+            kill_timer_armed,
+            window_secs,
         );
-        return None;
     }
 
     let window = window_secs.map(|w| format!("{w}s")).unwrap_or_else(|| "unknown".to_string());
@@ -1202,8 +1265,11 @@ fn main() -> ExitCode {
         // that) or -- on the one path that can still hang, e.g. `eprintln!`
         // against a wedged journald on the Escalate arm itself, see that
         // arm's own comment below -- simply stopping, which is exactly what
-        // the watchdog is here to catch. There is no way to keep pinging
-        // while the display stays black.
+        // the watchdog is here to catch. The loop cannot both hang and keep
+        // pinging. (Scope: that covers wedged-core/wedged-thread failures
+        // only -- a signal-level failure where time-pos advances with no
+        // photons on the wall pings forever, out of F10's scope by design;
+        // see dex_loop::watchdog's module doc, "Scope, stated precisely".)
         if last_health_check.elapsed().as_secs() >= HEALTH_CHECK_SECS {
             last_health_check = Instant::now();
             if let Some(h) = health.as_mut() {

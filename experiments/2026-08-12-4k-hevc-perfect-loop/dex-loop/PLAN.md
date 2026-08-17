@@ -549,7 +549,9 @@ ticks) → ≤3 budgeted recoveries (~20 s each) → `Escalate` → `exit(1)`. A
 therefore emits a BOUNDED number of pings and then either exits (tier 1's
 exit-code path already covers that) or, on the one path that can still hang
 (e.g. the `eprintln!` before `Escalate`'s own `exit(1)`), simply stops pinging —
-which is exactly what the watchdog is here to catch. There is no third state.
+which is exactly what the watchdog is here to catch. Within the
+wedged-core/wedged-thread hazard class there is no third state (but see
+"residual states", below — the claim is deliberately NOT broader than that).
 The ping deliberately sits OUTSIDE the `if let Some(h) = health` gate: if the
 `time-pos` subscription itself failed to register (F1 disabled, near-zero
 probability), stopping pings there too would convert a merely-degraded-but-alive
@@ -657,6 +659,51 @@ feeds the watchdog.
 **`.deb` impact: none.** No new crate, no new soname, `$auto`'s derived `Depends`
 unchanged. The only shipped change is `deploy/dex-loop.service` gaining
 `WatchdogSec=180`/`NotifyAccess=main`.
+
+**Residual states (2026-08-17, from adversarial review — recorded, not bugs):**
+two states satisfy the watchdog while the wall is black, and the liveness claim
+above is scoped to exclude them on purpose:
+
+1. **Health=None degraded mode** (the `time-pos` subscription failed at
+   startup): the ping deliberately certifies only "the event loop iterates" —
+   a subsequently display-wedged player pings forever. Documented and argued
+   above (the alternative is a guaranteed kill loop); the cost is that the
+   criterion's strength silently depends on an `mpv_observe_property` return
+   code from weeks earlier, with the startup warning as the only trace.
+2. **Signal-level failure** — HDMI signal lost mid-run, panel powered off,
+   plane presenting to a disconnected sink: `time-pos` keeps advancing, F1
+   reads Healthy, pings continue forever, wall stays black. No in-process
+   criterion can see this. **Explicitly out of scope** for F10. Possible
+   future closure, cheap if ever wanted: poll DRM connector `status` from the
+   health tick — the same sysfs files F6's pre-flight and `dex-wait-hdmi`
+   already read.
+
+**Caveat on evidence item 3 (same review):** the "healthy run" proof used
+`--opt vo=null` on a 1.3 MB 1080p card — the HEVC decode was real but the
+DRM/KMS output path was NOT exercised under an armed watchdog (the 25.5 h soak
+conversely ran the full VO path with no watchdog; that binary predates F10).
+"Watchdog armed + real KMS output" belongs in the next long soak — which must
+also be the first soak of F6+F10 TOGETHER: as of 2026-08-17 no build anywhere
+contains both (F6's working implementation is parked on
+`experiment/4k-hevc-perfect-loop-f6-json-poc`, branched before F10, and the
+`.deb` on dexpi4 is that F6 build, watchdog-less; both lineages edit the same
+`[Service]` region of `deploy/dex-loop.service`, so the merge must be done
+attentively — a careless one could drop `WatchdogSec=180` or the
+exhibit-config comments).
+
+**Setup-failure policy (2026-08-17, post-review fix):** every
+"`resolve()` said Armed but the ping socket cannot be established" arm used to
+log "watchdog DISABLED for this run" and limp on — but nothing in-process can
+disarm systemd's timer, so under the shipped unit that run would be
+SIGABRT-killed every 180 s forever while the journal claimed the watchdog was
+off. Now (`main.rs::watchdog_setup_failed`): if `$WATCHDOG_USEC` is present
+(kill timer demonstrably armed) the process exits(1) for a clean
+`RestartSec=2` retry — the failure class is transient, and a fast retry
+strictly beats a `WatchdogSec`-cadence kill loop with a lying journal line;
+if no timer is armed, it runs without pings as before (accurately worded).
+The `WatchdogPidMismatch` inert arm additionally warns, when `$WATCHDOG_USEC`
+is set, that systemd will kill the process every window — so the journal
+explains the deaths that follow.
 
 ### F3 addendum — sidecar JSON subset: deliberately NOT widened to arbitrary JSON types
 **2026-08-15:** two reviews independently flagged that a non-subset *value* under
