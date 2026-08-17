@@ -1,0 +1,13 @@
+#!/bin/sh
+# Removal deliberately keeps BOTH the `dex` user and /opt/dex.
+#
+# The asset in /opt/dex is the artwork -- operator content the package never
+# shipped and must not delete. And the user owns nothing but is referenced by
+# anything an operator wrote themselves; reaping it on purge would silently
+# break a hand-rolled unit or a cron job. Leaving a passwd entry behind is the
+# cheaper mistake, and Debian policy permits keeping system users.
+set -e
+
+#DEBHELPER#
+
+exit 0

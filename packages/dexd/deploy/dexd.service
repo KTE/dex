@@ -1,0 +1,162 @@
+# dex gapless loop player.
+#
+# Installed by the dexd .deb (SPEC 5c), which also creates the `dex` user
+# and /opt/dex, and enables this unit. Remaining manual step:
+#   sudo systemctl set-default multi-user.target   # no desktop; nothing else may own DRM
+#
+# Paths are /usr/bin, not /usr/local/bin: Debian policy reserves /usr/local for
+# the local administrator, so a package may not write there.
+#
+# The player is useless without supervision: it runs unattended for weeks with
+# no operator, and its only shutdown path is someone switching off the mains.
+# Every design choice below follows from that.
+
+[Unit]
+Description=dex gapless loop player
+Documentation=https://github.com/KTE/dex
+# A getty on tty1 holds DRM master and would prevent the player taking the
+# display. Conflicting it away is what stops "device busy" ever happening,
+# rather than handling it after the fact.
+Conflicts=getty@tty1.service
+After=multi-user.target
+
+# LOAD-BEARING. Without this, systemd's default rate limit (5 starts / 10 s)
+# puts the unit into a permanent `failed` state after a burst of crashes --
+# exactly the unattended disaster the unit exists to prevent. A restart loop
+# always beats a dead screen: never give up.
+#
+# MUST live in [Unit], not [Service]. It sat in [Service] until 2026-08-15,
+# where systemd silently IGNORED it ("Unknown key ... ignoring") and the default
+# limit applied the whole time -- so the single most safety-critical line in
+# this file did nothing, while reading as though it did. `systemd-analyze
+# verify` found it in one run; it is now in CI for that reason.
+# (The key was accepted in [Service] before systemd 229 and moved to [Unit].)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# F10 -- systemd watchdog (PLAN.md's F10 entry; implementation in
+# src/watchdog.rs). Type stays `simple`, NOT `notify`: a notify unit that
+# never sends READY=1 sits inactive forever, and this player has no natural
+# "ready" moment before the endless stream starts (see src/watchdog.rs's
+# module doc for why READY=1 is deliberately never sent). NotifyAccess=main
+# is what makes WatchdogSec= work under Type=simple: it grants the main
+# process the notify socket without requiring the READY handshake Type=notify
+# would.
+#
+# LIVENESS CRITERION (see src/watchdog.rs's module doc for the full
+# argument): dexd pings WATCHDOG=1 once per ~10s health-check tick, AFTER
+# that tick's F1 evaluation has completed -- never from the 600s heartbeat.
+# F1's in-place-recovery budget is cumulative and NEVER refills, so a
+# display-wedged player's tick sequence is FORCED, by construction, through
+# silence -> stall -> <=3 budgeted recoveries (~20s each) -> exit(1) --
+# bounding the pings a wedge can ever emit before either exiting (tier 1's
+# exit-code restart already covers that) or, on the one path that can still
+# hang (e.g. `eprintln!` against a wedged journald, INCLUDING on the exit(1)
+# arm whose entire job is "let the supervisor take over" -- see that arm's
+# own comment in main.rs), simply STOPPING. A wedged player therefore cannot
+# keep this watchdog satisfied indefinitely -- there is no third state
+# between "pings continue because the loop is genuinely progressing" and
+# "pings stop because the loop hung".
+#
+# WatchdogSec=180 (PLAN.md's stated floor): >=17x the ping cadence, so a
+# handful of missed/dropped pings (journald stutter, scheduling bursts;
+# src/watchdog.rs's socket is non-blocking and a full receiver queue is
+# treated as a DROPPED ping, never a retry or a block) cannot cause a
+# spurious kill, while still bounding the worst-case black-wall time for
+# this hazard class to a few minutes across a weeks-long unattended run.
+# 180s also comfortably exceeds F1's own worst-case tier-0 episode (~2 min),
+# so a watchdog kill can never preempt a recovery that tier 0 would have
+# completed on its own -- see src/watchdog.rs's module doc, "gate placement".
+#
+# INVARIANT for future edits to this unit or to main.rs's event loop: do NOT
+# add a "final ping" anywhere on an exit path (Escalate, END_FILE,
+# QUEUE_OVERFLOW). Pings exist to prove the loop is STILL RUNNING, not that
+# it once was; a ping sent right before the one hang this feature exists to
+# catch would only reset the countdown and defeat it.
+WatchdogSec=180
+NotifyAccess=main
+# The display may not be awake when the Pi boots -- a projector can take 30-90s
+# to present EDID while the Pi boots in ~15. Wait for the connector rather than
+# starting into a fallback mode that never corrects itself. ExecStartPre runs
+# BEFORE the main process is forked, i.e. before the watchdog timer starts
+# (systemd starts counting WatchdogSec= at Type=simple's "start-up complete"
+# point, which for `Type=simple` is exec of ExecStart) -- so this wait, however
+# long, consumes none of the 180s budget above. Verified on the Pi, not just
+# inferred: see PLAN.md's F10 entry for the bench unit that pins this.
+#
+# TimeoutStartSec MUST exceed dex-wait-hdmi's own bounded wait (DEX_HDMI_TIMEOUT,
+# default 120s) with margin. Without this line, Debian's DefaultTimeoutStartSec=
+# (90s) applies to ExecStartPre: a projector needing 91-120s would get the script
+# SIGTERMed at ~90s with a generic "start-pre operation timed out" -- the script's
+# own purpose-written "no connected HDMI connector after 120s" diagnostic would be
+# dead code under this unit, and every retry would wait 30s less than the script
+# intends. If DEX_HDMI_TIMEOUT is ever raised, raise this with it.
+TimeoutStartSec=150
+ExecStartPre=/usr/bin/dex-wait-hdmi
+# NO ARGUMENTS AT ALL, and each absence is deliberate. This unit states HOW to
+# run the player; everything about WHAT it plays and WHERE lives in one
+# operator-editable file, /etc/dex/exhibit.{yaml,json}.
+#
+# No asset path, as of 2026-08-17 (F6): WHICH artwork plays comes from the
+# exhibit config's `asset` key. This line hardcoded /opt/dex/loop.265 until
+# then, which meant changing the artwork required either overwriting that one
+# path or editing a unit file the package owns -- and made "several assets in
+# storage, the exhibit picks one" impossible, which was the stated reason for
+# having an exhibit file at all. The shipped conffile's `asset` is that same
+# /opt/dex/loop.265, so a stock install behaves exactly as it did.
+#
+# No --fps: the frame rate comes from <asset>.json (F3), written at ingest and
+# hash-bound to the asset bytes. Deploy BOTH files. A missing or stale sidecar
+# makes the player refuse (exit 2) rather than guess a rate -- a wrong guess
+# would play slow forever with every metric green.
+#
+# No --mode (F6): the display mode is a property of the INSTALLATION (the
+# venue's panel), not of this unit, so it lives in the same exhibit config an
+# operator edits with `sudoedit /etc/dex/exhibit.json && sudo dex-exhibit-apply`
+# (see man dex-exhibit-apply), rather than a value baked in here that every
+# panel swap would require re-touching. A `--mode` here would additionally
+# FIGHT the exhibit config: main.rs treats an explicit --mode as a cross-check
+# against it and refuses to start on any disagreement. The same is now true of
+# an asset path passed here.
+ExecStart=/usr/bin/dexd
+
+Restart=always
+RestartSec=2
+# NOTE: StartLimitIntervalSec lives in [Unit] above, not here. See the comment
+# there -- putting it in this section is silently ignored.
+
+User=dex
+SupplementaryGroups=video render
+
+# mpv resolves a shader-cache directory under $XDG_CACHE_HOME (falling back to
+# $HOME/.cache) during VO init, and does so BEFORE consulting
+# --gpu-shader-cache: verified by A/B on mpv 0.40, where setting that flag to
+# `no` changes nothing. The `dex` user's home is /nonexistent, so without this
+# the service logs
+#   Failed to create /nonexistent for shader cache (...)---disabling.
+# on every single start. Harmless in itself, and exactly the kind of constant
+# harmless error that trains an operator to stop reading the journal — which is
+# the only diagnostic channel this player has on site.
+#
+# CacheDirectory= rather than a writable HOME: systemd creates
+# /var/cache/dexd owned by User=, keeps it writable under
+# ProtectSystem=strict, and cleans it up on purge.
+CacheDirectory=dexd
+Environment=XDG_CACHE_HOME=/var/cache/dexd
+
+# The player only ever reads one file.
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/dex
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# No graceful shutdown is implemented, deliberately: the mains switch IS the
+# shutdown path, so abrupt death must be safe rather than avoidable. The kernel
+# releases DRM master on exit, so the next start acquires it cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

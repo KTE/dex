@@ -1,0 +1,86 @@
+# cargo-deny — turns SPEC §5c's dependency policy from prose into a gate.
+#
+# §5c says the requirement is not "no dependencies" but "a small, DECLARED,
+# auditable dependency set". Declared is handled by Cargo.toml and
+# dpkg-shlibdeps. This file handles the other two words: it fails the build if
+# the set stops being small, stops being auditable, or acquires a known
+# vulnerability.
+#
+# Run: cargo deny check
+
+[advisories]
+# A gallery device runs unattended for weeks and is not network-connected, so
+# the realistic threat is a malformed asset, not a remote attacker. Deny
+# anyway: "not exploitable in our deployment" is a judgement that ages badly,
+# and the whole point of a gate is that it does not require one.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# An allow-list, not a deny-list. A new dependency arriving under something
+# unexpected should fail loudly rather than be silently accepted because nobody
+# thought to ban it. This also protects the licensing decision itself: dex aims
+# to be packageable everywhere (see the licence open point in the story), and a
+# copyleft dependency pulled in by accident would constrain that without anyone
+# noticing until a distro said no.
+#
+# Deliberately trimmed to exactly what the graph contains today, rather than a
+# generous list of "probably fine" licences. An unused allowance is not free:
+# cargo-deny warns on each one, and a check that always prints warnings is a
+# check people stop reading. A dependency arriving under BSD-3-Clause or
+# Unicode-3.0 should therefore FAIL here and be waved through by an explicit
+# one-line edit — which is the review this file exists to force.
+#
+# `MIT-0` is dexd's own licence. That entry changed from CC0-1.0 in the same
+# commit as the licence decision — which is exactly the behaviour this list is
+# for: it cannot silently disagree with what ships.
+allow = [
+    "Apache-2.0", # 14 crates
+    "MIT",        # 16 crates
+    "MIT-0",      # dexd itself
+    # Waved through deliberately, 2026-08-17 — which is exactly the one-line
+    # review this list exists to force, and the whole reason it is trimmed to
+    # what the graph actually contains. Arrived via
+    # yaml-rust2 -> hashlink -> hashbrown -> foldhash, and was the ONLY new
+    # licence in that entire subtree (yaml-rust2, arraydeque, hashlink and
+    # hashbrown are all already-allowed MIT/Apache-2.0).
+    # Zlib is permissive, OSI-approved and FSF Free/Libre, with no copyleft and
+    # no attribution obligation, so it constrains nothing about dex staying
+    # packageable everywhere — the property this allow-list protects.
+    "Zlib", # 1 crate (foldhash)
+]
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of the same crate in one binary is the first symptom of a
+# dependency set outgrowing "small enough to read".
+multiple-versions = "warn"
+wildcards = "deny"
+
+# THE PROC-MACRO BAN IS DELIBERATE AND LOAD-BEARING.
+#
+# serde is a dependency, but WITHOUT its `derive` feature: for a four-field
+# struct, #[derive(Deserialize)] buys about fifteen lines of field extraction
+# and costs the whole syn/quote/proc-macro2 toolchain on the critical path of
+# every CI package build. That decision currently lives in a Cargo.toml comment,
+# which is a rule; enabling the feature would quietly undo it and nothing would
+# complain. Here it is a gate: turning on `derive` fails `cargo deny check`.
+#
+# If a future dependency genuinely needs proc macros, delete these entries
+# deliberately and say why in the commit. That is the intended way through.
+[[bans.deny]]
+name = "syn"
+[[bans.deny]]
+name = "quote"
+[[bans.deny]]
+name = "proc-macro2"
+[[bans.deny]]
+name = "serde_derive"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# crates.io only. A git dependency has no version, no audit trail and no
+# guarantee of being there next year -- unacceptable for software that ships to
+# devices expected to run untouched for the length of an exhibition.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
