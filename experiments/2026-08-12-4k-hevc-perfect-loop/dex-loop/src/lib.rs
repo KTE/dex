@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod chunk;
+pub mod exhibit;
 pub mod ffi_consts;
 pub mod health;
 pub mod heartbeat;

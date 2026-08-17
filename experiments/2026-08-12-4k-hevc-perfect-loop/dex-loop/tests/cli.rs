@@ -143,10 +143,46 @@ fn write_sidecar(asset: &Path, bytes: &[u8], fps: &str) {
     .unwrap();
 }
 
+/// F6 — write a minimal, always-satisfiable exhibit config at a unique temp
+/// path and return it. `display_mode: "auto"` skips the sysfs mode
+/// pre-flight (no WxH to check), and `kms_force: "none"` is paired with
+/// `write_no_video_cmdline` below so the cmdline gate passes deterministically
+/// regardless of what the REAL host's `/proc/cmdline` happens to contain —
+/// deploy-path tests below pass BOTH this and `--proc-cmdline
+/// <write_no_video_cmdline path>` so the F6 gates are satisfied without
+/// depending on the test host's kernel command line, and the test's own gate
+/// (F3/F4/opt) still runs exactly as it did before F6 existed.
+fn write_exhibit_config(name: &str) -> PathBuf {
+    let p = temp_path(name);
+    std::fs::write(&p, r#"{"display_mode":"auto","kms_force":"none"}"#).unwrap();
+    p
+}
+
+/// F6 — a synthetic `/proc/cmdline` with no `video=` token at all, so the
+/// cmdline gate's "kms_force=none, expect no token" branch always matches,
+/// independent of the real host's actual kernel command line (a CI container
+/// has none either way, but the real bench Pi, once F6 is deployed there,
+/// legitimately does).
+fn write_no_video_cmdline(name: &str) -> PathBuf {
+    let p = temp_path(name);
+    std::fs::write(&p, "console=ttyS0 root=/dev/mmcblk0p2 rootwait quiet\n").unwrap();
+    p
+}
+
 #[test]
 fn missing_file_exits_2_and_names_the_path() {
+    let cfg = write_exhibit_config("missingfile-exhibit.json");
+    let cl = write_no_video_cmdline("missingfile-cmdline");
     let r = run_with_deadline(
-        &["/nonexistent/dex-loop-test.265", "--fps", "30"],
+        &[
+            "/nonexistent/dex-loop-test.265",
+            "--fps",
+            "30",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
@@ -161,8 +197,18 @@ fn missing_file_exits_2_and_names_the_path() {
 fn empty_file_exits_2() {
     let p = temp_path("empty.265");
     std::fs::write(&p, b"").unwrap();
+    let cfg = write_exhibit_config("emptyfile-exhibit.json");
+    let cl = write_no_video_cmdline("emptyfile-cmdline");
     let r = run_with_deadline(
-        &[p.to_str().unwrap(), "--fps", "30"],
+        &[
+            p.to_str().unwrap(),
+            "--fps",
+            "30",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
@@ -212,11 +258,17 @@ fn playback_failure_exits_nonzero_never_hangs() {
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30");
+    let cfg = write_exhibit_config("playbackfail-exhibit.json");
+    let cl = write_no_video_cmdline("playbackfail-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
             "--fps",
             "30",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -259,9 +311,15 @@ fn garbage_bytes_refused_at_the_gate_exit_2() {
         .collect();
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30"); // hash MATCHES: proves the gate, not F3, refuses
+    let cfg = write_exhibit_config("garbage-exhibit.json");
+    let cl = write_no_video_cmdline("garbage-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -290,9 +348,15 @@ fn open_gop_asset_refused_at_the_gate_exit_2() {
     }
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30");
+    let cfg = write_exhibit_config("opengop-exhibit.json");
+    let cl = write_no_video_cmdline("opengop-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -314,9 +378,15 @@ fn missing_sidecar_refused_exit_2_naming_the_sidecar_path() {
     let p = temp_path("nosidecar.265");
     std::fs::write(&p, stub_annexb()).unwrap();
     let _ = std::fs::remove_file(format!("{}.json", p.display()));
+    let cfg = write_exhibit_config("missingsidecar-exhibit.json");
+    let cl = write_no_video_cmdline("missingsidecar-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -344,9 +414,15 @@ fn truncated_asset_vs_full_hash_refused_exit_2() {
     let full = stub_annexb();
     write_sidecar(&p, &full, "30");
     std::fs::write(&p, &full[..full.len() - 20]).unwrap();
+    let cfg = write_exhibit_config("truncated-exhibit.json");
+    let cl = write_no_video_cmdline("truncated-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -367,11 +443,17 @@ fn fps_contradicting_sidecar_refused_exit_2_naming_both() {
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30");
+    let cfg = write_exhibit_config("fpsconflict-exhibit.json");
+    let cl = write_no_video_cmdline("fpsconflict-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
             "--fps",
             "25",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -397,11 +479,17 @@ fn agreeing_fps_and_sidecar_reach_playback() {
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30");
+    let cfg = write_exhibit_config("fpsagree-exhibit.json");
+    let cl = write_no_video_cmdline("fpsagree-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
             "--fps",
             "30",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -429,11 +517,17 @@ fn bad_opt_value_refused_exit_2_not_1() {
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30");
+    let cfg = write_exhibit_config("badopt-exhibit.json");
+    let cl = write_no_video_cmdline("badopt-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
             "--fps",
             "30",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -575,9 +669,15 @@ fn health_check_registers_without_warning_during_normal_playback() {
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30");
+    let cfg = write_exhibit_config("healthreg-exhibit.json");
+    let cl = write_no_video_cmdline("healthreg-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -608,9 +708,15 @@ fn heartbeat_zero_is_emitted_at_startup() {
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
     write_sidecar(&p, &bytes, "30");
+    let cfg = write_exhibit_config("heartbeat-exhibit.json");
+    let cl = write_no_video_cmdline("heartbeat-cmdline");
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -897,6 +1003,192 @@ fn force_recovery_survives_against_real_mpv() {
          rather than truly recovered): {}",
         r.stderr
     );
+}
+
+// ---- F6: the exhibit display config --------------------------------------
+//
+// The pure decision surface (grammar, resolve_display, the cmdline
+// comparator, reconcile_cmdline, the sysfs pre-flight parser) is exhaustively
+// tested in src/exhibit.rs on the Mac -- these tests exist only to pin how
+// main.rs WIRES that logic in: gate ORDER (display gates fire before the
+// asset is even read), the new flags parse, and the CLI-level refusal
+// messages. All of them stay inside this file's mandatory `vo=null --opt
+// vid=no --opt aid=no` rule.
+
+/// No `/etc/dex/exhibit.json`-equivalent supplied (no `--exhibit-config`
+/// override points anywhere, and the real default path almost certainly does
+/// not exist on a CI/dev host) and no `--bench-no-sidecar`: refused before
+/// even the asset path is looked at. Pins the exact "no exhibit config"
+/// message from `exhibit::resolve_display`, and — the load-bearing part —
+/// that it fires INSTEAD OF the missing-file message a pre-F6 build would
+/// have printed for this same invocation.
+#[test]
+fn missing_exhibit_config_refused_exit_2_before_the_asset_is_read() {
+    let improbable = temp_path("f6-default-exhibit-config-must-not-exist.json");
+    let _ = std::fs::remove_file(&improbable); // never written; just proving absence
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-missing-config.265",
+            "--exhibit-config",
+            improbable.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("no exhibit config"),
+        "stderr: {}",
+        r.stderr
+    );
+    // The load-bearing negative: the asset gate must NOT have run yet.
+    assert!(
+        !r.stderr.contains("f6-missing-config.265"),
+        "the exhibit gate should refuse BEFORE the asset path is even looked \
+         at, but the asset-missing message appeared too: {}",
+        r.stderr
+    );
+}
+
+/// An unparseable exhibit config is refused with the specific parse error —
+/// distinct from "missing", per main.rs's read/parse split (see the comment
+/// at the exhibit_config read site).
+#[test]
+fn malformed_exhibit_config_refused_exit_2_naming_the_parse_error() {
+    let cfg = temp_path("f6-malformed-exhibit.json");
+    std::fs::write(&cfg, r#"{"display_mode":"auto","kms_forse":"none"}"#).unwrap(); // typo
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-malformed.265",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("kms_forse"), "stderr: {}", r.stderr);
+}
+
+/// `--bench-no-sidecar` bypasses BOTH the exhibit config AND the cmdline
+/// gate: no `--exhibit-config` is supplied, no `--proc-cmdline` is supplied,
+/// and the run still reaches playback (exit 1, not 2) because bench mode
+/// consults neither.
+#[test]
+fn bench_flag_bypasses_the_exhibit_config_and_cmdline_gate_too() {
+    let p = temp_path("f6-bench.265");
+    std::fs::write(&p, stub_annexb()).unwrap();
+    let r = run_with_deadline(
+        &[
+            p.to_str().unwrap(),
+            "--bench-no-sidecar",
+            "--fps",
+            "30",
+            "--no-defaults",
+            "--opt",
+            "vo=null",
+            "--opt",
+            "vid=no",
+            "--opt",
+            "aid=no",
+        ],
+        Duration::from_secs(30),
+    );
+    assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
+}
+
+/// A `--mode` that contradicts the exhibit config's `display_mode` is
+/// refused, naming both — the F6 analogue of
+/// `fps_contradicting_sidecar_refused_exit_2_naming_both`.
+#[test]
+fn mode_contradicting_exhibit_config_refused_naming_both() {
+    let cfg = temp_path("f6-modeconflict-exhibit.json");
+    std::fs::write(&cfg, r#"{"display_mode":"3840x2160@30","kms_force":"none"}"#).unwrap();
+    let cl = write_no_video_cmdline("f6-modeconflict-cmdline");
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-modeconflict.265",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+            "--mode",
+            "2560x1440@60",
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("3840x2160@30") && r.stderr.contains("2560x1440@60"),
+        "stderr must name both modes: {}",
+        r.stderr
+    );
+}
+
+/// The cmdline gate: exhibit config says `kms_force=none`, but the (fixture)
+/// kernel cmdline carries a `video=HDMI-A-1:...` token anyway — the exact
+/// 2026-08-15 incident class (a force removed as "stale" while still in use,
+/// or here, the mirror case: a config edited to "none" while the boot config
+/// was never reconciled). Must refuse naming the fix, before the asset is
+/// even read.
+#[test]
+fn cmdline_mismatch_refused_naming_dex_exhibit_apply() {
+    let cfg = write_exhibit_config("f6-cmdlinemismatch-exhibit.json"); // kms_force: none
+    let cl = temp_path("f6-cmdlinemismatch-cmdline");
+    std::fs::write(&cl, "console=ttyS0 video=HDMI-A-1:3840x2160@30 rootwait\n").unwrap();
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-cmdlinemismatch.265",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("dex-exhibit-apply") && r.stderr.contains("3840x2160@30"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+/// The sysfs mode pre-flight: a non-"auto" display_mode that no real
+/// connector could plausibly offer (8K60 — no HDMI-A-1 sink on a CI runner OR
+/// this project's actual bench displays advertises this) is refused, either
+/// because the connector cannot be found at all (a CI container with no DRM)
+/// or because it is found but does not list the mode — the two-layer
+/// "cannot find" vs "not among the modes" split from the F6 design's §2.4.
+/// Either message names the requested resolution, which is what this test
+/// pins portably across both hosts.
+#[test]
+fn implausible_mode_refused_by_the_sysfs_preflight() {
+    let cfg = temp_path("f6-implausible-exhibit.json");
+    std::fs::write(
+        &cfg,
+        r#"{"display_mode":"7680x4320@60","kms_force":"none"}"#,
+    )
+    .unwrap();
+    let cl = write_no_video_cmdline("f6-implausible-cmdline");
+    let r = run_with_deadline(
+        &[
+            "/nonexistent/f6-implausible.265",
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("7680x4320"),
+        "stderr must name the implausible resolution: {}",
+        r.stderr
+    );
+    // And it must not be the asset-missing message -- the display gates run
+    // first, exactly like the "no exhibit config" case above.
+    assert!(!r.stderr.contains("f6-implausible.265"), "stderr: {}", r.stderr);
 }
 
 // ---- F10: --bench-wedge-after-secs, the systemd-watchdog live-fire probe -

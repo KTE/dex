@@ -45,6 +45,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use dex_loop::chunk::{clamp_want, next_chunk};
+use dex_loop::exhibit::{
+    check_cmdline_matches, mode_resolution, resolve_display, sysfs_modes_contains, DisplaySource,
+    ExhibitConfig, DEFAULT_EXHIBIT_CONFIG_PATH,
+};
 use dex_loop::ffi_consts::{
     MPV_END_FILE_REASON_STOP, MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE,
     MPV_EVENT_LOG_MESSAGE, MPV_EVENT_NONE, MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_QUEUE_OVERFLOW,
@@ -706,8 +710,15 @@ fn usage() -> ! {
   <stream.265>.json   ingest sidecar, REQUIRED: {{\"fps\":\"30\",\"sha256\":\"<64 hex>\"}}
                       fps comes from it; the sha256 must match the asset bytes
   --fps F             optional cross-check; must equal the sidecar fps exactly
-  --mode WxH@R        force a DRM mode, e.g. 3840x2160@30 (default: connector preferred)
-  --bench-no-sidecar  BENCH ONLY: skip the sidecar, take --fps as given
+  --mode WxH@R        cross-check against the exhibit config's display_mode (F6);
+                      optional alongside --bench-no-sidecar, where it is the only
+                      source instead (defaults to auto there)
+  --exhibit-config PATH
+                      F6: path to the exhibit config (default: {DEFAULT_EXHIBIT_CONFIG_PATH}).
+                      Binds the display mode, the expected KMS force, and the
+                      connector -- see man dex-exhibit-apply.
+  --bench-no-sidecar  BENCH ONLY: skip the sidecar AND the exhibit config, take
+                      --fps/--mode as given
   --force-recovery-after-secs N
                       T7 BENCH ONLY: force a tier-0 in-place recovery N seconds after
                       the loadfile request (NOT N seconds of confirmed playback --
@@ -730,10 +741,31 @@ fn usage() -> ! {
   --opt K=V           pass an extra mpv option (repeatable)
   --no-defaults       omit the built-in Pi 4 zero-copy option set
 
-exit codes: 2 = refused before playback (bad invocation/asset/sidecar; fix and redeploy)
+exit codes: 2 = refused before playback (bad invocation/asset/sidecar/display; fix and redeploy)
             1 = playback/runtime failure (the supervisor restarts)"
     );
     std::process::exit(2)
+}
+
+/// Locate `/sys/class/drm/card<N>-<connector>/modes`. The card number is not
+/// hardcoded: vc4/v3d probe order makes it unstable across kernel versions
+/// (the same reason `deploy/dex-wait-hdmi` globs it rather than assuming
+/// `card1`). Returns `None` if no such entry exists -- e.g. no DRM at all (a
+/// CI container), or a mistyped connector name.
+fn find_sysfs_modes_path(connector: &str) -> Option<String> {
+    let suffix = format!("-{connector}");
+    let entries = fs::read_dir("/sys/class/drm").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("card") && name.ends_with(suffix.as_str()) {
+            let modes_path = entry.path().join("modes");
+            if modes_path.is_file() {
+                return Some(modes_path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 fn main() -> ExitCode {
@@ -758,6 +790,13 @@ fn main() -> ExitCode {
     let mut bench_no_sidecar = false;
     let mut force_recovery_after_secs: Option<u64> = None;
     let mut bench_wedge_after_secs: Option<u64> = None;
+    let mut exhibit_config_path: Option<String> = None;
+    // Test-only override so integration tests can supply a synthetic kernel
+    // cmdline instead of depending on the actual host's /proc/cmdline, which
+    // varies by machine (a CI container has no video= token at all; the real
+    // bench Pi, once F6 is deployed there, always does). Never printed in
+    // usage(): a real deployment always reads the real /proc/cmdline.
+    let mut proc_cmdline_path: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -777,6 +816,16 @@ fn main() -> ExitCode {
                 i += 1;
                 let Some(v) = args.get(i) else { usage() };
                 mode = Some(v.clone());
+            }
+            "--exhibit-config" => {
+                i += 1;
+                let Some(v) = args.get(i) else { usage() };
+                exhibit_config_path = Some(v.clone());
+            }
+            "--proc-cmdline" => {
+                i += 1;
+                let Some(v) = args.get(i) else { usage() };
+                proc_cmdline_path = Some(v.clone());
             }
             "--no-defaults" => defaults = false,
             "--bench-no-sidecar" => bench_no_sidecar = true,
@@ -856,6 +905,135 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // F6 -- the exhibit display config. Runs BEFORE the asset is read: these
+    // are the cheapest gates in the program and must not depend on asset
+    // presence (a wrong-panel install is worth catching even if the asset
+    // path is also wrong). Order: config parse -> cmdline gate -> sysfs mode
+    // pre-flight. See src/exhibit.rs module docs and PLAN.md's F6 entry.
+    let exhibit_config_path = exhibit_config_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_EXHIBIT_CONFIG_PATH.to_string());
+    let exhibit_config: Option<ExhibitConfig> = if bench_no_sidecar {
+        None
+    } else {
+        match fs::read_to_string(&exhibit_config_path) {
+            Ok(text) => match ExhibitConfig::from_json(&text) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!("error: {exhibit_config_path}: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+            // A MISSING file is deferred to resolve_display below, which is
+            // the single place that states the "no exhibit config" refusal
+            // (mirroring how sidecar::resolve_fps states the analogous "no
+            // sidecar" message). Any OTHER read error is a different
+            // operational fact and gets its own message here: an
+            // EXISTING-but-unreadable file (root-edited and saved 0600, a
+            // restored backup with the wrong owner) is fixed by chmod/chown,
+            // not by creating a file the operator can see already exists --
+            // telling them to create it would be actively misleading, the
+            // message class this crate's principles forbid.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                eprintln!(
+                    "error: cannot read {exhibit_config_path}: {e} -- the file exists but is \
+                     not readable; check its owner/permissions (the dex user must be able to \
+                     read it)"
+                );
+                return ExitCode::from(2);
+            }
+        }
+    };
+
+    let display = match resolve_display(exhibit_config.as_ref(), mode.as_deref(), bench_no_sidecar)
+    {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // The cmdline gate: keeps the exhibit config and the KMS-layer `video=`
+    // token honest with each other. Skipped under the bench flag, since a
+    // ~/bench build runs on hand-managed boot state by definition (§2.3/§3.3
+    // of the F6 design) -- the whole POINT of --bench-no-sidecar is running
+    // outside the deployment config's authority.
+    if !bench_no_sidecar {
+        let proc_cmdline_path = proc_cmdline_path
+            .clone()
+            .unwrap_or_else(|| "/proc/cmdline".to_string());
+        match fs::read_to_string(&proc_cmdline_path) {
+            Ok(cmdline) => {
+                if let Err(e) = check_cmdline_matches(&cmdline, &display.connector, &display.kms_force)
+                {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            Err(e) => {
+                eprintln!("error: cannot read {proc_cmdline_path}: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    // The sysfs mode pre-flight: catches "the configured resolution is not
+    // even in this connector's mode list" (the wrong-panel case) before any
+    // asset/sidecar/NAL gate runs. Plain-text sysfs, no privilege, no libmpv
+    // -- `/sys/class/drm/card*-<connector>/modes`, one WxH per line. Runs
+    // whenever a specific mode is requested, bench or not: it is a real
+    // hardware-agreement check that reads nothing from /etc or /proc, so
+    // nothing about "bench" exempts it (unlike the cmdline gate above, which
+    // is specifically about /etc vs /boot agreement).
+    if let Some(want_wh) = mode_resolution(&display.display_mode) {
+        match find_sysfs_modes_path(&display.connector) {
+            Some(modes_path) => match fs::read_to_string(&modes_path) {
+                Ok(modes_text) => {
+                    if !sysfs_modes_contains(&modes_text, want_wh) {
+                        let offered: Vec<&str> = modes_text.lines().map(str::trim).collect();
+                        eprintln!(
+                            "error: display_mode {want_wh:?} is not among the modes {} \
+                             ({modes_path}) offers: {offered:?} -- wrong panel, or the \
+                             cmdline force (if any) has not taken effect yet (reboot?)",
+                            display.connector
+                        );
+                        return ExitCode::from(2);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: cannot read {modes_path}: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+            None => {
+                eprintln!(
+                    "error: display_mode {want_wh:?} requested for connector {}, but no sysfs \
+                     modes list was found for it under /sys/class/drm -- is the connector name \
+                     correct, and is DRM available?",
+                    display.connector
+                );
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    eprintln!(
+        "dex-loop: display {} ({}), connector {}, kms-force {}",
+        display.display_mode,
+        match display.source {
+            DisplaySource::Config => format!("exhibit config {exhibit_config_path}"),
+            DisplaySource::Bench => "BENCH OVERRIDE, unbound".to_string(),
+        },
+        display.connector,
+        if bench_no_sidecar {
+            "not checked (bench)".to_string()
+        } else {
+            display.kms_force.clone()
+        },
+    );
+
     // Read the loop once. These are small (1.3 MB at 1080p, 14.8 MB at 4K for a
     // 3 s card) and holding it in memory removes the filesystem from the hot
     // path: no re-open, no page-cache dependency, no I/O stall at the wrap.
@@ -918,6 +1096,40 @@ fn main() -> ExitCode {
         if let Err(e) = verify_payload(leaked, s) {
             eprintln!("error: {path}: {e}");
             return ExitCode::from(2);
+        }
+    }
+
+    // F6 addendum (2026-08-17 review): display_mode "auto" skips the sysfs
+    // pre-flight by construction (no mode to check against), which converts
+    // fail-closed into fail-silent on the one config the .deb ships by
+    // default -- a forgotten /etc/dex/exhibit.json edit on hardware that
+    // builds no 4K mode unforced (the Cam Link case) plays the artwork at
+    // whatever the connector negotiates, for weeks, with every metric green.
+    // The sidecar is hash-bound to the asset and already names its
+    // resolution, so at least SAY SO when the connector cannot even offer
+    // it. A warning, not a refusal: whether "auto" should stay the factory
+    // default at all (vs an explicit "unset" that refuses like a missing
+    // config) is one of the parked F6 design questions -- see PLAN.md.
+    if display.display_mode == "auto" {
+        if let Some((w, h)) = sidecar.as_ref().and_then(|s| s.width.zip(s.height)) {
+            let want = format!("{w}x{h}");
+            if let Some(modes_path) = find_sysfs_modes_path(&display.connector) {
+                if let Ok(modes_text) = fs::read_to_string(&modes_path) {
+                    if !sysfs_modes_contains(&modes_text, &want) {
+                        let offered: Vec<&str> = modes_text.lines().map(str::trim).collect();
+                        eprintln!(
+                            "warning: display_mode is \"auto\" and the asset is {want} (per its \
+                             sidecar), but connector {} offers only {offered:?} ({modes_path}) \
+                             -- KMS will drive whatever fallback it negotiates and the artwork \
+                             will play at the WRONG resolution with every metric green. If this \
+                             display needs a forced mode to build {want} (e.g. the Cam Link \
+                             builds no 4K mode unforced), set display_mode and kms_force in \
+                             /etc/dex/exhibit.json, run 'sudo dex-exhibit-apply', and reboot",
+                            display.connector
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1021,9 +1233,17 @@ fn main() -> ExitCode {
         }
     }
     opts.push(("container-fps-override".into(), fps));
-    if let Some(m) = mode {
-        opts.push(("drm-mode".into(), m));
+    // F6 -- the resolved exhibit display binding. "auto" means: pass no
+    // drm-mode at all, which is mpv's own documented default
+    // (drm-mode=preferred) -- see exhibit::resolve_display's docs on what
+    // "auto" precisely means. drm-connector is passed unconditionally: every
+    // ResolvedDisplay carries a connector (defaulted if not configured), so
+    // this is always explicit rather than relying on mpv's own connector
+    // pick, which the pre-F6 code never stated either way.
+    if display.display_mode != "auto" {
+        opts.push(("drm-mode".into(), display.display_mode.clone()));
     }
+    opts.push(("drm-connector".into(), display.connector.clone()));
     opts.extend(extra);
 
     for (k, v) in &opts {

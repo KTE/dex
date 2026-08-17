@@ -8,6 +8,8 @@ dex\-loop \- gapless HEVC loop player for unattended installations
 .IR F ]
 .RB [ \-\-mode
 .IR WxH@R ]
+.RB [ \-\-exhibit\-config
+.IR PATH ]
 .RB [ \-\-bench\-no\-sidecar ]
 .RB [ \-\-no\-defaults ]
 .RB [ \-\-opt
@@ -27,11 +29,19 @@ elementary stream carries no timestamps, so this cannot be inferred. Normally
 it comes from the sidecar; passing it here is only permitted if it agrees.
 .TP
 .BI \-\-mode " WxH@R"
-Force a DRM mode, e.g. \fB3840x2160@30\fR.
+Cross\-check against the exhibit config's \fBdisplay_mode\fR (F6); refused if
+it disagrees, naming both. Under \fB\-\-bench\-no\-sidecar\fR this is the only
+source (no exhibit config is consulted): omitted there, it defaults to
+\fBauto\fR (the connector's preferred mode).
+.TP
+.BI \-\-exhibit\-config " PATH"
+Path to the exhibit config (F6). Default: \fI/etc/dex/exhibit.json\fR. See
+\fBFILES\fR and \fBdex-exhibit-apply\fR(1).
 .TP
 .B \-\-bench\-no\-sidecar
-Run without a sidecar. Requires an explicit \fB\-\-fps\fR. For bench use only:
-deployments must bind the rate to the asset.
+Run without a sidecar AND without the exhibit config. Requires an explicit
+\fB\-\-fps\fR. For bench use only: deployments must bind the rate to the asset
+and the display to the exhibit config.
 .TP
 .B \-\-no\-defaults
 Omit the built\-in mpv option set (see \fBNOTES\fR).
@@ -46,6 +56,15 @@ exact bytes. A missing, stale or mismatched sidecar refuses startup.
 .TP
 .I /opt/dex/loop.265
 Asset read by the packaged systemd service.
+.TP
+.I /etc/dex/exhibit.json
+F6 exhibit config (a dpkg conffile, so a hand edit survives a package
+upgrade): binds \fBdisplay_mode\fR, and optionally \fBkms_force\fR and
+\fBconnector\fR. Required outside \fB\-\-bench\-no\-sidecar\fR \(em a missing
+or invalid one refuses startup rather than guessing the display, the same
+fail\-closed contract the sidecar has for frame rate. See
+\fBdex-exhibit-apply\fR(1) for the schema and the migration from the
+pre\-F6 \fB\-\-mode\fR\-in\-the\-unit arrangement.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -55,14 +74,21 @@ Never, in normal operation: the player is designed not to end.
 Playback failed or recovery was exhausted.
 .TP
 .B 2
-A startup gate refused: bad invocation, missing or mismatched sidecar, or an
+A startup gate refused: bad invocation, missing or invalid exhibit config,
+exhibit config vs. kernel cmdline disagreement, a requested resolution absent
+from the connector's own mode list, missing or mismatched sidecar, or an
 asset whose first frames are not a closed GOP starting at an IDR.
 .SH NOTES
 By default the player selects the only zero\-copy path measured to reach
 realtime 4K30 on a Pi 4: the decoder's SAND\-tiled frames go straight to a KMS
 plane via \fB\-\-gpu\-hwdec\-interop=drmprime\-overlay\fR. Every other interop
 detiles and misses realtime.
+.PP
+F6: the display mode is a property of the exhibit (the venue's panel), not of
+the asset or the systemd unit \(em see \fI/etc/dex/exhibit.json\fR under
+\fBFILES\fR and \fBdex-exhibit-apply\fR(1).
 .SH SEE ALSO
+.BR dex-exhibit-apply (1),
 .BR dex-wait-hdmi (1),
 .BR mpv (1),
 .BR journalctl (1)

@@ -11,8 +11,12 @@ ffmpeg -i card.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc loop.265
 printf '{"fps":"30","sha256":"%s","width":3840,"height":2160}\n' \
   "$(shasum -a 256 loop.265 | cut -d' ' -f1)" > loop.265.json   # Linux: sha256sum
 
+# once, on the device -- the display mode is exhibit config, not asset
+# metadata (F6): /etc/dex/exhibit.json (the .deb ships an inert default)
+printf '{"display_mode":"3840x2160@30"}\n' | sudo tee /etc/dex/exhibit.json
+
 # then
-dex-loop loop.265 --mode 3840x2160@30
+dex-loop loop.265
 ```
 
 ## What it does
@@ -213,27 +217,92 @@ subset refuses startup — fail closed.
 | flag | meaning |
 |---|---|
 | `--fps F` | optional cross-check; must equal the sidecar fps exactly, or startup is refused |
-| `--mode WxH@R` | force a DRM mode, e.g. `3840x2160@30`. Default: connector preferred. Deliberately NOT in the sidecar: mode is venue config, not asset metadata |
-| `--bench-no-sidecar` | BENCH ONLY: skip the sidecar and take `--fps` as given (both flags required — the escape hatch is a deliberate two-flag act) |
+| `--mode WxH@R` | optional cross-check against the exhibit config's `display_mode` (F6); refused if it disagrees, naming both. Under `--bench-no-sidecar` it is the only source (default there: `auto`) |
+| `--exhibit-config PATH` | F6: path to the exhibit config, default `/etc/dex/exhibit.json` — see below |
+| `--bench-no-sidecar` | BENCH ONLY: skip the sidecar AND the exhibit config, and take `--fps`/`--mode` as given (both flags required alongside `--fps` — the escape hatch is a deliberate two-flag act) |
 | `--force-recovery-after-secs N` | T7, BENCH ONLY: force a tier-0 in-place recovery N seconds into playback, whether or not anything has stalled — a live-fire probe for F1's recovery command. Requires `--bench-no-sidecar` (refused otherwise), so it can never end up armed against a real, sidecar-bound deployment asset |
 | `--bench-wedge-after-secs N` | F10, BENCH ONLY: deliberately hang the event thread FOREVER N seconds after startup, simulating the one hazard class F1/F9 cannot see (an event-thread hang outside any mpv call) — proves whether a systemd watchdog (`WatchdogSec=`) actually fires. The process never recovers on its own once armed and fired. Requires `--bench-no-sidecar` (refused otherwise) |
 | `--opt K=V` | pass any extra mpv option (repeatable) |
 | `--no-defaults` | omit the built-in Pi 4 zero-copy option set |
 
-Startup gates, in order: asset readable and non-empty → sidecar parses → fps resolved →
-sha256 matches → leading NALs are VPS/SPS/PPS + IDR (open-GOP/CRA assets are refused —
-the wrap premise is "IDR at frame 0") → every `--opt`/default/`--mode` mpv option is
-accepted. Exit codes: **2** = refused before playback (fix the asset/invocation —
-including a rejected mpv option; restarting cannot help), **1** = playback/runtime
-failure (the supervisor restarts). Every start logs `dex-loop <version> (<git hash>)`
-and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`, `pos-age=`, `watchdog=`) at
-boot and every 10 minutes. The drop counters (`frame-drops=`, `vo-delayed=`) are
-cumulative since process start and read `n/a` until the first value arrives from
-mpv, or `off` if the subscription failed at startup — never a direct property
-read, so the heartbeat itself can never block on a wedged mpv core. `watchdog=`
-reads `inert` off systemd (Mac/bench/CI — the overwhelmingly common case) or
-`armed pings-dropped=N` under a unit with `WatchdogSec=` set (F10, see
-**Deployment** below) — see `src/watchdog.rs`'s module doc for the full design.
+Startup gates, in order: exhibit config parses → resolved against `--mode` →
+kernel cmdline agrees with its `kms_force` → the resolved resolution exists on the
+connector's own mode list → asset readable and non-empty → sidecar parses → fps
+resolved → sha256 matches → leading NALs are VPS/SPS/PPS + IDR (open-GOP/CRA assets
+are refused — the wrap premise is "IDR at frame 0") → every `--opt`/default/`drm-mode`/
+`drm-connector` mpv option is accepted. Display gates run FIRST and before the asset is
+even read: they are the cheapest checks and a wrong-panel install is worth catching even
+when the asset path is also wrong. Exit codes: **2** = refused before playback (fix the
+asset/invocation/exhibit config — including a rejected mpv option; restarting cannot
+help), **1** = playback/runtime failure (the supervisor restarts). Every start logs
+`dex-loop <version> (<git hash>)`, the resolved display binding (`display ... (...),
+connector ..., kms-force ...`), and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`,
+`pos-age=`, `watchdog=`) at boot and every 10 minutes. The drop counters
+(`frame-drops=`, `vo-delayed=`) are cumulative since process start and read `n/a`
+until the first value arrives from mpv, or `off` if the subscription failed at
+startup — never a direct property read, so the heartbeat itself can never block on a
+wedged mpv core. `watchdog=` reads `inert` off systemd (Mac/bench/CI — the
+overwhelmingly common case) or `armed pings-dropped=N` under a unit with
+`WatchdogSec=` set (F10, see **Deployment** below) — see `src/watchdog.rs`'s module
+doc for the full design.
+
+### Exhibit config (F6)
+
+The display mode is a property of the **installation** (the venue's panel), not the
+asset — the same 2160p30 asset plays correctly on a 4K projector and a 1440p desktop
+monitor, and one measured sink (an Elgato Cam Link 4K) advertises 4K30 as its own
+*preferred* EDID timing while the DRM driver still declines to build the mode
+unforced. So the mode lives in `/etc/dex/exhibit.json` — a dpkg **conffile** (a hand
+edit survives a package upgrade), parsed with the same hardened flat-JSON subset
+grammar as the sidecar, but with **unknown keys refused** rather than ignored: this
+file has no independent producer to stay compatible with, so a typo (`kms_forse` for
+`kms_force`) must be a startup refusal, not a silently dropped force.
+
+```json
+{"display_mode":"3840x2160@30","kms_force":"3840x2160@30","connector":"HDMI-A-1",
+ "display":"Elgato Cam Link 4K","venue":"gallery east wall","note":"..."}
+```
+
+| key | required | meaning |
+|---|---|---|
+| `display_mode` | yes | `"auto"` or `"WxH@R"` (R a positive INTEGER, same rule as `kms_force` — bench-verified 2026-08-17: mpv's `--drm-mode` rejects a rational refresh at option parse (-7, a guaranteed restart loop) and silently rounds a decimal to the integer vrefresh, so non-integer forms are refused at config parse instead) — what `dex-loop` asks mpv for via `--drm-mode` |
+| `kms_force` | no (default `"none"`) | `"none"` or `"WxH@R"`/`"WxH@RD"` (integer R only — the kernel `video=` grammar has no fractional refresh) — what the kernel cmdline is expected to carry for this connector |
+| `connector` | no (default `"HDMI-A-1"`) | which DRM connector, e.g. `"HDMI-A-2"` |
+| `display`, `venue`, `note` | no | informational, logged verbatim at every start — this is where the *why* that used to live in a `config.txt` comment block belongs now |
+
+Outside `--bench-no-sidecar`, a missing or invalid exhibit config refuses startup —
+the same fail-closed contract F3 has for frame rate: a wrong guess plays wrong forever
+with every metric green. Two more gates keep the config honest against reality:
+
+* **The cmdline gate.** If `kms_force` disagrees with the `video=<connector>:...`
+  token actually present in the *running* kernel's `/proc/cmdline`, startup refuses,
+  naming both values and `sudo dex-exhibit-apply`. An edited `exhibit.json` with no
+  matching apply-and-reboot is exactly this disagreement, caught at the next start
+  instead of black-screening the venue for the run of the show.
+* **The sysfs mode pre-flight.** If `display_mode` names a resolution absent from
+  `/sys/class/drm/card*-<connector>/modes`, startup refuses, naming the requested
+  resolution and what the connector actually offers — the wrong-panel case, caught
+  before the asset is even opened. **Resolution only:** the kernel's `modes` file
+  has no refresh column, so the `@R` half of `display_mode` is validated by grammar
+  alone and is settled by mpv's `--drm-mode` matching at VO init — a refresh the
+  connector does not offer fails there (bench-verified: `Could not find mode
+  matching 3840x2160@60`, a 2s-cadence restart loop), with mpv's error in the
+  journal rather than this gate's. See `man dex-exhibit-apply`.
+
+Changing the mode is two steps: edit the file, then run `sudo dex-exhibit-apply`
+(a separate, privileged binary — `dex-loop` itself runs unprivileged under
+`ProtectSystem=strict` and must never write boot config) to reconcile
+`cmdline.txt`'s `video=` token, idempotently, preserving every other token and every
+other connector's token untouched. It prints `REBOOT REQUIRED` iff `cmdline.txt`
+actually changed. Full schema and the swap-the-panel worked example:
+`man dex-exhibit-apply`.
+
+**Migration from the pre-F6 arrangement.** Before this, the mode lived in three
+places that drifted out of sync within days: a hand-edited `cmdline.txt`, a systemd
+drop-in overriding `--mode` in `dex-loop.service`, and a `config.txt` comment block
+carrying the reasoning. `dex-loop.service` no longer passes `--mode`; postinst warns
+(non-fatal) if a leftover drop-in still mentions it. Remove it:
+`sudo rm /etc/systemd/system/dex-loop.service.d/*.conf && sudo systemctl daemon-reload`.
 
 The defaults encode the measured zero-copy path: the Pi's decoder emits
 Broadcom SAND-tiled NV12, and the display scans SAND out natively **only**
@@ -363,15 +432,21 @@ cargo deb                                     # -> target/debian/dex-loop_0.1.0_
 sudo apt install ./dex-loop_0.1.0_arm64.deb   # apt, not dpkg -i: it resolves Depends
 ```
 
-The package installs the binary and `dex-wait-hdmi` to `/usr/bin`, installs and
-enables the unit, creates the unprivileged `dex` user with `video`/`render`,
-and creates `/opt/dex`. It does **not** start the unit (that takes DRM master,
-which an operator on an SSH console should time themselves) and it ships **no
-asset** — the video and its sidecar are content, and baking one in would mean
-rebuilding the software to change the artwork:
+The package installs `dex-loop`, `dex-exhibit-apply` and `dex-wait-hdmi` to
+`/usr/bin`, installs and enables the unit, creates the unprivileged `dex` user
+with `video`/`render`, creates `/opt/dex`, and ships an inert stock
+`/etc/dex/exhibit.json` (`display_mode: "auto"`, conffile — a hand edit
+survives a package upgrade). It does **not** start the unit (that takes DRM
+master, which an operator on an SSH console should time themselves) and it
+ships **no asset** — the video and its sidecar are content, and baking one in
+would mean rebuilding the software to change the artwork:
 
 ```bash
 scp loop.265 loop.265.json <host>:/opt/dex/
+sudoedit /etc/dex/exhibit.json         # F6: set display_mode (and kms_force if
+                                        # the sink needs one -- see README's
+                                        # "Exhibit config (F6)" section above)
+sudo dex-exhibit-apply                 # reconciles cmdline.txt; reboot if it says to
 sudo systemctl set-default multi-user.target   # no desktop; nothing else may own DRM
 sudo systemctl start dex-loop
 ```
@@ -405,15 +480,18 @@ Two consequences worth knowing:
 * **`/usr/bin`, not `/usr/local/bin`.** Debian policy reserves `/usr/local` for
   the local administrator; the unit was repointed accordingly.
 
-`deploy/` carries the systemd unit and the HDMI connector wait. The unit's
-`StartLimitIntervalSec=0` is load-bearing: the default rate limit would put the
-service into a permanent `failed` state after a burst of crashes, which is the
-unattended failure this is meant to prevent. A restart loop always beats a dead
-screen.
+`deploy/` carries the systemd unit, the HDMI connector wait, and
+`dex-exhibit-apply` (F6). The unit's `StartLimitIntervalSec=0` is load-bearing:
+the default rate limit would put the service into a permanent `failed` state
+after a burst of crashes, which is the unattended failure this is meant to
+prevent. A restart loop always beats a dead screen.
 
-The primary boot-order fix is at the KMS layer, not in the player -- bake the
-projector's EDID into `cmdline.txt` so the Pi always believes a 4K30 display is
-attached. See the comments in `deploy/dex-wait-hdmi`.
+The primary boot-order fix is at the KMS layer, not in the player: the exhibit
+config's `kms_force` (with a trailing `D`) forces the connector to read
+`connected` even before a sink is actually attached, so the Pi always believes
+the intended mode is present rather than depending on boot order — see
+"Exhibit config (F6)" above and `man dex-exhibit-apply`. `dex-wait-hdmi` is the
+belt-and-braces fallback for connectors that have not been given a `kms_force`.
 
 **Watchdog (F10).** The unit also carries `WatchdogSec=180` + `NotifyAccess=main`
 — an EXTERNAL actor for the one hazard tier 0/F9 cannot see: the event thread

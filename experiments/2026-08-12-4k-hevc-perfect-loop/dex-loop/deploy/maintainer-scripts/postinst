@@ -40,6 +40,24 @@ configure)
     echo "  The player refuses to start without the sidecar, on purpose: a" >&2
     echo "  guessed frame rate plays wrong forever with every metric green." >&2
   fi
+
+  # F6 (PLAN.md): the display mode moved from a systemd drop-in's --mode into
+  # /etc/dex/exhibit.json. LOUD, non-fatal, because the package must not
+  # delete an admin-created /etc file itself -- and it need not: if the
+  # drop-in DISAGREES with the exhibit config, main.rs's own --mode
+  # cross-check refuses to start and names both values, so nothing can
+  # silently win. This warning exists for the case that still WOULD start:
+  # a drop-in that happens to agree, or one that has gone stale in some other
+  # way (see 2026-08-17's config.txt-vs-cmdline.txt drift on dexpi4) -- purely
+  # so the leftover gets noticed and removed rather than outliving its reason.
+  dropin_dir=/etc/systemd/system/dex-loop.service.d
+  if [ -d "$dropin_dir" ] && grep -q -- '--mode' "$dropin_dir"/*.conf 2>/dev/null; then
+    echo "dex-loop: NOTE: $dropin_dir still overrides --mode -- that setting" >&2
+    echo "  moved to /etc/dex/exhibit.json's display_mode (F6, PLAN.md). If the" >&2
+    echo "  drop-in's value disagrees with the exhibit config, the unit will" >&2
+    echo "  refuse to start (naming both). Remove the drop-in:" >&2
+    echo "    sudo rm $dropin_dir/*.conf && sudo systemctl daemon-reload" >&2
+  fi
   ;;
 esac
 
