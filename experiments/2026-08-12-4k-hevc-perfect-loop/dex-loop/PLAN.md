@@ -289,6 +289,40 @@ back corrupt.
 
 ### F6 — Display mode belongs to the exhibit config (Max, 2026-08-17: DO IT)
 
+> **DESIGN SETTLED BY MAX, 2026-08-17. Read this before implementing — it
+> supersedes any plan that puts display config in the asset sidecar.**
+>
+> **An exhibit file: `dex.yaml`, which REFERENCES the asset.** Not the sidecar.
+>
+> - The exhibit file names *which* asset to play, so **several assets can sit in
+>   storage** and the exhibit picks one. That is the feature the sidecar cannot
+>   provide at all, and it matters more than where the mode lives.
+> - **YAML, not JSON**, because a human edits this in the field, possibly on a
+>   phone over SSH. JSON is a subset of YAML, so a machine can still emit plain
+>   JSON and it parses — we get human-editability without giving up
+>   machine-writability.
+> - The sidecar keeps its current job unchanged: fps + sha256 bound to the asset
+>   *bytes*. That is asset integrity. The exhibit file is installation
+>   configuration. Two different lifetimes, two different files.
+>
+> **A reasoning error of mine, corrected, because it could mislead an
+> implementer.** I argued the sidecar was the wrong home because it is
+> "hash-bound, so changing the display would require re-hashing the artwork."
+> That is backwards. The hash covers the asset's own bytes; editing a `mode:`
+> field beside it would not invalidate anything about the asset. The sidecar is
+> the wrong home for a *better* reason: **an exhibit is not a property of an
+> asset**. One artwork may run on several panels, and one panel may show several
+> artworks over a season. Config whose lifetime differs from the thing it sits
+> next to will eventually be edited in the wrong copy.
+>
+> **Decision the implementer still owns:** YAML needs a parser, and SPEC §5c says
+> a dependency earns its place by removing code we would otherwise own. Note
+> `serde_yaml` is unmaintained (archived 2024); `serde_yaml_ng` and `yaml-rust2`
+> are the live options. Weigh them, state the choice, and remember a new runtime
+> dependency also changes the `.deb`'s derived `Depends`. Since JSON is valid
+> YAML, "reuse serde_json and require JSON syntax" is a legitimate third option —
+> but it forfeits comments, which is much of why a human wants YAML.
+
 **Decision: the target display is part of the "exhibit" configuration.** An
 explicit mode is the default because an exhibition wants stability, and `auto`
 stays available for flexibility (bench work, an unknown venue panel, a swap
