@@ -269,6 +269,41 @@ appearing on a device in a gallery.
 - Decide whether dex-os ships one image with mode selection, or a 4K variant.
 - Ties back to B2: the image should write the display mode deliberately.
 
+### E4. Boot-time optimisation — POST-1.0 (Max, 2026-08-17)
+
+**Measure first, then remove.** The goal is the interval between mains-on and
+the first frame on the wall, because that is the only latency a visitor ever
+sees: the documented off-switch for these devices is the wall socket, so every
+power cycle is a cold boot in front of an audience.
+
+The task, in order:
+
+1. **Measure what boot time is actually spent on.** `systemd-analyze` and
+   `systemd-analyze blame` / `critical-chain` are the whole first pass. No
+   changes yet, and no assumptions about what is slow — the answer for a
+   headless single-purpose image is frequently not what it is for a desktop.
+2. **For each cost, ask whether this image needs the thing at all**, and turn
+   it off if not. A dex-os card runs one player against one display; a great
+   deal of what a general-purpose Raspberry Pi OS starts has no consumer here.
+3. **Fold the answers back into the image build**, not into a post-install
+   script. This is the same job as *minimising the OS at build time* and should
+   be done as one piece of work: a service that is never installed cannot cost
+   boot time, cannot need disabling on each new card, and cannot come back on
+   an update.
+
+Two things this work must not break, both already load-bearing:
+
+- **`ExecStartPre=/usr/bin/dex-wait-hdmi`** deliberately waits for the
+  connector (a projector can take 30–90 s to present EDID while the Pi boots in
+  ~15). Time spent there is *correct* waiting, not a boot-time cost to trim —
+  removing it would turn a slow-projector venue into a fallback-mode one.
+- **`StartLimitIntervalSec=0`** and the restart loop. Anything that makes the
+  player start earlier must not make it start *before* something it depends on
+  and rely on restarts to paper over it.
+
+Post-1.0 because it is an optimisation of a path that already works, and
+because measuring it properly wants the shipping image to exist first.
+
 ---
 
 ## Decisions
@@ -322,14 +357,9 @@ These are not Phase A–E work, but they compete for the same evenings:
 - **Milestone 4 (exhibition format: playlists, per-video timing)** — changes the
   answer to D1 and should not be pre-empted by it. Note the `dexd` direction points
   straight at M4, so this may arrive sooner than its milestone number suggests.
-- **The >=500-wrap statistical seam run** — an experiment artifact, not a product gate.
-  The M5 artwork does not loop, so seam behaviour is not on its acceptance path.
-
-## Deliberately not in this plan
-
-- **F2 tier-2 reboot escalation** — explicitly a future iteration.
-- **Milestone 4 (exhibition format: playlists, per-video timing)** — changes the
-  answer to D1 and should not be pre-empted by it.
 - **The ≥500-wrap statistical seam run** — an experiment artifact, not a product gate.
   The M5 artwork does not loop, so seam behaviour is not on its acceptance path.
+
+*(This section appeared twice, in near-identical copies, until 2026-08-17. Merged
+into the one above — the duplicate's only unique content was a missing sentence.)*
 
