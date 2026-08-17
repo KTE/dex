@@ -315,6 +315,44 @@ back corrupt.
 > artworks over a season. Config whose lifetime differs from the thing it sits
 > next to will eventually be edited in the wrong copy.
 >
+> **REFINED BY MAX, 2026-08-17 — both formats, honestly.** Support **`.json`
+> AND `.yaml`**, and **the extension decides the parser**: a `.json` file must be
+> strict JSON, a `.yaml` file may use YAML. Share as much code as possible
+> between the two paths.
+>
+> **Do not take the tempting shortcut.** YAML is a superset of JSON, so "parse
+> everything with the YAML parser" would pass every test and be wrong: it would
+> silently accept comments, anchors and unquoted keys inside a file named
+> `.json`. That file would then break every *other* tool that reads it as JSON —
+> `jq`, `python -m json.tool`, any future web UI. **The extension is a promise to
+> the rest of the world about what the bytes are**, and honouring it is the whole
+> point of offering two formats rather than one.
+>
+> **Shape that maximises sharing:** each parser produces a generic tree
+> (`serde_json::Value` / `yaml_rust2::Yaml`); one shared function maps that tree
+> to the `Exhibit` struct and validates it. Only the tree-building step differs,
+> which is a handful of lines — everything semantic is common.
+>
+> **Dependency: `yaml-rust2`.** Measured 2026-08-17 against the §5c policy:
+>
+> | crate | crates added | proc macros |
+> |---|---|---|
+> | **yaml-rust2** | **8** | **0** |
+> | serde_yaml_ng | 10 | 0 |
+> | saphyr | 20 | **6** — would fail deny.toml's ban outright |
+>
+> `serde_yaml` itself is archived (2024) and is not an option.
+>
+> **Also still open on F6 (see below):** the exhibit file must NAME ITS ASSET, so
+> several assets can sit in storage and the exhibit picks one. That was the
+> capability Max asked for and the first implementation does not have it —
+> `ExecStart` still hardcodes `/opt/dex/loop.265`.
+>
+> **And a factual error to fix in `src/exhibit.rs`'s module doc:** it cites "the
+> M5 soak played a 2160p30 asset on a 1440p Dell". That did not happen — the soak
+> ran 4K30 on the Cam Link, with the Dell disconnected. The design conclusion is
+> right; the evidence cited for it is invented, which is worse than citing none.
+
 > **Decision the implementer still owns:** YAML needs a parser, and SPEC §5c says
 > a dependency earns its place by removing code we would otherwise own. Note
 > `serde_yaml` is unmaintained (archived 2024); `serde_yaml_ng` and `yaml-rust2`
@@ -351,6 +389,48 @@ stated explicitly, not negotiated.**
 Current stopgap, which this replaces: a systemd drop-in overriding `--mode`,
 plus a hand-edited `cmdline.txt`, plus a comment block in `config.txt` carrying
 the reasoning. Three places, none of them a config file.
+
+**2026-08-17, implemented — and a decision conflict surfaced, not resolved
+here.** Landed as `src/exhibit.rs` (grammar + `ExhibitConfig` + `resolve_display`
++ the cmdline comparator + the sysfs pre-flight parser + `reconcile_cmdline`,
+37 unit tests, all Mac-testable) plus `main.rs` wiring (new startup gates,
+before the asset is even read: config parse → cmdline-vs-kernel gate → sysfs
+mode pre-flight) plus a new privileged sibling binary,
+`src/bin/dex-exhibit-apply.rs`, that reconciles `cmdline.txt` and is the only
+thing in this crate that writes boot config. `deploy/dex-loop.service` no
+longer passes `--mode`. Full detail in README.md's "Exhibit config (F6)"
+section and this task's session notes.
+
+**The conflict:** this implementation is **JSON**, at **`/etc/dex/exhibit.json`**,
+and covers **display config only** — it does NOT let the exhibit file select
+*which asset* plays (the asset path is still the one baked into
+`dex-loop.service`'s `ExecStart`, `/opt/dex/loop.265`). That contradicts the
+"DESIGN SETTLED BY MAX, 2026-08-17" blockquote directly above, which mandates
+**YAML**, a file named **`dex.yaml`**, and explicitly requires asset
+*selection* ("several assets can sit in storage and the exhibit picks one")
+as the primary reason JSON/the sidecar's parser was rejected there.
+
+This implementation instead followed a SEPARATE, more detailed design brief
+prepared for this specific task (fresh bench evidence gathered the same day:
+the `modetest` mode-list discrepancy, the `override.conf` residue, the stale
+`config.txt` comment — see the story file) that settles on JSON + the
+sidecar's existing subset parser + display-only scope, and does not mention
+or explicitly supersede the YAML/`dex.yaml`/asset-selection blockquote above.
+Both are labeled as Max's own settled decisions; they were not reconciled
+before this implementation started, and this implementer followed the later,
+more concrete brief per this task's own instructions rather than silently
+picking a side. **Two things Max should resolve:**
+
+1. Confirm whether JSON `/etc/dex/exhibit.json` (display-only) is the
+   INTENDED supersession of the YAML `dex.yaml` blockquote, or whether that
+   blockquote's asset-selection requirement is a still-open, separate need —
+   in which case it is a different feature (WHICH asset plays) from what F6
+   as shipped covers (WHAT MODE the display uses), and probably deserves its
+   own F-item rather than retrofitting into this one.
+2. If asset selection is still wanted, decide whether it belongs in
+   `/etc/dex/exhibit.json` (widening this format, and probably requiring a
+   YAML migration at that point for the comment-support reason the blockquote
+   gives) or in a still-separate file — rather than resolved by drift.
 
 ### F7 — Nits
 Version/git hash in the startup line; heartbeat log every ~10 min (loop count,
