@@ -22,3 +22,32 @@ dex-loop: aliased-location
 # being uploaded INTO the Debian archive; this one is built in CI and installed
 # on our own devices, so there is no bug to close and never will be.
 dex-loop: initial-upload-closes-no-bugs
+
+# FALSE POSITIVE, diagnosed rather than assumed -- an `embedded-library` tag is
+# exactly the kind that should NOT be waved through on a hunch, since the real
+# version of it means shipping unpatchable copies of someone else's CVEs.
+#
+# What lintian actually tests for (trixie, /usr/share/lintian/data/binaries/
+# embedded-libs line 86) is the single STRING:
+#
+#     did not find expected <stream-start>
+#
+# That is one of libyaml's error messages -- and `yaml-rust2` is a from-scratch
+# Rust port of libyaml's scanner/parser which reproduces its diagnostics
+# verbatim, at src/parser.rs:366 and :525. So the fingerprint matches the
+# message, not the code.
+#
+# Verified on the real arm64 binary (dexpi4, 2026-08-17), three ways:
+#   * `ldd` shows no libyaml among the dynamic dependencies
+#   * `strings` finds ZERO libyaml C symbols (no yaml_parser_*, yaml_emitter_*,
+#     yaml_document_*); every yaml symbol is a Rust-mangled yaml_rust2::*
+#   * no crate in the subtree (yaml-rust2, arraydeque, hashlink, hashbrown,
+#     foldhash) has a build.rs, a `links =` key, or is a *-sys crate, so there
+#     is no mechanism by which C could be compiled in at all
+#
+# There is therefore no embedded libyaml to update when libyaml has a CVE; the
+# security-tracking concern the tag exists to serve does not apply. Re-check
+# this if the yaml dependency is ever swapped for one with a C backend, which
+# would make the same tag true.
+dex-loop: embedded-library libyaml [usr/bin/dex-loop]
+dex-loop: embedded-library libyaml [usr/bin/dex-exhibit-apply]
