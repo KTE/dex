@@ -341,9 +341,20 @@ Values are strings or non-negative integers, one level deep, in either format. Y
 extras that JSON could not express — nested mappings, lists, anchors, `---` multi-doc
 streams — are refused, so a config cannot mean something different depending on which
 extension it was saved under. One YAML-specific note, measured rather than assumed:
-`yaml-rust2` resolves scalars under the **YAML 1.2 core schema**, so only `true`/`false`
+`yaml-rust2` resolves scalars close to the **YAML 1.2 core schema**, so only `true`/`false`
 are booleans and the "Norway problem" (`no` → `false`) does not arise here — `kms_force:
 no` arrives as the string `"no"` and is refused by the grammar, naming the valid values.
+(*Close to*: its null resolution is `""`/`~`/`null` only, so the core schema's `Null` and
+`NULL` arrive as ordinary strings. Driven, not read off the spec.)
+
+**Not** YAML's own JSON schema, which sounds like it should be the tool for the `.json`
+path and is not. YAML's three schemas (failsafe, JSON, core) govern only how an untagged
+*scalar* resolves to a type; none of them restricts syntax. A YAML parser in JSON-schema
+mode still accepts comments, block style and anchors — so it could not deliver the promise
+a `.json` name makes, which is the whole job here. Hence a real JSON parser for `.json`.
+It would be wrong for `.yaml` too, in the other direction: under the JSON schema a plain
+scalar matching none of null/bool/int/float is an *error*, so `display_mode: 3840x2160@30`
+would not resolve at all. (Moot anyway — `yaml-rust2` exposes no schema selection.)
 
 Outside `--bench-no-sidecar`, a missing or invalid exhibit config refuses startup —
 the same fail-closed contract F3 has for frame rate: a wrong guess plays wrong forever

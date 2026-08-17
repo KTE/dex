@@ -258,11 +258,35 @@ pub fn is_valid_connector(s: &str) -> bool {
 /// instead of one, so the dispatch is here, at the outermost layer, where it
 /// cannot be bypassed by a convenience helper.
 ///
+/// **Why not YAML's own JSON schema, which exists for exactly this?** Because
+/// it solves a different problem than the one here. YAML 1.2 defines three
+/// schemas (failsafe, JSON, core), and all three govern only how an *untagged
+/// scalar* resolves to a type — they say nothing about SYNTAX. A YAML parser
+/// set to the JSON schema still accepts `#` comments, block style, unquoted
+/// keys, anchors and `---` document markers; it would simply resolve
+/// `3840x2160` differently. So "parse `.json` with a YAML parser in JSON-schema
+/// mode" would NOT deliver the promise a `.json` name makes, which is precisely
+/// the promise this type exists to keep. That is why the JSON path runs on
+/// `serde_json`, a real JSON parser, rather than on a configured YAML one.
+///
+/// It would also be the wrong choice for the `.yaml` path, in the opposite
+/// direction: under the JSON schema a plain scalar matching none of
+/// null/bool/int/float is an ERROR, so `display_mode: 3840x2160@30` — an
+/// unquoted string, and the entire ergonomic point of offering YAML — would
+/// fail to resolve. (Moot in practice: `yaml-rust2` hardwires core-ish
+/// resolution and exposes no schema selection at all. See
+/// [`parse_flat_yaml`], which documents the one place it departs from 1.2
+/// core.)
+///
 /// Everything after tree-building is shared: both parsers produce the same
 /// `Vec<(String, Value)>` flat map that [`crate::sidecar::parse_flat_json`]
 /// already produces, and [`ExhibitConfig::from_pairs`] does 100% of the
 /// mapping and validation for both. Only the ~40 lines that turn text into
-/// pairs differ.
+/// pairs differ. The subset that flat map enforces — strings and non-negative
+/// integers, one level deep — is stricter in node types than any of YAML's
+/// three schemas, but it applies AFTER resolution, so resolution decisions
+/// remain observable: `venue: 2026` resolves to an integer and is then refused
+/// as "must be a string", exactly as `"venue": 2026` is on the JSON side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
     Json,
@@ -319,7 +343,7 @@ impl ConfigFormat {
 ///   `"true"`, and refuses with a message naming the quoting fix.
 ///
 ///   MEASURED, not assumed, because the received wisdom here is wrong for
-///   this library: `yaml-rust2` 0.11 resolves scalars under the **YAML 1.2
+///   this library: `yaml-rust2` 0.11 resolves scalars close to the **YAML 1.2
 ///   core schema**, where ONLY `true`/`false` (any of three casings) are
 ///   booleans. The famous "Norway problem" — `no` silently becoming `false` —
 ///   is a YAML **1.1** behaviour and does not occur here, so `kms_force: no`
@@ -327,6 +351,20 @@ impl ConfigFormat {
 ///   [`is_valid_kms_force`]'s grammar, naming the valid values. Both paths
 ///   refuse; only the message differs. Pinned by test in both directions, so
 ///   a version bump that adopted 1.1 resolution could not slip through.
+///
+///   "Close to", not "is": its null resolution (`yaml.rs`'s `from_str`) is
+///   `"" | "~" | "null"`, where the 1.2 core schema also lists `Null` and
+///   `NULL`. Driven against the real binary — `note: Null` and `note: NULL`
+///   are accepted as STRINGS, while `null`, `~` and an empty value resolve to
+///   null and are refused. Harmless for this schema (only the informational
+///   keys could receive such a value, and taking it literally is the friendlier
+///   of the two readings) but stated exactly, because "it implements the core
+///   schema" is the kind of nearly-true sentence a future reader would rely on.
+///
+///   **There is no schema knob to reach for**: `yaml-rust2` hardwires this
+///   resolution and exposes no way to select the failsafe or JSON schema. See
+///   [`ConfigFormat`] for why the JSON schema would not have been the right
+///   tool for the `.json` path anyway.
 /// * **Floats.** `29.97` is `Yaml::Real`. The JSON side already refuses
 ///   non-integers, and the bench evidence in [`is_valid_display_mode`] is why:
 ///   a decimal refresh silently means its rounded integer.
@@ -1610,7 +1648,7 @@ mod tests {
     }
 
     /// The OTHER half, and the one that is easy to get wrong from memory:
-    /// yaml-rust2 0.11 resolves under the YAML **1.2 core schema**, so the
+    /// yaml-rust2 0.11 resolves close to the YAML **1.2 core schema**, so the
     /// "Norway problem" does NOT apply -- `no` stays the string `"no"` and is
     /// refused by the kms_force GRAMMAR, not by the boolean branch. Asserted
     /// on the message so that a future version adopting 1.1 resolution (which
@@ -1627,6 +1665,49 @@ mod tests {
         // ...and stating it properly is the fix.
         let ok = ExhibitConfig::from_yaml("display_mode: auto\nkms_force: none\n").unwrap();
         assert_eq!(ok.kms_force, "none");
+    }
+
+    /// Where yaml-rust2 DEPARTS from the 1.2 core schema, pinned so the docs
+    /// cannot quietly become wrong: core lists `null | Null | NULL | ~ | empty`
+    /// as null, but this library's `from_str` matches only `""`, `"~"` and
+    /// `"null"` — case-sensitively. So the capitalised spellings arrive as
+    /// ordinary strings.
+    ///
+    /// Harmless here (only the informational keys could carry such a value,
+    /// and reading it literally is the friendlier of the two options), but
+    /// "it implements the core schema" is a nearly-true sentence a future
+    /// reader would rely on, and this is the test that keeps it honest.
+    #[test]
+    fn yaml_null_resolution_is_case_sensitive_unlike_the_1_2_core_schema() {
+        for null_spelling in ["null", "~", ""] {
+            let e = ExhibitConfig::from_yaml(&format!("display_mode: auto\nnote: {null_spelling}\n"))
+                .unwrap_err();
+            assert!(e.contains("null"), "{null_spelling:?}: {e}");
+        }
+        for string_spelling in ["Null", "NULL"] {
+            let c = ExhibitConfig::from_yaml(&format!(
+                "display_mode: auto\nnote: {string_spelling}\n"
+            ))
+            .expect("core would call this null; yaml-rust2 does not");
+            assert_eq!(c.note.as_deref(), Some(string_spelling));
+        }
+    }
+
+    /// Scalar resolution happens BEFORE this crate's subset check, so it stays
+    /// observable — and both formats must land in the same place. A bare
+    /// number resolves to an integer and is then refused for a string-only
+    /// key, identically to the JSON spelling of the same thing.
+    #[test]
+    fn a_bare_number_is_refused_the_same_way_in_both_formats() {
+        let y = ExhibitConfig::from_yaml("display_mode: auto\nvenue: 2026\n").unwrap_err();
+        let j = ExhibitConfig::from_json(r#"{"display_mode":"auto","venue":2026}"#).unwrap_err();
+        assert_eq!(y, j, "the two formats must refuse identically");
+        assert!(y.contains("venue must be a string"), "{y}");
+        // ...and quoting is the fix in both.
+        assert_eq!(
+            ExhibitConfig::from_yaml("display_mode: auto\nvenue: \"2026\"\n").unwrap(),
+            ExhibitConfig::from_json(r#"{"display_mode":"auto","venue":"2026"}"#).unwrap()
+        );
     }
 
     #[test]

@@ -443,7 +443,9 @@ section and this task's session notes.
 >
 > Two facts found by driving rather than reasoning, both of which contradicted
 > something written first: (1) `yaml-rust2` 0.11 resolves scalars under the YAML
-> **1.2 core schema**, so only `true`/`false` are booleans and the "Norway
+> **1.2 core schema** (close to, not exactly — its null resolution omits the
+> core spellings `Null`/`NULL`, which therefore arrive as strings; driven on the
+> real binary, and now pinned by test), so only `true`/`false` are booleans and the "Norway
 > problem" does not arise — `kms_force: no` is the string `"no"`, refused by the
 > grammar; both directions are now pinned by test. (2) `if args.is_empty() {
 > usage() }` at the top of `main` — harmless for the program's whole life, fatal
