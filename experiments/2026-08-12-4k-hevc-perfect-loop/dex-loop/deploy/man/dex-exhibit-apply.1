@@ -102,7 +102,31 @@ with no matching
 .B dex\-exhibit\-apply
 + reboot is exactly this disagreement \(em caught at the next start rather
 than black\-screening the venue for the run of the exhibition. The error names
-both values and this command.
+both values and BOTH possible repairs: the gate cannot know whether the
+config is the stale side or the cmdline is. In particular, on a machine whose
+cmdline already carries a force the venue deliberately needs (some displays
+build no 4K mode unforced), the repair is to update
+.IR exhibit.json ,
+NOT to run this command \(em running it would delete the needed force.
+.SH WHAT THE PRE\-FLIGHT DOES AND DOES NOT VALIDATE
+.B dex\-loop
+checks the RESOLUTION half of
+.B display_mode
+against the connector's
+.I /sys/class/drm/card*\-<connector>/modes
+list before opening the asset. The
+.B @R
+refresh half is validated by GRAMMAR ONLY \(em the kernel's
+.I modes
+file has no refresh column, so no sysfs pre\-flight for it is possible. A
+syntactically valid refresh the connector does not actually offer is settled
+by mpv's
+.B \-\-drm\-mode
+matching at VO init instead: expect an mpv\-voiced VO error (and a restart
+loop) in the journal rather than a message from this gate. If the mode you
+configure came from EDID or
+.B modetest
+data, double\-check the refresh against what the connector really builds.
 .SH EXAMPLE: SWAPPING THE PANEL
 .nf
 sudoedit /etc/dex/exhibit.json     # display_mode/kms_force for the new panel

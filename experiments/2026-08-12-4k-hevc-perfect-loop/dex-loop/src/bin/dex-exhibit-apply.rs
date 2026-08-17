@@ -26,11 +26,91 @@
 use dex_loop::exhibit::{reconcile_cmdline, ExhibitConfig, DEFAULT_EXHIBIT_CONFIG_PATH};
 
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CMDLINE_PATH: &str = "/boot/firmware/cmdline.txt";
+
+/// How many `cmdline.txt.bak-*` backups to keep. The boot partition is a
+/// small FAT32 volume; unbounded accumulation would eventually fill it, and
+/// a backup older than the last few applies has no recovery value anyway.
+const BACKUPS_TO_KEEP: usize = 5;
+
+/// Write `contents` to `path` and fsync it before returning. A plain
+/// `fs::write` leaves the data in the page cache with no durability
+/// guarantee -- on the one file the Pi cannot boot without, for an
+/// installation whose documented off-switch is the mains, "written" must
+/// mean "on the card", not "scheduled".
+fn write_synced(path: &str, contents: &[u8]) -> std::io::Result<()> {
+    let mut f = File::create(path)?;
+    f.write_all(contents)?;
+    f.sync_all()
+}
+
+/// Best-effort fsync of `path`'s parent directory, so the rename that put
+/// the file there is itself committed. Errors are deliberately ignored:
+/// by this point the data blocks and the file are already synced, and some
+/// filesystems refuse directory fsync -- failing the whole apply over the
+/// least important of the three syncs would be worse than proceeding.
+fn sync_parent_dir(path: &str) {
+    let parent = Path::new(path).parent().filter(|p| !p.as_os_str().is_empty());
+    if let Some(dir) = parent {
+        if let Ok(d) = File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+}
+
+/// Pick a backup path that does not already exist: two applies within the
+/// same second must not silently truncate each other's backup.
+fn fresh_backup_path(cmdline_path: &str, stamp: u64) -> String {
+    let base = format!("{cmdline_path}.bak-{stamp}");
+    let mut candidate = base.clone();
+    let mut n = 1u32;
+    while Path::new(&candidate).exists() {
+        candidate = format!("{base}.{n}");
+        n += 1;
+    }
+    candidate
+}
+
+/// Delete all but the newest [`BACKUPS_TO_KEEP`] `<cmdline>.bak-*` files.
+/// Best-effort and loud about what it removes; a failure here never fails
+/// the apply (the reconcile already succeeded), it only means one extra
+/// backup survives until the next run.
+fn prune_old_backups(cmdline_path: &str) {
+    let path = Path::new(cmdline_path);
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return };
+    let prefix = format!("{}.bak-", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(if dir.as_os_str().is_empty() { Path::new(".") } else { dir })
+    else {
+        return;
+    };
+    let mut backups: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with(&prefix).then(|| e.path().to_string_lossy().into_owned())
+        })
+        .collect();
+    if backups.len() <= BACKUPS_TO_KEEP {
+        return;
+    }
+    // Unix-seconds stamps are fixed-width (10 digits) until 2286, so a
+    // lexical sort orders them chronologically; collision suffixes (".1")
+    // sort after their base, which is also chronological.
+    backups.sort();
+    let excess = backups.len() - BACKUPS_TO_KEEP;
+    for old in backups.into_iter().take(excess) {
+        match fs::remove_file(&old) {
+            Ok(()) => println!("  pruned old backup: {old}"),
+            Err(e) => eprintln!("warning: could not prune old backup {old}: {e}"),
+        }
+    }
+}
 
 fn usage() -> ! {
     eprintln!(
@@ -125,8 +205,10 @@ fn main() -> ExitCode {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let backup_path = format!("{cmdline_path}.bak-{stamp}");
-    if let Err(e) = fs::write(&backup_path, &current) {
+    let backup_path = fresh_backup_path(&cmdline_path, stamp);
+    // Synced before the original is touched: a backup that is still only in
+    // the page cache when the mains go off is no backup at all.
+    if let Err(e) = write_synced(&backup_path, current.as_bytes()) {
         eprintln!("error: cannot write backup {backup_path}: {e}");
         return ExitCode::from(1);
     }
@@ -141,15 +223,34 @@ fn main() -> ExitCode {
     } else {
         desired.clone()
     };
-    if let Err(e) = fs::write(&cmdline_path, &to_write) {
-        eprintln!("error: cannot write {cmdline_path}: {e}");
+    // NEVER rewrite cmdline.txt in place. `fs::write` is open(O_TRUNC) +
+    // write: a mains cut between the truncate and the data commit leaves a
+    // zero-length or garbage cmdline.txt -- an unbootable Pi in a gallery
+    // with no operator, recoverable only by pulling the SD card on site.
+    // And this tool's next printed word is "REBOOT REQUIRED", i.e. it
+    // actively invites a power cycle while an unsynced write could still be
+    // sitting in the page cache. So: write a sibling temp file, fsync it,
+    // rename over the original, fsync the directory. Even where FAT32's
+    // rename atomicity is weak, temp+sync+rename strictly shrinks the
+    // corruption window versus in-place truncation.
+    let tmp_path = format!("{cmdline_path}.new");
+    if let Err(e) = write_synced(&tmp_path, to_write.as_bytes()) {
+        eprintln!("error: cannot write {tmp_path}: {e}");
         return ExitCode::from(1);
     }
+    if let Err(e) = fs::rename(&tmp_path, &cmdline_path) {
+        eprintln!("error: cannot rename {tmp_path} over {cmdline_path}: {e}");
+        // Best-effort cleanup; the original is untouched either way.
+        let _ = fs::remove_file(&tmp_path);
+        return ExitCode::from(1);
+    }
+    sync_parent_dir(&cmdline_path);
 
     println!("dex-exhibit-apply: {cmdline_path}");
     println!("  old: {current_trimmed}");
     println!("  new: {desired}");
     println!("  backup: {backup_path}");
+    prune_old_backups(&cmdline_path);
     println!(
         "REBOOT REQUIRED -- dex-loop binds the display from the RUNNING kernel's /proc/cmdline"
     );

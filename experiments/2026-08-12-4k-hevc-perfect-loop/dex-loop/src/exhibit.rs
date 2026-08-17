@@ -325,28 +325,70 @@ pub fn cmdline_video_token(cmdline: &str, connector: &str) -> Option<String> {
     })
 }
 
+/// Find a CONNECTORLESS `video=` token (`video=WxH@R`, no `conn:` prefix) —
+/// the kernel's grammar also accepts this shape, and it forces ALL
+/// connectors. Neither this module's gate nor its reconciler can reason
+/// about one (which connector does it bind? how does the kernel arbitrate it
+/// against a per-connector token?), so callers REFUSE when one is present
+/// rather than reporting "no token" (the gate) or appending a second,
+/// overlapping force (the reconciler) — refusing beats guessing at kernel
+/// arbitration order for a token shape no dex install is supposed to carry.
+/// Returns the whole token, for the refusal message to name verbatim.
+pub fn connectorless_video_token(cmdline: &str) -> Option<String> {
+    cmdline.split_whitespace().find_map(|tok| {
+        let rest = tok.strip_prefix("video=")?;
+        (!rest.contains(':')).then(|| tok.to_string())
+    })
+}
+
 /// The gate that keeps the exhibit config and the KMS-layer `video=` token
 /// honest with each other (§3.3 of the design): an operator who edits one and
 /// forgets the other must be refused, loudly, naming what to run — not
 /// black-screen the gallery on whichever value the kernel happens to have
 /// booted with. `kms_force == "none"` means "expect NO token for this
 /// connector"; anything else means "expect this EXACT token".
+/// Every refusal names BOTH possible repairs, because this gate cannot know
+/// which side is stale: the config may be right and the cmdline leftover —
+/// but equally the cmdline may carry a force this venue deliberately needs
+/// (the Cam Link builds no 4K mode unforced) that a freshly installed
+/// default config simply does not know about yet. A message prescribing only
+/// `dex-exhibit-apply` in that second case would instruct the operator to
+/// DELETE the needed force, after which `display_mode=auto` silently plays
+/// at whatever the connector negotiates — the exact wrongness class this
+/// gate exists to close, reached by following its own instructions.
 pub fn check_cmdline_matches(cmdline: &str, connector: &str, kms_force: &str) -> Result<(), String> {
+    if let Some(tok) = connectorless_video_token(cmdline) {
+        return Err(format!(
+            "the kernel cmdline carries a connectorless token {tok:?}, which forces ALL \
+             connectors -- this gate cannot reconcile it with the exhibit config's \
+             per-connector kms_force. Qualify it with a connector \
+             (video={connector}:<mode>) or remove it from /boot/firmware/cmdline.txt, \
+             then reboot"
+        ));
+    }
     let found = cmdline_video_token(cmdline, connector);
     match (kms_force, found) {
         (DEFAULT_KMS_FORCE, None) => Ok(()),
         (DEFAULT_KMS_FORCE, Some(found)) => Err(format!(
             "exhibit config says kms_force=none for {connector}, but the kernel cmdline \
-             carries video={connector}:{found} -- run 'sudo dex-exhibit-apply' and reboot"
+             carries video={connector}:{found} -- EITHER the config is stale (a force this \
+             venue deliberately needs, e.g. a display that builds no 4K mode unforced: set \
+             kms_force={found:?} and a matching display_mode in /etc/dex/exhibit.json to \
+             keep it) OR the cmdline is (run 'sudo dex-exhibit-apply' and reboot to remove \
+             the force)"
         )),
         (want, Some(found)) if want == found => Ok(()),
         (want, Some(found)) => Err(format!(
             "exhibit config says kms_force={want}, but the kernel cmdline carries \
-             video={connector}:{found} -- run 'sudo dex-exhibit-apply' and reboot"
+             video={connector}:{found} -- EITHER the config is stale (fix kms_force in \
+             /etc/dex/exhibit.json to match the venue) OR the cmdline is (run 'sudo \
+             dex-exhibit-apply' and reboot)"
         )),
         (want, None) => Err(format!(
             "exhibit config says kms_force={want}, but the kernel cmdline carries no video= \
-             token for {connector} -- run 'sudo dex-exhibit-apply' and reboot"
+             token for {connector} -- EITHER the config is stale (set kms_force=none in \
+             /etc/dex/exhibit.json if this venue needs no force) OR the cmdline is (run \
+             'sudo dex-exhibit-apply' and reboot to add the token)"
         )),
     }
 }
@@ -382,6 +424,17 @@ pub fn reconcile_cmdline(cmdline_text: &str, connector: &str, kms_force: &str) -
     }
     if !is_valid_kms_force(kms_force) {
         return Err(format!("reconcile_cmdline: invalid kms_force {kms_force:?}"));
+    }
+    // A connectorless `video=` token forces ALL connectors; rewriting around
+    // it would leave two overlapping forces for the kernel to arbitrate --
+    // see connectorless_video_token's doc for why refusing beats guessing.
+    if let Some(tok) = connectorless_video_token(trimmed) {
+        return Err(format!(
+            "cmdline.txt carries a connectorless token {tok:?}, which forces ALL connectors \
+             -- refusing to reconcile per-connector video={connector}:... tokens around it \
+             (the kernel would arbitrate two overlapping forces). Qualify or remove {tok:?} \
+             by hand first"
+        ));
     }
     let desired_token = if kms_force == DEFAULT_KMS_FORCE {
         None
@@ -703,6 +756,34 @@ mod tests {
     }
 
     #[test]
+    fn cmdline_gate_refuses_a_connectorless_video_token() {
+        // Kernel grammar also accepts `video=WxH@R` with no connector, which
+        // forces ALL connectors. Previously invisible to the gate (reported
+        // as "no video= token") -- it must refuse, naming the token.
+        let e = check_cmdline_matches(
+            "console=ttyS0 video=1920x1080@60 quiet",
+            "HDMI-A-1",
+            "3840x2160@30",
+        )
+        .unwrap_err();
+        assert!(e.contains("video=1920x1080@60") && e.contains("ALL connectors"), "{e}");
+        // Even when the per-connector expectation is "none": the global
+        // force still binds our connector, so "matches" would be a lie.
+        let e = check_cmdline_matches("video=1920x1080@60", "HDMI-A-1", "none").unwrap_err();
+        assert!(e.contains("connectorless"), "{e}");
+    }
+
+    #[test]
+    fn connectorless_video_token_ignores_per_connector_tokens() {
+        assert_eq!(connectorless_video_token("video=HDMI-A-1:3840x2160@30 quiet"), None);
+        assert_eq!(
+            connectorless_video_token("quiet video=1024x768"),
+            Some("video=1024x768".to_string())
+        );
+        assert_eq!(connectorless_video_token("console=ttyS0 quiet"), None);
+    }
+
+    #[test]
     fn cmdline_gate_expected_present_matches() {
         assert!(check_cmdline_matches(
             "root=/dev/mmcblk0p2 video=HDMI-A-1:3840x2160@30D rootwait",
@@ -805,6 +886,18 @@ mod tests {
         let already = "console=ttyS0 video=HDMI-A-1:3840x2160@30 rootwait";
         let out = reconcile_cmdline(already, "HDMI-A-1", "3840x2160@30").unwrap();
         assert_eq!(out, already);
+    }
+
+    #[test]
+    fn reconcile_refuses_a_connectorless_video_token() {
+        // Previously the reconciler would leave the global force in place and
+        // append its own per-connector token -- two overlapping forces for
+        // the kernel to arbitrate. Refuse instead, naming the token.
+        let e = reconcile_cmdline("console=ttyS0 video=1024x768 rootwait", "HDMI-A-1", "3840x2160@30")
+            .unwrap_err();
+        assert!(e.contains("video=1024x768") && e.contains("by hand"), "{e}");
+        // Same refusal on the removal direction (kms_force=none).
+        assert!(reconcile_cmdline("video=1024x768", "HDMI-A-1", "none").is_err());
     }
 
     #[test]

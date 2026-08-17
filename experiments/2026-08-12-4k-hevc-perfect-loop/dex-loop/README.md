@@ -277,7 +277,11 @@ with every metric green. Two more gates keep the config honest against reality:
 * **The sysfs mode pre-flight.** If `display_mode` names a resolution absent from
   `/sys/class/drm/card*-<connector>/modes`, startup refuses, naming the requested
   resolution and what the connector actually offers — the wrong-panel case, caught
-  before the asset is even opened.
+  before the asset is even opened. **Resolution only:** the kernel's `modes` file
+  has no refresh column, so the `@R` half of `display_mode` is validated by grammar
+  alone and is settled by mpv's `--drm-mode` matching at VO init — a refresh the
+  connector does not offer fails (or snaps) there, with mpv's error in the journal
+  rather than this gate's. See `man dex-exhibit-apply`.
 
 Changing the mode is two steps: edit the file, then run `sudo dex-exhibit-apply`
 (a separate, privileged binary — `dex-loop` itself runs unprivileged under

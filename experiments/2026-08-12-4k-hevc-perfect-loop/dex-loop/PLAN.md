@@ -432,6 +432,71 @@ picking a side. **Two things Max should resolve:**
    YAML migration at that point for the comment-support reason the blockquote
    gives) or in a still-separate file — rather than resolved by drift.
 
+**2026-08-17, adversarial-review pass (two reviews of F6/F10; fixes applied on
+this branch).** Fixed here:
+
+* **`dex-exhibit-apply` now writes `cmdline.txt` durably and atomically** —
+  the old `fs::write` was open(O_TRUNC)+write with no fsync: a mains cut
+  mid-apply (or any time before the page cache flushed — and the tool's next
+  printed word invites a power cycle) could leave a zero-length/garbage
+  `cmdline.txt`, an unbootable Pi recoverable only by pulling the SD card on
+  site. Now: temp file + `sync_all` + `rename` + directory sync; the backup
+  is also synced BEFORE the original is touched, backup names get a counter
+  suffix on same-second collision, and only the 5 newest backups are kept
+  (the boot FAT32 partition is small).
+* **EACCES no longer masquerades as "file missing"** — an unreadable-but-
+  present `/etc/dex/exhibit.json` (0600 root edit, wrong-owner restore) used
+  to produce "Create /etc/dex/exhibit.json" for a file the operator can see
+  exists. Now only `NotFound` defers to that message; anything else exits 2
+  naming the real error and the chmod/chown repair.
+* **The cmdline gate names BOTH repairs** — its old message prescribed
+  `dex-exhibit-apply` unconditionally, but in the stale-CONFIG direction
+  (fresh default config installed over a cmdline whose force the venue
+  needs — the Cam Link case, this file's own example) following that
+  instruction deletes the needed force and `auto` then hides the downgrade.
+* **Connectorless `video=WxH@R` tokens (no `conn:` prefix) are refused, not
+  invisible** — the kernel grammar accepts them and they force ALL
+  connectors; both the gate and `reconcile_cmdline` previously could not see
+  one (gate reported "no token"; the reconciler would append a second,
+  overlapping force). Now both refuse, naming the token.
+* **`auto` + sidecar resolution warning** — `display_mode: "auto"` skips the
+  sysfs pre-flight by construction, which converts fail-closed into
+  fail-silent on the exact config the `.deb` ships: a forgotten exhibit.json
+  on hardware that builds no 4K mode unforced plays the 4K artwork at the
+  connector's fallback for the run of the show, every metric green. The
+  sidecar is hash-bound and already carries width/height, so `main.rs` now
+  WARNS (F8-style, at startup) when `auto` is in effect and the connector's
+  mode list does not offer the asset's resolution.
+* README + `man dex-exhibit-apply` no longer overclaim the pre-flight: it
+  validates the RESOLUTION half of `display_mode` only. The `@R` refresh half
+  is grammar-checked and settled by mpv's `--drm-mode` at VO init (the
+  kernel's sysfs `modes` file has no refresh column — verified on dexpi4, six
+  indistinguishable `3840x2160` lines).
+* usage() no longer calls `--mode` "REQUIRED alongside --bench-no-sidecar"
+  while stating its default (`bench_with_no_mode_defaults_to_auto` pins the
+  actual behavior: optional, defaults to auto).
+* Test count: `src/exhibit.rs` now has 40 `#[test]` fns (37 at 6df57ed — the
+  number this entry used to state, which was CORRECT; the commit message's
+  "38" is off by one, and a review claim of "27" is wrong. The commit message
+  also carries a Co-Authored-By trailer against this repo's convention — both
+  are pushed history, noted here rather than rewritten).
+
+Deferred, with reasons:
+
+* **Refuse (vs warn) on the `auto`/asset-resolution mismatch, and/or shipping
+  `display_mode` as an explicit `"unset"` that refuses like a missing
+  config** — a real behavior change to the shipped default, entangled with
+  the parked JSON-vs-`dex.yaml` design questions above. Max's call.
+* **Refresh-half pre-flight extension** (mpv mode enumeration, or `modetest`
+  parsing at apply time) — needs the bench data on what mpv actually does
+  with an unoffered refresh (refuse vs snap) first; see "needs on-device
+  verification" in the review-response notes. Grammar-only validation is now
+  documented in the man page and README instead of overclaimed.
+* **postinst warning when the fresh default conffile is installed over a
+  cmdline that already carries a `video=` token** — the predictable upgrade
+  collision. Packaging design (conffile semantics, upgrade vs fresh install
+  detection); belongs with whichever F6 design Max lands.
+
 ### F7 — Nits
 Version/git hash in the startup line; heartbeat log every ~10 min (loop count,
 temperature, drop counters) so degradation is diagnosable after the fact;

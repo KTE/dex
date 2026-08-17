@@ -552,8 +552,8 @@ fn usage() -> ! {
                       fps comes from it; the sha256 must match the asset bytes
   --fps F             optional cross-check; must equal the sidecar fps exactly
   --mode WxH@R        cross-check against the exhibit config's display_mode (F6);
-                      REQUIRED alongside --bench-no-sidecar, since a bench run has
-                      no exhibit config to consult (default there: auto)
+                      optional alongside --bench-no-sidecar, where it is the only
+                      source instead (defaults to auto there)
   --exhibit-config PATH
                       F6: path to the exhibit config (default: {DEFAULT_EXHIBIT_CONFIG_PATH}).
                       Binds the display mode, the expected KMS force, and the
@@ -730,13 +730,25 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             },
-            // Deferred to resolve_display below, which is the single place
-            // that states the "no exhibit config" refusal (mirroring how
-            // sidecar::resolve_fps states the analogous "no sidecar" message)
-            // -- a missing file and an unreadable one are the same
-            // operational fact, distinct only from a PRESENT-but-invalid one,
-            // which is handled above with the specific parse error.
-            Err(_) => None,
+            // A MISSING file is deferred to resolve_display below, which is
+            // the single place that states the "no exhibit config" refusal
+            // (mirroring how sidecar::resolve_fps states the analogous "no
+            // sidecar" message). Any OTHER read error is a different
+            // operational fact and gets its own message here: an
+            // EXISTING-but-unreadable file (root-edited and saved 0600, a
+            // restored backup with the wrong owner) is fixed by chmod/chown,
+            // not by creating a file the operator can see already exists --
+            // telling them to create it would be actively misleading, the
+            // message class this crate's principles forbid.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                eprintln!(
+                    "error: cannot read {exhibit_config_path}: {e} -- the file exists but is \
+                     not readable; check its owner/permissions (the dex user must be able to \
+                     read it)"
+                );
+                return ExitCode::from(2);
+            }
         }
     };
 
@@ -890,6 +902,40 @@ fn main() -> ExitCode {
         if let Err(e) = verify_payload(leaked, s) {
             eprintln!("error: {path}: {e}");
             return ExitCode::from(2);
+        }
+    }
+
+    // F6 addendum (2026-08-17 review): display_mode "auto" skips the sysfs
+    // pre-flight by construction (no mode to check against), which converts
+    // fail-closed into fail-silent on the one config the .deb ships by
+    // default -- a forgotten /etc/dex/exhibit.json edit on hardware that
+    // builds no 4K mode unforced (the Cam Link case) plays the artwork at
+    // whatever the connector negotiates, for weeks, with every metric green.
+    // The sidecar is hash-bound to the asset and already names its
+    // resolution, so at least SAY SO when the connector cannot even offer
+    // it. A warning, not a refusal: whether "auto" should stay the factory
+    // default at all (vs an explicit "unset" that refuses like a missing
+    // config) is one of the parked F6 design questions -- see PLAN.md.
+    if display.display_mode == "auto" {
+        if let Some((w, h)) = sidecar.as_ref().and_then(|s| s.width.zip(s.height)) {
+            let want = format!("{w}x{h}");
+            if let Some(modes_path) = find_sysfs_modes_path(&display.connector) {
+                if let Ok(modes_text) = fs::read_to_string(&modes_path) {
+                    if !sysfs_modes_contains(&modes_text, &want) {
+                        let offered: Vec<&str> = modes_text.lines().map(str::trim).collect();
+                        eprintln!(
+                            "warning: display_mode is \"auto\" and the asset is {want} (per its \
+                             sidecar), but connector {} offers only {offered:?} ({modes_path}) \
+                             -- KMS will drive whatever fallback it negotiates and the artwork \
+                             will play at the WRONG resolution with every metric green. If this \
+                             display needs a forced mode to build {want} (e.g. the Cam Link \
+                             builds no 4K mode unforced), set display_mode and kms_force in \
+                             /etc/dex/exhibit.json, run 'sudo dex-exhibit-apply', and reboot",
+                            display.connector
+                        );
+                    }
+                }
+            }
         }
     }
 
