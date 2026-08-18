@@ -25,3 +25,9 @@ caps path=**/*.rs MAX # i64::MAX etc. — constants, not emphasis
 caps path=**/*.rs MIN # i64::MIN etc. — constants, not emphasis
 caps path=**/deny.toml RUSTSEC # advisory ids
 caps VLC # product name (the VLC player), a proper noun spelled in caps — not emphasis; `cvlc` is its CLI binary
+caps CSS # universal acronym
+caps DNS # universal acronym
+caps WCAG # the contrast standard the documentation site palettes are measured against
+caps AAA # WCAG conformance level, alongside AA
+caps CODEOWNERS # GitHub spells the file name in caps
+caps KTE # the GitHub organisation the project is published under
