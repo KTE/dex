@@ -41,6 +41,7 @@ The reference points are a user manual written by the project owner (short parag
 - **No history in shipped text.** Not what was tried on which day, not the shell loop that proved something, not who found what. A compact `Other options` list — one line per option, name and outcome — is allowed where it helps the reader choose. Longer history belongs in a project log, if one is created later.
 - **Length: as short as completeness allows.** A page is finished when every must-cover claim is present once; if it is longer than that, cut. Do not restate conditions or caveats sentence after sentence — state them once, where they matter.
 - **User guides say "you" and use imperatives** (`Copy the file`, `Run`, `Check`). Design documents use a neutral third person, still direct.
+- **Headings name the subject.** A noun phrase of one to four words — `Technical stack`, `Frame pipeline`, `Configuration file`, `Exit codes` — never a sentence, a contrast, an intensifier or a tease (`The stack, and where each layer stops`; `How a frame actually travels`; `The extension is honoured, not sniffed`).
 - **State it once, without defending it.** Do not answer an objection the reader has not raised, and do not grade the project's own honesty or restraint (`the honest count is 228 shared objects, not zero`). State what it is, once, and link the thing it builds on.
 
 Bad → good, from the first drafts:
@@ -52,6 +53,9 @@ Bad → good, from the first drafts:
 | Getting the mode wrong is silent | If the mode is wrong, dexd does not report it |
 | It holds what the installation owns: the mode, the force flag and the connector | It defines the display mode, the forced mode and the connector |
 | the seek as the cause | the seek causes the pause |
+| `The stack, and where each layer stops` (heading) | Technical stack |
+| `How a frame actually travels` (heading) | Frame pipeline |
+| `The extension is honoured, not sniffed` (heading) | Format by file extension |
 | `Gapless HEVC looper for the Raspberry Pi. One process, no shell, and a dependency set small enough to read — all of it declared (SPEC §5c). It links libmpv, so the honest count is 228 shared objects, not zero.` | Gapless HEVC video looper for Raspberry Pi, based on [libmpv](https://mpv.io/). |
 
 ### Comments and configuration files
