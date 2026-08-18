@@ -1,0 +1,25 @@
+{
+  "name": "dex-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.1",
+  "scripts": {
+    "sync": "node scripts/sync-docs.mjs",
+    "predev": "pnpm run sync",
+    "dev": "astro dev",
+    "prebuild": "pnpm run sync",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.7",
+    "astro": "^7.2.3",
+    "sharp": "^0.34.4"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "typescript": "^5.9.3"
+  }
+}

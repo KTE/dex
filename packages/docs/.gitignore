@@ -1,0 +1,7 @@
+dist/
+.astro/
+node_modules/
+
+# Written by scripts/sync-docs.mjs from the markdown in the repository root
+# docs/ directory. Edit docs/, never these copies.
+src/content/docs/
