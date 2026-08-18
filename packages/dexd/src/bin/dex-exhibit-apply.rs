@@ -1,5 +1,5 @@
 //! F6's privileged sibling: reconciles `/boot/firmware/cmdline.txt`'s
-//! `video=<connector>:<mode>` token with `/etc/dex/exhibit.json`'s
+//! `video=<connector>:<mode>` token with `/opt/dex/exhibit.yaml`'s
 //! `kms_force`, idempotently.
 //!
 //! WHY A SEPARATE BINARY. `dexd` runs as the unprivileged `dex` user
@@ -7,7 +7,7 @@
 //! sandbox is a design feature (see deploy/dexd.service), not an
 //! oversight to work around here. Deploys in this project are manual (see
 //! README.md), so an operator runs this by hand, as root, after editing
-//! `/etc/dex/exhibit.json` -- the same "remaining manual step" pattern the
+//! `/opt/dex/exhibit.yaml` -- the same "remaining manual step" pattern the
 //! systemd unit's own comment already documents for `set-default
 //! multi-user.target`.
 //!
@@ -201,8 +201,9 @@ fn main() -> ExitCode {
             // something deferred to a resolver.
             Ok(None) => {
                 eprintln!(
-                    "error: no exhibit config found (looked for {}). Create one — the .deb \
-                     ships {DEFAULT_EXHIBIT_CONFIG_PATH} — or name it with --exhibit-config",
+                    "error: no exhibit config found (looked for {}). Create \
+                     {DEFAULT_EXHIBIT_CONFIG_PATH} next to the video, or name a config with \
+                     --exhibit-config",
                     DEFAULT_EXHIBIT_CONFIG_PATHS.join(", ")
                 );
                 return ExitCode::from(2);

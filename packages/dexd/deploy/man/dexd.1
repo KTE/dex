@@ -49,7 +49,7 @@ source (no exhibit config is consulted): omitted there, it defaults to
 .TP
 .BI \-\-exhibit\-config " PATH"
 Path to the exhibit config (F6). Default: whichever of
-\fI/etc/dex/exhibit.yaml\fR and \fI/etc/dex/exhibit.json\fR exists \(em exactly
+\fI/opt/dex/exhibit.yaml\fR and \fI/opt/dex/exhibit.json\fR exists \(em exactly
 one may, and both present is refused rather than resolved by precedence. The
 file EXTENSION decides the parser: \fB.json\fR is strict JSON,
 \fB.yaml\fR/\fB.yml\fR is YAML, same schema either way. See \fBFILES\fR and
@@ -77,7 +77,7 @@ The asset path the stock exhibit config names, and the one
 hardcoded before F6. Nothing in the code defaults to it: it is a value in a
 conffile the operator may change to any absolute path.
 .TP
-.I /etc/dex/exhibit.json \fRor\fI /etc/dex/exhibit.yaml
+.I /opt/dex/exhibit.json \fRor\fI /opt/dex/exhibit.yaml
 F6 exhibit config: binds \fBasset\fR (which artwork plays) and
 \fBdisplay_mode\fR, and optionally \fBkms_force\fR and \fBconnector\fR. The \fB.json\fR form is what the package ships, as a dpkg
 conffile so a hand edit survives an upgrade; the \fB.yaml\fR form is for hand
@@ -107,7 +107,7 @@ plane via \fB\-\-gpu\-hwdec\-interop=drmprime\-overlay\fR. Every other interop
 detiles and misses realtime.
 .PP
 F6: the display mode is a property of the exhibit (the venue's panel), not of
-the asset or the systemd unit \(em see \fI/etc/dex/exhibit.json\fR under
+the asset or the systemd unit \(em see \fI/opt/dex/exhibit.json\fR under
 \fBFILES\fR and \fBdex-exhibit-apply\fR(1).
 .SH SEE ALSO
 .BR dex-exhibit-apply (1),

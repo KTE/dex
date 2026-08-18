@@ -46,9 +46,9 @@
 
 use dexd::chunk::{clamp_want, next_chunk};
 use dexd::exhibit::{
-    check_cmdline_matches, load_exhibit_config, mode_resolution, resolve_asset, resolve_display,
-    sysfs_modes_contains, AssetSource, DisplaySource, DEFAULT_EXHIBIT_CONFIG_PATH,
-    DEFAULT_EXHIBIT_CONFIG_PATHS,
+    check_cmdline_matches, config_dir, load_exhibit_config, mode_resolution, resolve_asset,
+    resolve_display, sysfs_modes_contains, AssetSource, DisplaySource,
+    DEFAULT_EXHIBIT_CONFIG_PATH, DEFAULT_EXHIBIT_CONFIG_PATHS,
 };
 use dexd::ffi_consts::{
     MPV_END_FILE_REASON_STOP, MPV_ERROR_UNSUPPORTED, MPV_EVENT_COMMAND_REPLY, MPV_EVENT_END_FILE,
@@ -713,9 +713,10 @@ fn usage() -> ! {
   <stream.265>        raw Annex-B HEVC elementary stream, looped endlessly.
                       OPTIONAL in a deployment: the exhibit config's `asset`
                       key names it, which is what lets several assets sit in
-                      /opt/dex with the exhibit choosing one. Given here too,
-                      it must AGREE with the config or startup refuses, naming
-                      both. REQUIRED with --test-rig-no-sidecar, which consults no
+                      /opt/dex with the exhibit choosing one. A relative
+                      `asset` resolves against the directory the config file
+                      is in. Given here too, it must AGREE with the config's
+                      resolved path or startup refuses, naming both. REQUIRED with --test-rig-no-sidecar, which consults no
                       config. If neither names an asset, startup refuses rather
                       than guessing an artwork.
   <stream.265>.json   ingest sidecar, REQUIRED: {{\"fps\":\"30\",\"sha256\":\"<64 hex>\"}}
@@ -797,7 +798,7 @@ fn main() -> ExitCode {
     // NO `if args.is_empty() { usage() }`. Since F6 moved the asset into the
     // exhibit config, an EMPTY argv is the normal deployment invocation --
     // `ExecStart=/usr/bin/dexd`, everything else in
-    // /etc/dex/exhibit.{yaml,json}. That guard survived the asset change for
+    // /opt/dex/exhibit.{yaml,json}. That guard survived the asset change for
     // about ten minutes and would have put the shipped unit into a permanent
     // exit-2 restart loop on the device while every Mac-side test passed,
     // because every test passes arguments. A bare `dexd` now proceeds to
@@ -948,7 +949,7 @@ fn main() -> ExitCode {
         }
     };
     // When nothing was found there is no path to name, so the startup line
-    // falls back to the installed default -- which is also the file
+    // falls back to the default path -- which is also the file
     // resolve_display's refusal tells the operator to create.
     let (exhibit_config, exhibit_config_path) = match found {
         Some((cfg, path)) => (Some(cfg), path),
@@ -1052,7 +1053,12 @@ fn main() -> ExitCode {
     // (exhibit::resolve_asset). This is what lets several assets sit in
     // /opt/dex with the exhibit choosing one, instead of ExecStart naming a
     // single hardcoded path.
-    let asset = match resolve_asset(exhibit_config.as_ref(), path.as_deref(), test_rig_no_sidecar) {
+    let asset = match resolve_asset(
+        exhibit_config.as_ref(),
+        config_dir(&exhibit_config_path),
+        path.as_deref(),
+        test_rig_no_sidecar,
+    ) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1139,8 +1145,8 @@ fn main() -> ExitCode {
 
     // F6 addendum (2026-08-17 review): display_mode "auto" skips the sysfs
     // pre-flight by construction (no mode to check against), which converts
-    // fail-closed into fail-silent on the one config the .deb ships by
-    // default -- a forgotten /etc/dex/exhibit.json edit on hardware that
+    // fail-closed into fail-silent on the most likely first config anyone
+    // writes -- a forgotten /opt/dex/exhibit.yaml edit on hardware that
     // builds no 4K mode unforced (the Cam Link case) plays the artwork at
     // whatever the connector negotiates, for weeks, with every metric green.
     // The sidecar is hash-bound to the asset and already names its
@@ -1162,7 +1168,7 @@ fn main() -> ExitCode {
                              will play at the WRONG resolution with every metric green. If this \
                              display needs a forced mode to build {want} (e.g. the Cam Link \
                              builds no 4K mode unforced), set display_mode and kms_force in \
-                             /etc/dex/exhibit.json, run 'sudo dex-exhibit-apply', and reboot",
+                             the exhibit config, run 'sudo dex-exhibit-apply', and reboot",
                             display.connector
                         );
                     }

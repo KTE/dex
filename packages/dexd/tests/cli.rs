@@ -1034,7 +1034,7 @@ fn force_recovery_survives_against_real_mpv() {
 /// refused NAMING THE PATH THE OPERATOR GAVE.
 ///
 /// The naming half is the point. Until the dual-format work this borrowed
-/// `resolve_display`'s "no exhibit config — create /etc/dex/exhibit.json"
+/// `resolve_display`'s "no exhibit config — create /opt/dex/exhibit.yaml"
 /// message, which is wrong advice for someone who just pointed the flag
 /// somewhere else: they would create a file the run they are debugging does
 /// not read. Same class as the EACCES fix on the read path.
@@ -1065,15 +1065,14 @@ fn missing_exhibit_config_refused_exit_2_before_the_asset_is_read() {
     );
 }
 
-// The complementary case -- NO --exhibit-config and no installed default, so
-// resolve_display's "no exhibit config, create the shipped one" message fires
-// -- is deliberately NOT tested here. It would depend on the HOST lacking
-// /etc/dex, which is true on the Mac and false on the Pi (where the .deb
-// installs exactly that file), so it would assert one thing in development and
-// silently something else on the device -- the vacuous-check class this file
-// has been bitten by before. It is covered where it is host-independent:
-// `load_returns_none_when_no_default_exists` and `resolve_display`'s own unit
-// tests in src/exhibit.rs.
+// The complementary case -- NO --exhibit-config and no config in the assets
+// directory, so resolve_display's "no exhibit config, create this file"
+// message fires -- is deliberately NOT tested here. It would depend on the
+// HOST lacking /opt/dex, which is true on the Mac and false on the Pi, so it
+// would assert one thing in development and silently something else on the
+// device -- the vacuous-check class this file has been bitten by before. It is
+// covered where it is host-independent: `load_returns_none_when_no_default_exists`
+// and `resolve_display`'s own unit tests in src/exhibit.rs.
 
 /// A YAML exhibit config drives the real binary end to end — the same gate
 /// order, from a `.yaml` file. Pins that the format dispatch is wired into
@@ -1111,7 +1110,7 @@ fn yaml_exhibit_config_binds_the_display_like_json_does() {
 /// while every other test here — all of which pass arguments — stayed green.
 ///
 /// Uses `--exhibit-config` (never the real default) so the test does not
-/// depend on the host having, or lacking, `/etc/dex`; and an implausible mode,
+/// depend on the host having, or lacking, `/opt/dex`; and an implausible mode,
 /// so it lands on the sysfs pre-flight rather than starting playback.
 #[test]
 fn no_positional_asset_is_accepted_and_reaches_the_config() {
@@ -1167,6 +1166,38 @@ fn the_exhibit_config_names_which_asset_plays() {
     assert!(
         r.stderr.contains("f6-named-by-config.265"),
         "the asset named by the config must be the one the player tried to read: {}",
+        r.stderr
+    );
+}
+
+/// A relative `asset` names the file NEXT TO the config, not next to the
+/// service's working directory: the run gets as far as failing to read the
+/// path formed from the config's own directory.
+///
+/// Uses `--exhibit-config` in a temp directory, so the test depends on neither
+/// the host having nor lacking `/opt/dex`.
+#[test]
+fn a_relative_asset_in_the_config_resolves_next_to_the_config() {
+    let cfg = temp_path("f6-relasset-exhibit.yaml");
+    let artwork = temp_path("f6-relasset-artwork.265");
+    let bare = artwork.file_name().unwrap().to_str().unwrap().to_string();
+    let _ = std::fs::remove_file(&artwork); // never written; the read must fail
+    std::fs::write(&cfg, format!("asset: {bare}\ndisplay_mode: auto\n")).unwrap();
+    let cl = write_no_video_cmdline("f6-relasset-cmdline");
+    let r = run_with_deadline(
+        &[
+            "--exhibit-config",
+            cfg.to_str().unwrap(),
+            "--proc-cmdline",
+            cl.to_str().unwrap(),
+        ],
+        Duration::from_secs(10),
+    );
+    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains(artwork.to_str().unwrap()),
+        "a bare file name must resolve against the config's directory, giving {}: {}",
+        artwork.display(),
         r.stderr
     );
 }

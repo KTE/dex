@@ -19,6 +19,10 @@ Documentation=https://github.com/KTE/dex
 # rather than handling it after the fact.
 Conflicts=getty@tty1.service
 After=multi-user.target
+# The assets directory is a mounted data partition; wait for it. The video,
+# its sidecar and the exhibit config all live there, so starting before the
+# mount lands would refuse on a missing config the operator did write.
+RequiresMountsFor=/opt/dex
 
 # LOAD-BEARING. Without this, systemd's default rate limit (5 starts / 10 s)
 # puts the unit into a permanent `failed` state after a burst of crashes --
@@ -96,15 +100,14 @@ TimeoutStartSec=150
 ExecStartPre=/usr/bin/dex-wait-hdmi
 # NO ARGUMENTS AT ALL, and each absence is deliberate. This unit states HOW to
 # run the player; everything about WHAT it plays and WHERE lives in one
-# operator-editable file, /etc/dex/exhibit.{yaml,json}.
+# operator-editable file, /opt/dex/exhibit.{yaml,json}.
 #
-# No asset path, as of 2026-08-17 (F6): WHICH artwork plays comes from the
-# exhibit config's `asset` key. This line hardcoded /opt/dex/loop.265 until
-# then, which meant changing the artwork required either overwriting that one
-# path or editing a unit file the package owns -- and made "several assets in
-# storage, the exhibit picks one" impossible, which was the stated reason for
-# having an exhibit file at all. The shipped conffile's `asset` is that same
-# /opt/dex/loop.265, so a stock install behaves exactly as it did.
+# No asset path: WHICH artwork plays comes from the exhibit config's `asset`
+# key. This line hardcoded /opt/dex/loop.265 until then, which meant changing
+# the artwork required either overwriting that one path or editing a unit file
+# the package owns -- and made "several assets in storage, the exhibit picks
+# one" impossible, which was the stated reason for having an exhibit file at
+# all.
 #
 # No --fps: the frame rate comes from <asset>.json (F3), written at ingest and
 # hash-bound to the asset bytes. Deploy BOTH files. A missing or stale sidecar
@@ -113,7 +116,7 @@ ExecStartPre=/usr/bin/dex-wait-hdmi
 #
 # No --mode (F6): the display mode is a property of the INSTALLATION (the
 # venue's panel), not of this unit, so it lives in the same exhibit config an
-# operator edits with `sudoedit /etc/dex/exhibit.json && sudo dex-exhibit-apply`
+# operator edits with `sudoedit /opt/dex/exhibit.yaml && sudo dex-exhibit-apply`
 # (see man dex-exhibit-apply), rather than a value baked in here that every
 # panel swap would require re-touching. A `--mode` here would additionally
 # FIGHT the exhibit config: main.rs treats an explicit --mode as a cross-check

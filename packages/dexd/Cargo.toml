@@ -119,11 +119,6 @@ assets = [
     # see src/bin/dex-exhibit-apply.rs and man dex-exhibit-apply.
     ["target/release/dex-exhibit-apply", "usr/bin/", "755"],
     ["deploy/dex-wait-hdmi", "usr/bin/", "755"],
-    # F6's conffile default. `auto`/`none` is deliberately inert -- it asks
-    # mpv for the connector-preferred mode and forces nothing at the KMS
-    # layer -- so a fresh install with the stock config never black-screens a
-    # panel it has not been told about; see deploy/exhibit.json.default.
-    ["deploy/exhibit.json.default", "etc/dex/exhibit.json", "644"],
     ["README.md", "usr/share/doc/dexd/", "644"],
     ["deploy/man/dexd.1", "usr/share/man/man1/", "644"],
     ["deploy/man/dex-wait-hdmi.1", "usr/share/man/man1/", "644"],
@@ -135,12 +130,11 @@ assets = [
 # a sidecar against an asset while building one), and ingest happens on a
 # workstation, never on the gallery device.
 
-# F6 -- /etc/dex/exhibit.json is a CONFFILE, not merely a shipped file: dpkg's
-# conffile semantics guarantee a hand-edited exhibit config survives a package
-# upgrade (and prompts on a genuine conflict) BY MACHINERY, not by convention
-# -- the exact property F6 exists to give the display mode, the same F3
-# already gives the sidecar's file layout implicitly by never touching /etc.
-conf-files = ["/etc/dex/exhibit.json"]
+# The package ships NO exhibit config and creates no /etc/dex. The exhibit
+# config lives beside the video in /opt/dex, which is the mount point of the
+# dex card's data partition, so an operator edits it from any computer that
+# reads the card. A missing config makes the player refuse to start and name
+# the file to create -- see src/exhibit.rs's resolve_display.
 
 maintainer-scripts = "deploy/maintainer-scripts"
 # A non-native package without a Debian changelog is a lintian error, and

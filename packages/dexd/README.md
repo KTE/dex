@@ -11,10 +11,10 @@ ffmpeg -i card.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc loop.265
 dex-sidecar write loop.265 --fps 30
 
 # once, on the device -- WHICH asset and WHICH display mode are both exhibit
-# config, not asset metadata (F6). /etc/dex/exhibit.json, or .yaml if you want
+# config, not asset metadata (F6). /opt/dex/exhibit.json, or .yaml if you want
 # comments; the .deb ships a stock .json.
 printf '{"asset":"/opt/dex/loop.265","display_mode":"3840x2160@30"}\n' \
-  | sudo tee /etc/dex/exhibit.json
+  | sudo tee /opt/dex/exhibit.json
 
 # then -- no arguments: the exhibit says what to play and how
 dex-loop
@@ -219,7 +219,7 @@ subset refuses startup — fail closed.
 |---|---|
 | `--fps F` | optional cross-check; must equal the sidecar fps exactly, or startup is refused |
 | `--mode WxH@R` | optional cross-check against the exhibit config's `display_mode` (F6); refused if it disagrees, naming both. Under `--test-rig-no-sidecar` it is the only source (default there: `auto`) |
-| `--exhibit-config PATH` | F6: path to the exhibit config, default `/etc/dex/exhibit.json` — see below |
+| `--exhibit-config PATH` | F6: path to the exhibit config, default `/opt/dex/exhibit.json` — see below |
 | `--test-rig-no-sidecar` | (test rig only): skip the sidecar AND the exhibit config, and take `--fps`/`--mode` as given (both flags required alongside `--fps` — the escape hatch is a deliberate two-flag act) |
 | `--test-rig-force-recovery-after-secs N` | T7, (test rig only): force a tier-0 in-place recovery N seconds into playback, whether or not anything has stalled — a live-fire probe for F1's recovery command. Requires `--test-rig-no-sidecar` (refused otherwise), so it can never end up armed against a real, sidecar-bound deployment asset |
 | `--test-rig-hang-after-secs N` | F10, (test rig only): deliberately hang the supervisor thread FOREVER N seconds after startup, simulating the one hazard class F1/F9 cannot see (a supervisor-thread hang outside any mpv call) — proves whether a systemd watchdog (`WatchdogSec=`) actually fires. The process never recovers on its own once armed and fired. Requires `--test-rig-no-sidecar` (refused otherwise) |
@@ -312,7 +312,7 @@ extension is a promise about what the bytes are. A `.json` file containing YAML 
 therefore refused, while strict JSON inside a `.yaml` file is fine (it *is* YAML) —
 which is what lets a machine emit one format under either name.
 
-By default the player looks for `/etc/dex/exhibit.yaml`, then `/etc/dex/exhibit.json`.
+By default the player looks for `/opt/dex/exhibit.yaml`, then `/opt/dex/exhibit.json`.
 **Exactly one may exist.** Both present is refused naming both, rather than resolved by
 precedence — "the other file wins silently" is how someone edits a config all afternoon
 while the player reads a different one, the exact drift F6 exists to end. Point
@@ -321,8 +321,8 @@ while the player reads a different one, the exact drift F6 exists to end. Point
 So **switching to YAML is two commands**, because the package installs the `.json`:
 
 ```bash
-sudoedit /etc/dex/exhibit.yaml      # write it
-sudo rm  /etc/dex/exhibit.json      # remove the shipped one, or startup refuses
+sudoedit /opt/dex/exhibit.yaml      # write it
+sudo rm  /opt/dex/exhibit.json      # remove the shipped one, or startup refuses
 ```
 
 The refusal names that second command, so getting it wrong costs one restart, not a
@@ -520,7 +520,7 @@ sudo apt install ./dex-loop_0.1.0_arm64.deb   # apt, not dpkg -i: it resolves De
 The package installs `dex-loop`, `dex-exhibit-apply` and `dex-wait-hdmi` to
 `/usr/bin`, installs and enables the unit, creates the unprivileged `dex` user
 with `video`/`render`, creates `/opt/dex`, and ships a stock
-`/etc/dex/exhibit.json` (`display_mode: "auto"`, `asset: "/opt/dex/loop.265"`,
+`/opt/dex/exhibit.json` (`display_mode: "auto"`, `asset: "/opt/dex/loop.265"`,
 conffile — a hand edit survives a package upgrade). The display half is
 deliberately inert; the `asset` is the path `ExecStart` used to hardcode, so a
 stock install behaves exactly as it did before F6. It does **not** start the unit (that takes DRM
@@ -530,7 +530,7 @@ would mean rebuilding the software to change the artwork:
 
 ```bash
 scp loop.265 loop.265.json <host>:/opt/dex/
-sudoedit /etc/dex/exhibit.json         # F6: set display_mode (and kms_force if
+sudoedit /opt/dex/exhibit.json         # F6: set display_mode (and kms_force if
                                         # the sink needs one -- see README's
                                         # "Exhibit config (F6)" section above),
                                         # and `asset` if the file is not

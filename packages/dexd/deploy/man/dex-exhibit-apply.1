@@ -12,7 +12,7 @@ Rewrites
 .IR /boot/firmware/cmdline.txt 's
 .B video=<connector>:<mode>
 token to match
-.IR /etc/dex/exhibit.json 's
+.IR /opt/dex/exhibit.json 's
 .B kms_force
 \(em idempotently: every other token, its order, and every OTHER connector's
 .B video=
@@ -47,9 +47,9 @@ to remember in a comment.
 .TP
 .BI \-\-exhibit\-config " PATH"
 Default: whichever of
-.I /etc/dex/exhibit.yaml
+.I /opt/dex/exhibit.yaml
 and
-.I /etc/dex/exhibit.json
+.I /opt/dex/exhibit.json
 exists \(em exactly one may, and both present is refused. This is deliberately
 the same discovery
 .BR dexd (1)
@@ -172,7 +172,7 @@ configure came from EDID or
 data, double\-check the refresh against what the connector really builds.
 .SH EXAMPLE: SWAPPING THE PANEL
 .nf
-sudoedit /etc/dex/exhibit.json     # display_mode/kms_force for the new panel
+sudoedit /opt/dex/exhibit.json     # display_mode/kms_force for the new panel
 sudo dex\-exhibit\-apply
 sudo reboot                        # only if it printed REBOOT REQUIRED
 .fi

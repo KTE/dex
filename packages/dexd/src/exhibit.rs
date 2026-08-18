@@ -9,7 +9,7 @@
 //! refuses to build a 4K mode for unforced even though the sink's own EDID
 //! prefers it) and wrong for another (Dell U2719DC, which must NOT carry the
 //! force or it transmits a signal the panel cannot show). So the mode
-//! belongs to an `/etc/dex/exhibit.{json,yaml}` conffile — venue truth, not
+//! belongs to an `/opt/dex/exhibit.{yaml,json}` file — venue truth, not
 //! asset truth — parsed with the F3 sidecar's own hardened, fail-closed flat
 //! subset grammar.
 //!
@@ -22,7 +22,7 @@
 //!
 //! TWO FORMATS, AND THE EXTENSION DECIDES WHICH — see [`ConfigFormat`] for
 //! why that dispatch is a correctness rule and not a convenience. `.json` is
-//! strict JSON (machine-writable, and what the `.deb` ships); `.yaml` is YAML
+//! strict JSON (machine-writable); `.yaml` is YAML
 //! (comments, no quoting ceremony — this file gets hand-edited in a venue,
 //! possibly on a phone over SSH). The two are the same schema: only the ~40
 //! lines that turn text into a flat key/value list differ, and
@@ -70,16 +70,18 @@
 use crate::sidecar::{parse_flat_json, Value};
 use yaml_rust2::{Event, Yaml, YamlLoader};
 
-/// Default path for the exhibit config the `.deb` SHIPS, as a dpkg conffile.
-/// JSON rather than YAML because a conffile is a fixed path installed by a
-/// machine: the shipped artifact should be the machine-writable format, and
-/// an operator who prefers YAML replaces it (see
-/// [`DEFAULT_EXHIBIT_CONFIG_PATHS`]) rather than editing what dpkg tracks.
-pub const DEFAULT_EXHIBIT_CONFIG_PATH: &str = "/etc/dex/exhibit.json";
+/// The path the messages name when no exhibit config exists: the file an
+/// operator creates, in the assets directory, next to the video it names.
+/// The package installs no exhibit config, so nothing on disk holds this
+/// path until someone writes it.
+pub const DEFAULT_EXHIBIT_CONFIG_PATH: &str = "/opt/dex/exhibit.yaml";
 
 /// Where the player looks when `--exhibit-config` is not given, in order.
 ///
-/// YAML first, so an operator who writes `exhibit.yaml` beside the shipped
+/// Both names sit in the assets directory, so the dex card in a computer
+/// shows the video, its sidecar and the exhibit config together.
+///
+/// YAML first, so an operator who writes `exhibit.yaml` beside an older
 /// `exhibit.json` gets what they wrote — the alternative (JSON wins, YAML
 /// ignored) would let someone edit a file for an afternoon while the player
 /// reads a different one, which is the exact "config drift" failure F6 exists
@@ -87,7 +89,7 @@ pub const DEFAULT_EXHIBIT_CONFIG_PATH: &str = "/etc/dex/exhibit.json";
 /// "first wins" never silently decides anything: the order only fixes which
 /// name the refusal calls the intended one.
 pub const DEFAULT_EXHIBIT_CONFIG_PATHS: [&str; 2] =
-    ["/etc/dex/exhibit.yaml", "/etc/dex/exhibit.json"];
+    ["/opt/dex/exhibit.yaml", "/opt/dex/exhibit.json"];
 
 /// Choose the default config among those that actually exist on disk.
 ///
@@ -108,24 +110,22 @@ pub fn pick_default_config<'a>(existing: &[&'a str]) -> Result<Option<&'a str>, 
         [] => Ok(None),
         [only] => Ok(Some(only)),
         several => {
-            // Name the LIKELY cause, not just the rule. The overwhelmingly
-            // common way to reach this is switching to YAML: writing
-            // exhibit.yaml leaves the .deb's own exhibit.json conffile sitting
-            // beside it, so the operator did one correct thing and got a
-            // refusal. A message that only restates the invariant would make
-            // that look like a bug in the player.
-            let shipped: Vec<&str> = several
+            // Name the LIKELY cause, not just the rule. The common way to
+            // reach this is switching to YAML: writing exhibit.yaml leaves the
+            // older exhibit.json sitting beside it, so the operator did one
+            // correct thing and got a refusal. A message that only restates
+            // the invariant would make that look like a bug in the player.
+            let json_copies: Vec<&str> = several
                 .iter()
                 .copied()
                 .filter(|p| p.ends_with(".json"))
                 .collect();
-            let hint = if shipped.is_empty() {
+            let hint = if json_copies.is_empty() {
                 String::new()
             } else {
                 format!(
-                    " If you have just switched to YAML, the leftover is the one the package \
-                     installs: sudo rm {}.",
-                    shipped.join(" ")
+                    " If you have just switched to YAML, delete the older file: sudo rm {}.",
+                    json_copies.join(" ")
                 )
             };
             Err(format!(
@@ -214,25 +214,53 @@ pub fn is_valid_kms_force(s: &str) -> bool {
     }
 }
 
-/// `asset` grammar: an ABSOLUTE path to a file, with no trailing slash and no
-/// ASCII control characters.
+/// `asset` grammar: a path to a file, absolute or relative, with no trailing
+/// slash and no ASCII control characters.
 ///
-/// Absolute because the player runs as a systemd service whose working
-/// directory is `/`: a relative path would resolve somewhere the operator did
-/// not type, and — being a *plausible* path — would fail with "no such file"
-/// pointing at a name that looks right. Control characters because this string
-/// is printed into the journal at every start, and the journal is the only
-/// diagnostic channel a gallery device has; a newline inside it would forge a
-/// second log line.
+/// A relative path is resolved against the directory the config file is in
+/// (see [`asset_in_config_dir`]), so `asset: loop.265` next to
+/// `/opt/dex/exhibit.yaml` names `/opt/dex/loop.265`. The service's working
+/// directory never enters into it, which is why a relative path is safe here
+/// even though the unit runs with `/` as its working directory.
+///
+/// Control characters are refused because this string is printed into the
+/// system log at every start, and the system log is the only diagnostic
+/// channel a gallery device has; a newline inside it would forge a second log
+/// line.
 ///
 /// Deliberately NOT checked here: whether the file exists, or what extension
 /// it has. Existence is main.rs's job (it produces the read error, which is
 /// more informative than a grammar refusal), and this crate has no business
 /// deciding that an artwork must be called `.265`.
 pub fn is_valid_asset(s: &str) -> bool {
-    s.starts_with('/')
-        && !s.ends_with('/')
-        && !s.chars().any(|c| c.is_ascii_control())
+    !s.is_empty() && !s.ends_with('/') && !s.chars().any(|c| c.is_ascii_control())
+}
+
+/// The directory `config_path` sits in — what a relative `asset` resolves
+/// against. Pure string work, so it needs no filesystem and no real config.
+pub fn config_dir(config_path: &str) -> &str {
+    match config_path.rfind('/') {
+        Some(0) => "/",
+        Some(i) => &config_path[..i],
+        None => ".",
+    }
+}
+
+/// Resolve an `asset` value against the directory its config file is in.
+///
+/// An absolute `asset` is returned unchanged. A relative one is joined to
+/// `dir`, including a `../` prefix, which the kernel resolves at open time:
+/// `../x` beside `/opt/dex/exhibit.yaml` opens `/opt/dex/../x`. The join is
+/// textual on purpose — the path is printed into the system log, and an
+/// operator reading it should see the two halves they wrote.
+pub fn asset_in_config_dir(dir: &str, asset: &str) -> String {
+    if asset.starts_with('/') {
+        asset.to_string()
+    } else if dir.ends_with('/') {
+        format!("{dir}{asset}")
+    } else {
+        format!("{dir}/{asset}")
+    }
 }
 
 /// `connector` grammar: `"HDMI-A-<n>"`, n a plain digit run. Also governs the
@@ -589,14 +617,14 @@ pub fn load_exhibit_config(
 ) -> Result<Option<(ExhibitConfig, String)>, String> {
     let path = match override_path {
         // An EXPLICITLY NAMED file that is not there is not the same fact as
-        // "no config was ever installed", and must not borrow the latter's
-        // message: "create /etc/dex/exhibit.json" is actively wrong advice for
+        // "no config was ever created", and must not borrow the latter's
+        // message: "create /opt/dex/exhibit.yaml" is actively wrong advice for
         // an operator who just told us to read something else.
         Some(p) => {
             if !config_exists(p)? {
                 return Err(format!(
                     "--exhibit-config {p:?}: no such file. (This is the explicitly named path; \
-                     drop --exhibit-config to use the installed default.)"
+                     drop --exhibit-config to look in the assets directory instead.)"
                 ));
             }
             p.to_string()
@@ -749,9 +777,9 @@ impl ExhibitConfig {
         if let Some(a) = &asset {
             if !is_valid_asset(a) {
                 return Err(format!(
-                    "exhibit config: invalid asset {a:?} (expect an absolute path to the file \
-                     to play, e.g. \"/opt/dex/loop.265\" -- no trailing slash, no control \
-                     characters)"
+                    "exhibit config: invalid asset {a:?} (expect the path to the file to \
+                     play, e.g. \"loop.265\" beside this config or \"/opt/dex/loop.265\" -- \
+                     no trailing slash, no control characters)"
                 ));
             }
         }
@@ -826,11 +854,12 @@ pub fn resolve_display(
         };
     }
     match config {
-        None => Err(
-            "no exhibit config; refusing to guess the display. Create /etc/dex/exhibit.json \
-             (the .deb ships one) or use --test-rig-no-sidecar on a bench"
-                .into(),
-        ),
+        None => Err(format!(
+            "no exhibit config: dexd refuses to guess the display. The package installs none. \
+             Create {DEFAULT_EXHIBIT_CONFIG_PATH} next to the video, with at least these two \
+             lines:\n\n    asset: loop.265\n    display_mode: auto\n\nOr pass \
+             --test-rig-no-sidecar on a test rig."
+        )),
         Some(cfg) => match cli_mode {
             None => Ok(ResolvedDisplay {
                 display_mode: cfg.display_mode.clone(),
@@ -846,7 +875,7 @@ pub fn resolve_display(
             }),
             Some(m) => Err(format!(
                 "--mode {m:?} contradicts exhibit config display_mode {:?}; drop --mode (the \
-                 exhibit config is authoritative) or fix /etc/dex/exhibit.json",
+                 exhibit config is authoritative) or fix {DEFAULT_EXHIBIT_CONFIG_PATH}",
                 cfg.display_mode
             )),
         },
@@ -859,7 +888,8 @@ pub enum AssetSource {
     /// The exhibit config's `asset` key — the deployment path.
     Config,
     /// A path given on the command line. Legitimate on a bench, and as a
-    /// one-off on a device without editing `/etc`; never how a show runs.
+    /// one-off on a device without editing the exhibit config; never how a
+    /// show runs.
     Cli,
 }
 
@@ -899,11 +929,15 @@ pub struct ResolvedAsset {
 /// season's artwork for an operator who edited the config but mistyped the
 /// key, with every metric green. Every other guess this crate refuses (frame
 /// rate, display mode) is refused for a weaker version of that reason. So:
-/// refuse, name the exact line to add, and warn at package-install time (see
-/// `deploy/maintainer-scripts/postinst`) so an upgrade surfaces it while
-/// someone is watching rather than at the next power cycle.
+/// refuse, and name the exact line to add.
+///
+/// The config's `asset` is resolved against the directory the config file is
+/// in before any of this, so a bare `loop.265` beside `/opt/dex/exhibit.yaml`
+/// and `/opt/dex/loop.265` on the command line are the same file to the
+/// cross-check.
 pub fn resolve_asset(
     config: Option<&ExhibitConfig>,
+    config_dir: &str,
     cli_path: Option<&str>,
     test_rig_no_sidecar: bool,
 ) -> Result<ResolvedAsset, String> {
@@ -920,7 +954,13 @@ pub fn resolve_asset(
             ),
         };
     }
-    match (config.and_then(|c| c.asset.as_deref()), cli_path) {
+    // The config's asset is resolved BEFORE the cross-check, so a relative
+    // `asset:` and the absolute path a technician types on the command line
+    // are compared as the same file rather than as two different strings.
+    let config_asset = config
+        .and_then(|c| c.asset.as_deref())
+        .map(|a| asset_in_config_dir(config_dir, a));
+    match (config_asset.as_deref(), cli_path) {
         (Some(a), None) => Ok(ResolvedAsset {
             path: a.to_string(),
             source: AssetSource::Config,
@@ -1007,7 +1047,7 @@ pub fn check_cmdline_matches(cmdline: &str, connector: &str, kms_force: &str) ->
             "exhibit config says kms_force=none for {connector}, but the kernel cmdline \
              carries video={connector}:{found} -- EITHER the config is stale (a force this \
              venue deliberately needs, e.g. a display that builds no 4K mode unforced: set \
-             kms_force={found:?} and a matching display_mode in /etc/dex/exhibit.json to \
+             kms_force={found:?} and a matching display_mode in the exhibit config to \
              keep it) OR the cmdline is (run 'sudo dex-exhibit-apply' and reboot to remove \
              the force)"
         )),
@@ -1015,13 +1055,13 @@ pub fn check_cmdline_matches(cmdline: &str, connector: &str, kms_force: &str) ->
         (want, Some(found)) => Err(format!(
             "exhibit config says kms_force={want}, but the kernel cmdline carries \
              video={connector}:{found} -- EITHER the config is stale (fix kms_force in \
-             /etc/dex/exhibit.json to match the venue) OR the cmdline is (run 'sudo \
+             the exhibit config to match the venue) OR the cmdline is (run 'sudo \
              dex-exhibit-apply' and reboot)"
         )),
         (want, None) => Err(format!(
             "exhibit config says kms_force={want}, but the kernel cmdline carries no video= \
              token for {connector} -- EITHER the config is stale (set kms_force=none in \
-             /etc/dex/exhibit.json if this venue needs no force) OR the cmdline is (run \
+             the exhibit config if this venue needs no force) OR the cmdline is (run \
              'sudo dex-exhibit-apply' and reboot to add the token)"
         )),
     }
@@ -1199,30 +1239,6 @@ mod tests {
         assert_eq!(c.note.as_deref(), Some("see PLAN.md F6"));
     }
 
-    /// The .deb ships this exact file as `/etc/dex/exhibit.json`'s stock
-    /// conffile content (Cargo.toml's `assets`). If a future grammar change
-    /// ever made the shipped default itself invalid, every fresh install
-    /// would refuse to start with no asset ever having been touched --
-    /// pinned here rather than discovered on a bench.
-    #[test]
-    fn the_shipped_default_config_parses() {
-        let text = include_str!("../deploy/exhibit.json.default");
-        let c = ExhibitConfig::from_json(text).expect("shipped default must parse");
-        assert_eq!(c.display_mode, "auto");
-        assert_eq!(c.kms_force, "none");
-        // The shipped default MUST name an asset. Without one, a stock install
-        // now refuses at startup -- ExecStart no longer passes a path, and the
-        // code deliberately has no fallback (see resolve_asset). This assert is
-        // the gate on that: the conffile is the only thing standing between a
-        // fresh install and "no asset" on first start.
-        assert_eq!(c.asset.as_deref(), Some("/opt/dex/loop.265"));
-        // ...and it must actually resolve, not merely parse.
-        assert_eq!(
-            resolve_asset(Some(&c), None, false).unwrap().path,
-            "/opt/dex/loop.265"
-        );
-    }
-
     #[test]
     fn minimal_config_gets_defaults() {
         let c = ExhibitConfig::from_json(r#"{"display_mode":"auto"}"#).unwrap();
@@ -1324,10 +1340,20 @@ mod tests {
         assert!(e.contains("3840x2160@30") && e.contains("2560x1440@60"), "{e}");
     }
 
+    /// The refusal names the file to create -- in the assets directory,
+    /// beside the video -- and shows the two lines that file needs.
     #[test]
     fn missing_config_is_refused_without_the_bench_flag() {
         let e = resolve_display(None, Some("3840x2160@30"), false).unwrap_err();
         assert!(e.contains("exhibit config"), "{e}");
+        assert!(
+            e.contains("/opt/dex/exhibit.yaml"),
+            "the refusal must name the file to create: {e}"
+        );
+        assert!(
+            e.contains("asset:") && e.contains("display_mode:"),
+            "the refusal must show a minimal example: {e}"
+        );
         assert!(resolve_display(None, None, false).is_err());
     }
 
@@ -1596,15 +1622,15 @@ mod tests {
     #[test]
     fn extension_decides_the_parser() {
         assert_eq!(
-            ConfigFormat::from_path("/etc/dex/exhibit.json").unwrap(),
+            ConfigFormat::from_path("/opt/dex/exhibit.json").unwrap(),
             ConfigFormat::Json
         );
         assert_eq!(
-            ConfigFormat::from_path("/etc/dex/exhibit.yaml").unwrap(),
+            ConfigFormat::from_path("/opt/dex/exhibit.yaml").unwrap(),
             ConfigFormat::Yaml
         );
         assert_eq!(
-            ConfigFormat::from_path("/etc/dex/exhibit.yml").unwrap(),
+            ConfigFormat::from_path("/opt/dex/exhibit.yml").unwrap(),
             ConfigFormat::Yaml
         );
     }
@@ -1624,10 +1650,10 @@ mod tests {
     #[test]
     fn unknown_or_absent_extension_refuses_rather_than_defaulting() {
         for p in [
-            "/etc/dex/exhibit",     // no extension at all
-            "/etc/dex/exhibit.txt", // an extension, but not one of ours
-            "/etc/dex/.json",       // a DOTFILE named .json -- no extension
-            "/etc/dex/exhibit.json.bak", // the backup, not the config
+            "/opt/dex/exhibit",     // no extension at all
+            "/opt/dex/exhibit.txt", // an extension, but not one of ours
+            "/opt/dex/.json",       // a DOTFILE named .json -- no extension
+            "/opt/dex/exhibit.json.bak", // the backup, not the config
         ] {
             let e = ConfigFormat::from_path(p).unwrap_err();
             assert!(e.contains(".json") && e.contains(".yaml"), "{p}: {e}");
@@ -1895,12 +1921,12 @@ mod tests {
     fn one_default_config_is_picked_none_is_none() {
         assert_eq!(pick_default_config(&[]).unwrap(), None);
         assert_eq!(
-            pick_default_config(&["/etc/dex/exhibit.yaml"]).unwrap(),
-            Some("/etc/dex/exhibit.yaml")
+            pick_default_config(&["/opt/dex/exhibit.yaml"]).unwrap(),
+            Some("/opt/dex/exhibit.yaml")
         );
         assert_eq!(
-            pick_default_config(&["/etc/dex/exhibit.json"]).unwrap(),
-            Some("/etc/dex/exhibit.json")
+            pick_default_config(&["/opt/dex/exhibit.json"]).unwrap(),
+            Some("/opt/dex/exhibit.json")
         );
     }
 
@@ -1910,22 +1936,25 @@ mod tests {
     #[test]
     fn two_default_configs_refuse_naming_both() {
         let e = pick_default_config(&DEFAULT_EXHIBIT_CONFIG_PATHS).unwrap_err();
-        assert!(e.contains("exhibit.yaml") && e.contains("exhibit.json"), "{e}");
+        assert!(
+            e.contains("/opt/dex/exhibit.yaml") && e.contains("/opt/dex/exhibit.json"),
+            "the refusal must name both files in the assets directory: {e}"
+        );
         assert!(e.contains("--exhibit-config"), "{e}");
-        // The likely cause, named: writing exhibit.yaml leaves the shipped
-        // conffile beside it, so the operator did the documented thing and
+        // The likely cause, named: writing exhibit.yaml leaves the older
+        // exhibit.json beside it, so the operator did one correct thing and
         // still got refused. Without this the message reads like a bug.
         assert!(
-            e.contains("sudo rm /etc/dex/exhibit.json"),
-            "must name the leftover conffile as the fix: {e}"
+            e.contains("sudo rm /opt/dex/exhibit.json"),
+            "must name the file to delete as the fix: {e}"
         );
     }
 
     /// ...and that hint is CONDITIONAL, not glued on: a collision between two
-    /// non-shipped files must not tell the operator to remove a package file
-    /// that has nothing to do with it.
+    /// YAML files must not tell the operator to remove a JSON file that has
+    /// nothing to do with it.
     #[test]
-    fn the_leftover_conffile_hint_only_appears_when_a_json_is_involved() {
+    fn the_delete_hint_only_appears_when_a_json_is_involved() {
         let e = pick_default_config(&["/srv/a.yaml", "/srv/b.yml"]).unwrap_err();
         assert!(!e.contains("sudo rm"), "{e}");
     }
@@ -1935,7 +1964,7 @@ mod tests {
     #[test]
     fn deploy_path_takes_the_asset_from_the_config() {
         let c = cfg_with_asset("/opt/dex/spring.265");
-        let r = resolve_asset(Some(&c), None, false).unwrap();
+        let r = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap();
         assert_eq!(r.path, "/opt/dex/spring.265");
         assert_eq!(r.source, AssetSource::Config);
     }
@@ -1943,24 +1972,24 @@ mod tests {
     #[test]
     fn an_agreeing_cli_path_cross_checks_and_the_config_still_binds() {
         let c = cfg_with_asset("/opt/dex/spring.265");
-        let r = resolve_asset(Some(&c), Some("/opt/dex/spring.265"), false).unwrap();
+        let r = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/spring.265"), false).unwrap();
         assert_eq!(r.source, AssetSource::Config);
     }
 
     #[test]
     fn a_contradicting_cli_path_is_refused_naming_both() {
         let c = cfg_with_asset("/opt/dex/spring.265");
-        let e = resolve_asset(Some(&c), Some("/opt/dex/autumn.265"), false).unwrap_err();
+        let e = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/autumn.265"), false).unwrap_err();
         assert!(e.contains("spring.265") && e.contains("autumn.265"), "{e}");
     }
 
     /// A config with no `asset` key still accepts a hand-given path -- the
     /// one-off case (try another file on a deployed device without editing
-    /// /etc), reported as CLI-sourced so the journal cannot be misread.
+    /// the config), reported as CLI-sourced so the log cannot be misread.
     #[test]
     fn a_cli_path_works_when_the_config_names_no_asset() {
         let c = cfg("auto", "none");
-        let r = resolve_asset(Some(&c), Some("/opt/dex/try.265"), false).unwrap();
+        let r = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/try.265"), false).unwrap();
         assert_eq!(r.source, AssetSource::Cli);
     }
 
@@ -1970,20 +1999,20 @@ mod tests {
     #[test]
     fn no_asset_anywhere_refuses_rather_than_defaulting_to_loop_265() {
         let c = cfg("auto", "none");
-        let e = resolve_asset(Some(&c), None, false).unwrap_err();
+        let e = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap_err();
         assert!(e.contains("no asset"), "{e}");
         // ...and it names the exact line to add, in both formats.
         assert!(e.contains("asset: /opt/dex/loop.265"), "{e}");
         assert!(e.contains(r#""asset": "/opt/dex/loop.265""#), "{e}");
         // Also with NO config at all (that case refuses earlier, at
         // resolve_display -- but this function must not invent a path either).
-        assert!(resolve_asset(None, None, false).is_err());
+        assert!(resolve_asset(None, "/opt/dex", None, false).is_err());
     }
 
     #[test]
     fn bench_takes_the_cli_path_and_ignores_the_config() {
         let c = cfg_with_asset("/opt/dex/spring.265");
-        let r = resolve_asset(Some(&c), Some("/tmp/bench.265"), true).unwrap();
+        let r = resolve_asset(Some(&c), "/opt/dex", Some("/tmp/bench.265"), true).unwrap();
         assert_eq!(r.path, "/tmp/bench.265");
         assert_eq!(r.source, AssetSource::Cli);
     }
@@ -1991,26 +2020,101 @@ mod tests {
     #[test]
     fn bench_without_a_path_refuses_rather_than_falling_back_to_the_config() {
         let c = cfg_with_asset("/opt/dex/spring.265");
-        let e = resolve_asset(Some(&c), None, true).unwrap_err();
+        let e = resolve_asset(Some(&c), "/opt/dex", None, true).unwrap_err();
         assert!(e.contains("command line"), "{e}");
+    }
+
+    // ---- a relative asset resolves against the config's directory --------
+
+    /// A bare file name names the file NEXT TO the config -- the deployment
+    /// shape, where `/opt/dex` holds the video, its sidecar and
+    /// `exhibit.yaml` together.
+    #[test]
+    fn a_relative_asset_resolves_against_the_config_directory() {
+        let c = cfg_with_asset("artwork.265");
+        let r = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap();
+        assert_eq!(r.path, "/opt/dex/artwork.265");
+        assert_eq!(r.source, AssetSource::Config);
+    }
+
+    /// A `../` prefix is joined, not rejected and not normalised: the kernel
+    /// resolves it at open time, and the printed path shows both halves the
+    /// operator wrote.
+    #[test]
+    fn a_relative_asset_may_leave_the_config_directory() {
+        let c = cfg_with_asset("../media/artwork.265");
+        let r = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap();
+        assert_eq!(r.path, "/opt/dex/../media/artwork.265");
+    }
+
+    /// An absolute `asset` is untouched by the directory.
+    #[test]
+    fn an_absolute_asset_ignores_the_config_directory() {
+        let c = cfg_with_asset("/srv/art/artwork.265");
+        let r = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap();
+        assert_eq!(r.path, "/srv/art/artwork.265");
+    }
+
+    /// The cross-check compares the RESOLVED path, so a bare name in the
+    /// config and the full path on the command line agree.
+    #[test]
+    fn the_cli_cross_check_compares_the_resolved_path() {
+        let c = cfg_with_asset("artwork.265");
+        let r = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/artwork.265"), false).unwrap();
+        assert_eq!(r.path, "/opt/dex/artwork.265");
+        assert_eq!(r.source, AssetSource::Config);
+        let e = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/other.265"), false).unwrap_err();
+        assert!(
+            e.contains("/opt/dex/artwork.265") && e.contains("/opt/dex/other.265"),
+            "the refusal must name both resolved paths: {e}"
+        );
+    }
+
+    #[test]
+    fn config_dir_is_the_directory_the_config_sits_in() {
+        assert_eq!(config_dir("/opt/dex/exhibit.yaml"), "/opt/dex");
+        assert_eq!(config_dir("/exhibit.yaml"), "/");
+        assert_eq!(config_dir("exhibit.yaml"), ".");
+    }
+
+    #[test]
+    fn asset_in_config_dir_joins_without_doubling_the_separator() {
+        assert_eq!(asset_in_config_dir("/opt/dex", "a.265"), "/opt/dex/a.265");
+        assert_eq!(asset_in_config_dir("/", "a.265"), "/a.265");
+        assert_eq!(asset_in_config_dir("/opt/dex", "/srv/a.265"), "/srv/a.265");
+    }
+
+    /// The resolver against a REAL directory: write a config and its video
+    /// into one temp directory, load the config through the shared loader,
+    /// and check that the bare name resolved to the file beside it.
+    #[test]
+    fn a_relative_asset_resolves_against_a_real_config_directory() {
+        let cfg_path = tmp("relative-asset-exhibit.yaml");
+        std::fs::write(&cfg_path, "asset: artwork.265\ndisplay_mode: auto\n").unwrap();
+        let (c, path) = load_exhibit_config(Some(&cfg_path), &DEFAULT_EXHIBIT_CONFIG_PATHS)
+            .unwrap()
+            .unwrap();
+        let r = resolve_asset(Some(&c), config_dir(&path), None, false).unwrap();
+        let dir = config_dir(&cfg_path);
+        assert_eq!(r.path, format!("{dir}/artwork.265"));
+        let _ = std::fs::remove_file(&cfg_path);
     }
 
     // ---- the asset grammar ----------------------------------------------
 
     #[test]
-    fn asset_must_be_an_absolute_path() {
+    fn asset_accepts_absolute_and_relative_paths() {
         assert!(is_valid_asset("/opt/dex/loop.265"));
         assert!(is_valid_asset("/srv/art/Karte–Süd.265")); // non-ASCII is fine
-        // A relative path would resolve against the service's working
-        // directory (`/`), i.e. somewhere the operator did not type.
-        assert!(!is_valid_asset("loop.265"));
-        assert!(!is_valid_asset("./loop.265"));
+        assert!(is_valid_asset("loop.265")); // beside the config
+        assert!(is_valid_asset("./loop.265"));
+        assert!(is_valid_asset("../media/loop.265"));
         assert!(!is_valid_asset(""));
         assert!(!is_valid_asset("/opt/dex/")); // a directory, not a file
     }
 
-    /// The asset path is printed into the journal at every start, and the
-    /// journal is the only diagnostic channel a gallery device has -- a
+    /// The asset path is printed into the system log at every start, and the
+    /// system log is the only diagnostic channel a gallery device has -- a
     /// newline in it would forge a second log line.
     #[test]
     fn asset_with_a_control_character_is_refused() {
@@ -2028,7 +2132,11 @@ mod tests {
         assert_eq!(j, y);
         assert_eq!(j.asset.as_deref(), Some("/opt/dex/spring.265"));
 
-        let e = ExhibitConfig::from_yaml("asset: loop.265\ndisplay_mode: auto\n").unwrap_err();
+        // A bare file name is valid -- it names the file beside the config.
+        let rel = ExhibitConfig::from_yaml("asset: loop.265\ndisplay_mode: auto\n").unwrap();
+        assert_eq!(rel.asset.as_deref(), Some("loop.265"));
+        let e =
+            ExhibitConfig::from_yaml("asset: /opt/dex/\ndisplay_mode: auto\n").unwrap_err();
         assert!(e.contains("invalid asset"), "{e}");
     }
 
@@ -2036,7 +2144,7 @@ mod tests {
     //
     // `defaults` is injectable, so the discovery policy both binaries share is
     // testable here rather than only through the CLI on a machine that happens
-    // to have /etc/dex.
+    // to have /opt/dex.
 
     /// A unique temp path per call site, so tests never collide with each
     /// other or with a previous run's leftovers.
@@ -2084,14 +2192,14 @@ mod tests {
 
     /// An explicitly named missing file must NOT borrow the "no exhibit
     /// config, create the default" message -- the operator named a different
-    /// path, and telling them to create /etc/dex/exhibit.json is wrong advice.
+    /// path, and telling them to create /opt/dex/exhibit.yaml is wrong advice.
     #[test]
     fn load_names_the_explicit_path_when_it_is_missing() {
         let p = tmp("load-explicitly-absent.json");
         let _ = std::fs::remove_file(&p);
         let e = load_exhibit_config(Some(&p), &DEFAULT_EXHIBIT_CONFIG_PATHS).unwrap_err();
         assert!(e.contains(&p), "{e}");
-        assert!(!e.contains("Create /etc/dex"), "{e}");
+        assert!(!e.contains("Create /opt/dex"), "{e}");
     }
 
     /// A config whose name promises neither format refuses at the dispatch,

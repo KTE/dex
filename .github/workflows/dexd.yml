@@ -544,6 +544,12 @@ jobs:
           test -f /usr/share/man/man1/dexd.1.gz
           # The package must NOT ship an asset: artwork is content, not software.
           test ! -e /opt/dex/loop.265
+          # Nor an exhibit config, and no /etc/dex at all. The exhibit config
+          # lives beside the video in /opt/dex and an operator writes it; a
+          # package-installed conffile is what this asserts is gone.
+          test ! -e /etc/dex
+          test ! -e /opt/dex/exhibit.yaml
+          test ! -e /opt/dex/exhibit.json
 
           apt-get remove -y dexd
           test ! -e /usr/bin/dexd             # binary gone
@@ -554,6 +560,7 @@ jobs:
           test ! -e /lib/systemd/system/dexd.service
           getent passwd dex                       # still retained after purge
           test -d /opt/dex
+          test ! -e /etc/dex                      # never created, so nothing to purge
 
           apt-get autoremove --purge -y
 
