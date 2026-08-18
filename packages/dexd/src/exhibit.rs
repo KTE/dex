@@ -979,9 +979,9 @@ pub fn resolve_asset(
         }),
         (None, None) => Err(
             "no asset: the exhibit config does not name one and none was given on the command \
-             line. Add it to the exhibit config -- `asset: /opt/dex/loop.265` (YAML) or \
-             `\"asset\": \"/opt/dex/loop.265\"` (JSON) -- which is what lets several assets sit \
-             in /opt/dex with the exhibit choosing one"
+             line. Add it to the exhibit config -- `asset: loop.265` (YAML) or \
+             `\"asset\": \"loop.265\"` (JSON), a file next to the config or an absolute path -- \
+             which is what lets several videos sit in /opt/dex with the config choosing one"
                 .into(),
         ),
     }
@@ -2002,8 +2002,8 @@ mod tests {
         let e = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap_err();
         assert!(e.contains("no asset"), "{e}");
         // ...and it names the exact line to add, in both formats.
-        assert!(e.contains("asset: /opt/dex/loop.265"), "{e}");
-        assert!(e.contains(r#""asset": "/opt/dex/loop.265""#), "{e}");
+        assert!(e.contains("asset: loop.265"), "{e}");
+        assert!(e.contains(r#""asset": "loop.265""#), "{e}");
         // Also with NO config at all (that case refuses earlier, at
         // resolve_display -- but this function must not invent a path either).
         assert!(resolve_asset(None, "/opt/dex", None, false).is_err());

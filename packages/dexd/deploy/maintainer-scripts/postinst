@@ -32,13 +32,24 @@ configure)
   mkdir -p /opt/dex
   chmod 0755 /opt/dex
 
-  if [ ! -e /opt/dex/loop.265 ]; then
-    echo "dexd: installed, but /opt/dex/loop.265 is missing." >&2
-    echo "  Deploy BOTH the asset and its sidecar, then start the unit:" >&2
-    echo "    scp loop.265 loop.265.json <host>:/opt/dex/" >&2
+  # Three files make a player: the video, its sidecar and the exhibit config,
+  # all in /opt/dex. The package ships none of them.
+  if [ ! -e /opt/dex/exhibit.yaml ] && [ ! -e /opt/dex/exhibit.json ]; then
+    echo "dexd: installed. To play, put three files in /opt/dex and start the unit:" >&2
+    echo "    the video (for example artwork.265), its sidecar (artwork.265.json)," >&2
+    echo "    and exhibit.yaml naming the video and the display mode:" >&2
+    echo "        asset: artwork.265" >&2
+    echo "        display_mode: auto" >&2
     echo "    sudo systemctl start dexd" >&2
-    echo "  The player refuses to start without the sidecar, on purpose: a" >&2
-    echo "  guessed frame rate plays wrong forever with every metric green." >&2
+    echo "  dexd refuses to start without the sidecar or the config, rather than guess." >&2
+  fi
+
+  # A config left over from a version that read /etc/dex. It is not read any
+  # more; say so once, at install time, instead of letting the player refuse at
+  # the next power cycle with nobody watching.
+  if [ -e /etc/dex/exhibit.yaml ] || [ -e /etc/dex/exhibit.json ]; then
+    echo "dexd: NOTE: a config exists under /etc/dex, which dexd no longer reads." >&2
+    echo "  Move it next to the video: sudo mv /etc/dex/exhibit.* /opt/dex/ && sudo rmdir /etc/dex" >&2
   fi
 
   # A systemd drop-in that still passes --mode. LOUD, non-fatal, because the
