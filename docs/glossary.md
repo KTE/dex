@@ -24,7 +24,7 @@ Tier: user
 
 ### asset
 
-The one video file the player loops — the video asset — named by the `asset` line of the exhibit config as an absolute path (for example /opt/dex/artwork.265). If no asset is named, dexd refuses to start rather than guess. The artwork is the whole installation the asset plays in.
+The one video file the player loops — the video asset — named by the `asset` line of the exhibit config, as a file name next to the config (for example `artwork.265`) or an absolute path. If no asset is named, dexd refuses to start rather than guess. The artwork is the whole installation the asset plays in.
 
 Also written: video asset · the video · `asset` (config key)
 
@@ -112,9 +112,9 @@ Tier: user
 
 ### exhibit config
 
-The one file on each player, /etc/dex/exhibit.json or exhibit.yaml, that says which video plays (`asset`), which display mode to use and which connector. It holds what belongs to the installation, not to the video file; dexd reads it at every start and the command line may cross-check it but never override it.
+The one file on each player that says which video plays (`asset`), which display mode to use and which connector. It lives next to the video, as `/opt/dex/exhibit.yaml` or `exhibit.json`; the package installs none. dexd reads it at every start; the command line may cross-check it but never override it.
 
-Also written: /etc/dex/exhibit.json · /etc/dex/exhibit.yaml · exhibit.json · exhibit.yaml · exhibit file · exhibit · the installation · venue setup · `venue` / `display` / `note` (informational config keys)
+Also written: /opt/dex/exhibit.yaml · /opt/dex/exhibit.json · exhibit.yaml · exhibit.json · exhibit file · exhibit · the installation · venue setup · `venue` / `display` / `note` (informational config keys)
 
 Tier: user
 
@@ -354,7 +354,7 @@ Tier: developer
 
 ### cargo-deb
 
-The Cargo subcommand that builds dexd's .deb from settings in Cargo.toml (dependencies, installed files, service unit, conffiles). Pinned to its 2.x line because newer versions need a compiler newer than trixie ships.
+The Cargo subcommand that builds dexd's .deb from settings in Cargo.toml (dependencies, installed files, service unit). Pinned to its 2.x line because newer versions need a compiler newer than trixie ships.
 
 Also written: cargo deb · [package.metadata.deb]
 
@@ -397,14 +397,6 @@ Tier: developer
 In GPL terms, a program that links a GPL library and must therefore be distributed under the GPL. dexd's source is MIT-0 (see MIT-0), but Debian's libmpv links GPL-3+ libsmbclient, so the shipped binary is a GPL-3+ combined work.
 
 Also written: GPL combined work · why the .deb is GPL-3+
-
-Tier: developer
-
-### conffile
-
-A file a Debian package marks as configuration, so dpkg keeps a hand-edited copy across upgrades and asks before overwriting it. /etc/dex/exhibit.json is one; the JSON form ships as the conffile because it is the machine-writable format.
-
-Also written: dpkg conffile
 
 Tier: developer
 
