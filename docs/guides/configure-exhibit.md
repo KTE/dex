@@ -1,165 +1,170 @@
 # Configure the exhibit
 
-The exhibit config is the one file that says which video plays and which display mode dexd uses. It sits next to the video. You edit it with a text editor, and dexd reads it at every start.
+The exhibit config is the one file that says which video plays and which display mode dexd uses. It sits next to the video, and dexd reads it at every start. The package installs no exhibit config — you write it.
 
-## Where the file lives
+A player needs three files in `/opt/dex`: the video, its sidecar and this config. [Prepare your video](prepare-video.md) makes the first two. Further videos may sit beside them — `asset` names the one that plays.
 
-dexd looks in the assets directory `/opt/dex` for `exhibit.yaml` or `exhibit.json`. That directory is the part of the dex card any computer can open. Put the card in a computer and edit the config there, next to the video and its sidecar.
+## The file
 
-The package installs no exhibit config. Without one, dexd refuses to start and writes the reason to the system log (`journalctl -u dexd`), naming the file to create and the two lines it needs at a minimum:
+dexd looks for `/opt/dex/exhibit.yaml`, then `/opt/dex/exhibit.json`.
 
-```yaml
-asset: loop.265
-display_mode: auto
+Keep one of the two names. If both exist, dexd refuses to start, names both files and tells you to delete the one you do not mean — for example, to keep the YAML file:
+
 ```
-
-Create `/opt/dex/exhibit.yaml` with your video's file name in place of `loop.265` — on the player with `sudoedit /opt/dex/exhibit.yaml`, or on any computer in the top folder of the card's data partition — then run `sudo dex-exhibit-apply` and restart the player with `sudo systemctl restart dexd`.
-
-Keep exactly one of the two files. With both present, dexd refuses to start and names both files, so the player never runs on the file nobody edited. Delete the one you do not mean — for example, to keep the YAML file:
-
-```bash
 sudo rm /opt/dex/exhibit.json
 ```
 
-To read a config from somewhere else, pass `--exhibit-config PATH` — see `man dexd`.
+The file extension decides the format: `.json` is strict JSON (no comments, every name and value in double quotes), `.yaml` and `.yml` are YAML. The keys are the same either way. Write YAML when you want a comment next to a value; write JSON when a program generates the file.
 
-## Two formats, one set of keys
+**Note:** dexd refuses YAML in a file named `.json`.
 
-The file extension tells dexd which format to expect, and the keys are the same either way.
+## Example
 
-- `.json` is strict JSON: no comments, every name and value quoted.
-- `.yaml` or `.yml` is YAML: comments allowed, and values need no quotes unless they read as a number or as `true`/`false` (see the YAML rules below).
-
-Choose `.json` when a script writes the file; choose `.yaml` to edit by hand, even from a phone at the venue.
-
-dexd refuses YAML syntax inside a `.json` file, so any other program reading the file as JSON sees what dexd sees.
-
-## Write the file
-
-A 4K display with a forced display mode, in YAML:
+A minimal config names the video and asks the display for its preferred mode:
 
 ```yaml
-# This display gets no 4K mode unless it is forced.
 asset: artwork.265
-display_mode: 3840x2160@30
-kms_force: 3840x2160@30
-connector: HDMI-A-1
-display: 4K capture device
-venue: east wall
-note: spare card in the technician's drawer
+display_mode: auto
 ```
 
-The same settings in JSON:
+A full one, for a display that needs a forced display mode:
+
+```yaml
+asset: artwork.265
+display_mode: 3840x2160@30
+# The graphics driver builds no 4K mode from this display's EDID unless it is forced.
+# D: the connector counts as connected before the display is on — for a player switched on at the mains.
+kms_force: 3840x2160@30D
+connector: HDMI-A-1
+display: 4K capture device
+venue: main hall
+note: prepared at 30 fps
+```
+
+The same, as JSON (without `display`, `venue` and `note`):
 
 ```json
 {
   "asset": "artwork.265",
   "display_mode": "3840x2160@30",
-  "kms_force": "3840x2160@30",
-  "connector": "HDMI-A-1",
-  "display": "4K capture device",
-  "venue": "east wall",
-  "note": "spare card in the technician's drawer"
+  "kms_force": "3840x2160@30D",
+  "connector": "HDMI-A-1"
 }
 ```
 
-## The keys
+Write the file with `sudoedit /opt/dex/exhibit.yaml`. Then apply it and start the player:
 
-| Key | Required | Value |
+```
+sudo dex-exhibit-apply
+sudo reboot   # only if it printed REBOOT REQUIRED
+sudo systemctl start dexd   # only if you did not reboot
+```
+
+## Keys
+
+| Key | Value | Default |
 |---|---|---|
-| `asset` | yes | The video to play: a file name or relative path, taken from the folder this file is in (`artwork.265`), or an absolute path (`/opt/dex/artwork.265`). No trailing slash, no line breaks or other invisible characters. |
-| `display_mode` | yes | `auto`, or a picture size and refresh rate in whole numbers, for example `3840x2160@30`. |
-| `kms_force` | no, default `none` | `none`, or the forced display mode: the same size-and-rate form (`3840x2160@30`); add a trailing `D` (`3840x2160@30D`) to treat the display as connected from boot — see Choose the display mode. |
-| `connector` | no, default `HDMI-A-1` | The HDMI port the display is plugged into: `HDMI-A-` and a number, for example `HDMI-A-2`. |
-| `display`, `venue`, `note` | no | Free text for whoever reads the file next. dexd checks that they are text and does nothing else with them. |
+| `asset` | the video to play: a file name next to the config, such as `artwork.265`, or an absolute path | required — the config (or the command line) must name it |
+| `display_mode` | `auto`, or `WIDTHxHEIGHT@RATE` with a whole-number rate, such as `3840x2160@30` | required |
+| `kms_force` | `none`, or `WIDTHxHEIGHT@RATE` with an optional trailing `D`, such as `3840x2160@30D` | `none` |
+| `connector` | the HDMI port the display is plugged into: `HDMI-A-1`, `HDMI-A-2` | `HDMI-A-1` |
+| `display`, `venue`, `note` | free text recording what this installation is | none |
 
-Every value is text. dexd refuses an unknown key and names it, and catches a misspelling such as `kms_forse` at the next start.
+Rules that hold for both formats:
 
-Because the config names the video, several videos can sit in `/opt/dex`, with the `asset` line naming the one to play. If neither the config nor the command line names a video, dexd refuses to start and prints the exact line to add, in both formats.
+- Every value is text, and every key is one of the seven named above. dexd refuses to start on an unrecognised key and names it, so a misspelled `kms_forse` cannot drop a forced display mode.
+- `display`, `venue` and `note` change nothing about playback.
 
-Four rules apply to the YAML form:
+Rules for YAML:
 
-- Quote a value that reads as a number or as `true`/`false`. dexd refuses `display_mode: true` and names the fix.
-- Write `kms_force: none` when nothing is forced; do not write `no`.
-- One document per file: no `---` separators.
-- No `&name` / `*name` shortcuts that reuse a value elsewhere in the file; type the value out twice instead.
+- Quote a value that YAML would read as something other than text: `note: "true"`, `venue: "2026"`. dexd refuses a bare `true` or `false` and names the quoting fix; it refuses a bare number, whole or decimal, and names the key.
+- Write one set of `key: value` lines per file. dexd refuses a file holding more than one YAML document (two or more sections split by `---`).
+- Write each value out. dexd refuses anchors (`&name`) and aliases (`*name`).
 
-## Choose the display mode
+## Display mode
 
-The display mode belongs to the installation, not to the video. Each display needs its own setting; write it per player when you install the player.
+The display mode belongs to the installation, not to the video: one player drives a 4K panel, another a 2560×1440 monitor, and the two need opposite settings. Set the display mode for each player when you install that player.
 
-If you force a mode the display cannot show, dexd does not report it: the Raspberry Pi transmits the signal anyway, and the black or garbled screen looks like a fault in the player.
+Write the refresh rate as a whole number — `3840x2160@30`, never `@29.97` or `@30000/1001`. dexd refuses both forms: mpv rejects a fraction and rounds a decimal to the nearest whole number (measured on a Raspberry Pi 4; see [Exhibit config](../design/exhibit-config.md#display-mode)).
 
-Two displays, opposite settings:
+`auto` takes the display's preferred mode. When the video's width and height, which its sidecar also records, are not among the modes the connected display offers, dexd writes a warning to the system log and plays at whatever mode the Raspberry Pi falls back to.
 
-- A 4K capture device announces 3840×2160 at 30 frames per second as its preferred mode, and the graphics driver still offers no 4K mode from that announcement. Set both `display_mode` and `kms_force` to `3840x2160@30`; forced, the same mode works (measured on a Raspberry Pi 4, see the [measurement record](../design/measurements.md)).
-- A 2560×1440 monitor describes itself correctly and never lists a 4K mode. It must not carry a forced display mode. Use `display_mode: auto` or `2560x1440@60`, and leave `kms_force` at `none`.
+**Important:** dexd does not check whether the display can show a forced display mode. The Raspberry Pi transmits the forced mode, and the black screen that follows looks like a fault in the player.
 
-Write the refresh rate as a whole number: `@60`, never `@59.95`. A fraction such as `@30000/1001` stops mpv before it plays anything; mpv rounds a decimal such as `@59.95` to `@60`. dexd therefore refuses both forms when it reads the config (measured on a Raspberry Pi 4).
+Two worked examples:
 
-A display that reports itself late, such as a projector still warming up, can leave the Raspberry Pi on a fallback picture size it never corrects. The trailing `D` on a forced mode makes the Raspberry Pi treat the display as connected from boot, before it is switched on. For a display that may be off or slow when the player boots, write the forced mode with the `D`: `kms_force: 3840x2160@30D`.
+- A 2560×1440 monitor whose EDID never mentions 2160 shows its own preferred mode correctly: set `display_mode` to `2560x1440@60` or `auto`, and leave `kms_force: none`. Forcing 4K here transmits a picture the monitor cannot show.
+- A 4K capture device announces 3840×2160 at 30 Hz as its preferred mode, and the graphics driver builds no 4K mode from that announcement. Set `display_mode` to `3840x2160@30` and `kms_force` to `3840x2160@30`. Forced, the same mode works (measured on a Raspberry Pi 4; see [Measurement record](../design/measurements.md#two-sinks-two-mode-behaviours)).
 
-The helper that runs before dexd, dex-wait-hdmi, delays each start until an HDMI port reports a display (up to two minutes); with the `D` the port reports one from boot.
+## Forced display mode
 
-`display_mode: auto` uses the mode the display reports as preferred, so there is no mode for dexd to check. When the sidecar records a picture size the connector does not offer, dexd writes a warning to the system log and plays on. Set an explicit mode for a show.
+`kms_force` fixes the output from boot: the Raspberry Pi drives the mode you name, whatever the display announces. Give it the same mode as `display_mode` for a display that needs a forced mode, and `none` for a display that does not.
 
-## Apply a change
+A trailing `D`, as in `3840x2160@30D`, makes the connector count as connected before anything is attached. A Raspberry Pi that boots before its display has powered on otherwise reads no EDID, lands on a 1024×768 fallback and stays there. Add the `D` for a player switched on at the mains.
 
-dexd reads the config at every start and never re-reads it while running, so every change needs a restart.
+dex-wait-hdmi runs before dexd and waits up to two minutes for a display to report it is connected. For a connector with no forced display mode it is the only safeguard.
 
-After any change, run `sudo dex-exhibit-apply`. Reboot when it prints `REBOOT REQUIRED`; otherwise restart the player with `sudo systemctl restart dexd`.
+## Applying a change
 
-```bash
+Edit the config and apply it:
+
+```
 sudoedit /opt/dex/exhibit.yaml
 sudo dex-exhibit-apply
-sudo reboot     # only if it printed REBOOT REQUIRED; otherwise sudo systemctl restart dexd
+sudo reboot   # only if it printed REBOOT REQUIRED
+sudo systemctl restart dexd   # only if it printed no change
 ```
 
-`dex-exhibit-apply` reads the same file dexd does and copies the forced display mode into the boot options file, `/boot/firmware/cmdline.txt`, as a `video=` entry, or removes that entry when `kms_force` is `none`. It validates the whole config; `kms_force` and `connector` are the only two keys it acts on.
+dex-exhibit-apply writes the forced display mode into the `video=` option of `cmdline.txt`.
 
-- It rewrites the `video=` entry for your connector and nothing else: every other option, their order, and any other connector's entry stay as they were.
+- It leaves every other option in place, including every other connector's `video=` option.
+- With `kms_force: none`, it removes that connector's option instead.
 - It saves one timestamped backup before it writes.
-- It prints the old and the new line.
-- It prints `REBOOT REQUIRED` only when the file changed.
-- When the file already matches the config, it prints that and writes nothing.
+- It prints `REBOOT REQUIRED` when the file changed, and reports no change when the file already matched.
 
-Do not edit cmdline.txt by hand; let dex-exhibit-apply change the `video=` entry.
+Run `dex-exhibit-apply` after every edit to `kms_force` or `connector`. An edit that touches only `asset` or `display_mode` takes effect the next time the player starts: `sudo systemctl restart dexd`. See [Run, check, troubleshoot](run-check-troubleshoot.md).
 
-dexd reads the boot options the running system started with, so an applied change takes effect at the next boot.
+**Important:** do not edit `cmdline.txt` by hand. dexd compares the config with the boot options the Raspberry Pi actually started with, so a hand edit changes nothing until the next reboot, and then dexd finds the two disagree and refuses to start.
 
-If the exhibit config and those options disagree, dexd refuses to start and names both values and both repairs, because the stale side can be either one. On a player whose boot options carry a forced mode the venue needs, correct the config; running `dex-exhibit-apply` there would remove the forced mode.
+## Refusals
 
-## The command line
+dexd refuses to start rather than guess, names what it found and names the fix in the system log (`journalctl -u dexd`); [Reference](reference.md) lists every message. These are the ones that follow an edit.
 
-The dexd system service starts dexd with no arguments, so everything comes from the exhibit config, and running `dexd` yourself plays whatever the config names.
+- No config: the message gives the path to create and the two lines to put in it.
+- No video named: the message gives the `asset` line to add, in both formats. dexd does not guess a file.
+- A config that disagrees with the boot options: the message names both values and both repairs, since either side may be the stale one. Update the config when the boot options carry a forced display mode this venue needs; run `sudo dex-exhibit-apply` and reboot when the config is the current one.
+- A resolution the connected display does not offer: the message lists the resolutions the connector does offer. Either the display is not the one the config was written for, or a forced display mode has not taken effect yet and the player needs a reboot. A refresh rate the display does not offer is not caught here; the player starts and playback fails.
 
-A video path, `--mode` and `--fps` on the command line are cross-checks rather than overrides. Each must agree with the config or the sidecar; a value that contradicts one makes dexd refuse to start and name both values. Change a setting in the exhibit config, not on the command line.
+## Command line
 
-dexd runs the display checks — missing config, disagreeing boot options, a picture size the connector does not list — before it opens the video.
+The service runs `dexd` with no arguments, so everything comes from the config, and running `dexd` by hand plays whatever the config names.
 
-## After an upgrade
+`--exhibit-config PATH` reads a config from somewhere else. A video path, `--mode` and `--fps` are cross-checks: each must agree with the config (or, for `--fps`, with the sidecar), and if one disagrees, dexd refuses to start and names both values. See `man dexd`.
 
-Earlier versions read the config from `/etc/dex`, which dexd no longer opens. Installing the package prints a note when a file is still there; move it next to the video and restart the player:
+dexd checks the display settings before it opens the video, so dexd reports a wrong display mode even when the video path is also wrong.
 
-```bash
+## Older installs
+
+dexd does not read a config under `/etc/dex`. Move it next to the video:
+
+```
 sudo mv /etc/dex/exhibit.* /opt/dex/ && sudo rmdir /etc/dex
-sudo systemctl restart dexd
 ```
 
-Then check that the moved file names a video. On a config written before the `asset` key existed, dexd refuses to start and prints the line to add.
+Set the display mode in `display_mode`, not in a service override file (a drop-in under `/etc/systemd/system/dexd.service.d/`) that passes `--mode`. Remove the drop-in:
 
-A service override file in `/etc/systemd/system/dexd.service.d/` that still passes `--mode` dates from before the display mode moved into the exhibit config. Installing the package prints a note when one is present; remove it:
-
-```bash
+```
 sudo rm /etc/systemd/system/dexd.service.d/*.conf && sudo systemctl daemon-reload
 ```
 
-If the override's mode disagrees with the exhibit config, dexd refuses to start and names both.
+The package prints each of these as a `NOTE` if it finds one when you install it.
 
-## More
+## Related pages
 
-- Every key, exit code and refusal message with its fix: [Reference](reference.md).
-- Preparing the video and its sidecar: [Prepare your video](prepare-video.md).
-- Starting the player and reading its log lines: [Run, check, troubleshoot](run-check-troubleshoot.md).
-- Why the display mode belongs to the installation, and how the file is parsed: [Exhibit config](../design/exhibit-config.md).
-- Terms used here: [Glossary](../glossary.md).
+- [Reference](reference.md) — every config key, message and exit code in one place.
+- [Prepare your video](prepare-video.md) — making the .265 file and its sidecar.
+- [Build a dex card](build-player-card.md) — the recipe that ends where this file is written.
+- [Run, check, troubleshoot](run-check-troubleshoot.md) — starting the player and reading the system log.
+- [Exhibit config](../design/exhibit-config.md) — how the checks and the reconciliation work.
+- Man pages: `man dexd`, `man dex-exhibit-apply`, `man dex-wait-hdmi`.
+- [Glossary](../glossary.md).
