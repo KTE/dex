@@ -1,0 +1,88 @@
+# coinage<TAB>replacement — approved at Gate A 2026-08-18. Whole-word phrase unless wrapped in /…/. Extends docs-lint's built-in table.
+# Only unambiguous coinages belong here; the full elimination table with nuance lives in AGENTS.md.
+soak	long-running test / 24-hour test (name the duration)
+soak test	long-running test / 24-hour test
+soak run	long-running test run
+soak harness	long-running-test harness
+thermal soak	long thermal test
+the seam	the loop point (place) / a visible pause or held frame at the loop point (defect)
+a seam	a visible pause or held frame at the loop point
+no seam	no visible break at the loop point (gapless)
+the wrap	the loop point
+wrap point	loop point
+at the wrap	at the loop point
+across the wrap	across the loop point
+wrap-join	loop point
+wrap transition	loop point
+wrap arithmetic	loop-position arithmetic
+matched wrap	(describe: the loop point is matched by construction)
+wraps=	loops=
+WRAP_COUNT	LOOP_COUNT
+wrap count	loop count / loop iterations
+bench asset	test video
+bench-ready asset	test video
+bench-only	test-rig-only
+BENCH ONLY	(test rig only)
+bench escape hatch	test-rig flag
+live-fire	against a real mpv instance / on real hardware
+live-fire probe	test against a real mpv instance
+live-fire test	the forced-recovery test against a real mpv
+wedged	unresponsive / hangs / is hanging
+wedge	hang
+core-wedge	the core stops responding
+display-wedged	the display stops updating while the process stays alive
+the wedge check	the hang check
+hung	hangs / is hanging / unresponsive
+the loser	the unwanted config file
+delete the loser	delete the one you do not mean
+drift generator	would make the boot config and the player's config diverge
+black-wall time	the worst-case time the screen can stay dark
+black wall	black screen
+spins hot	busy-loops, using a full CPU core
+belt-and-braces	a second safeguard
+the crux	the decisive question
+the box test	the sealed-case thermal test
+gaplessness premise	the requirement that the loop is gapless
+loop-ability	whether a file can loop gaplessly
+F3 gate	the sidecar check
+sidecar gate	the sidecar check
+NAL gate	the asset check
+cmdline gate	the cmdline check
+escalation ladder	the recovery steps (in-place recovery, process restart, reboot)
+fps honesty	(describe: the frame rate is bound to the file, not guessed)
+cleanroom extraction	the extraction into the public repository
+buster ceiling	the 1080p limit of the buster-based image
+starved feed	a read that cannot keep up with playback
+the linger bug	the idle-hang bug (a failed load left mpv idle forever, screen black)
+silent wrongness	(describe the failure plainly)
+wrongness class	(describe the failure plainly)
+green nothing	a check that passes without running
+baked	written into / stored in
+baked EDID	a saved copy of the display's EDID loaded at boot
+baked-in	built in / stored
+stamped	written / recorded
+stamp file	build-id file
+build stamp	build id
+event thread	supervisor thread
+dwell histogram	frame-duration histogram
+dwell counts	frame durations
+player card	dex card
+re-ingest	prepare the video again with dex-sidecar write
+the honest count	(state the number)
+gallery-ops review	(process talk — remove)
+adversarial review	(process talk — remove)
+dex-loop	dexd
+dex-loop.service	dexd.service
+dex_loop	dexd
+sidecar-check	dex-sidecar check
+make-sidecar.sh	dex-sidecar write
+tier-0	in-place recovery
+tier 0	in-place recovery
+tier-1	process restart by systemd
+tier 1	process restart by systemd
+tier-2	reboot escalation (planned)
+tier 2	reboot escalation (planned)
+tier-3	hardware watchdog (planned)
+tier 3	hardware watchdog (planned)
+the pass bar	the pass criteria
+pre-registered bar	the pass criteria set beforehand

@@ -1,0 +1,6 @@
+# The glossary and the writing rules are approved by the project owner, entry by entry.
+# Branch protection requires a code-owner review for these paths, so no change lands without him.
+docs/glossary.md        @eins78
+docs/lint-coinages.tsv  @eins78
+docs/lint-allow.txt     @eins78
+AGENTS.md               @eins78

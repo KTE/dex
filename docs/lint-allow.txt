@@ -1,0 +1,26 @@
+# docs-lint allowlist — every entry needs a reason after #
+# universal acronyms (Gate A DEC-014): not glossary entries
+caps HDMI # universal acronym, approved as allowlist at Gate A
+caps USB # universal acronym, approved as allowlist at Gate A
+caps SD # universal acronym, approved as allowlist at Gate A
+caps SSH # universal acronym, approved as allowlist at Gate A
+caps CPU # universal acronym, approved as allowlist at Gate A
+caps GPU # universal acronym, approved as allowlist at Gate A
+caps RAM # universal acronym, approved as allowlist at Gate A
+caps JSON # universal acronym, approved as allowlist at Gate A
+caps YAML # universal acronym, approved as allowlist at Gate A
+caps CI # universal acronym, approved as allowlist at Gate A
+caps OS # universal acronym, approved as allowlist at Gate A
+caps PR # universal acronym, approved as allowlist at Gate A
+caps URL # universal acronym, approved as allowlist at Gate A
+caps API # universal acronym, approved as allowlist at Gate A
+caps GPL # universal acronym, approved as allowlist at Gate A
+caps TIFF # universal acronym, approved as allowlist at Gate A
+caps MP4 # universal acronym, approved as allowlist at Gate A
+caps RGB # universal acronym, approved as allowlist at Gate A
+caps YUV # universal acronym, approved as allowlist at Gate A
+caps FAT32 # universal acronym, approved as allowlist at Gate A
+caps SAND # Broadcom tile format name, a glossary term spelled in caps
+caps path=**/*.rs MAX # i64::MAX etc. — constants, not emphasis
+caps path=**/*.rs MIN # i64::MIN etc. — constants, not emphasis
+caps path=**/deny.toml RUSTSEC # advisory ids
