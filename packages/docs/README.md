@@ -68,10 +68,38 @@ Starlight writes `data-theme="light"` or `"dark"` on the root element from its o
 palette states both halves. The dark half is the bare `:root` block, matching Starlight's own
 dark-first arrangement.
 
+### The colour-scheme control
+
+The header button steps through three colour schemes in one cycle, replacing Starlight's light and
+dark select. The palettes differ in more than lightness, so a pair does not describe them.
+
+| Step | Palette | Colour scheme | Body contrast |
+|---|---|---|---|
+| Bold | `brand` | dark, whatever the reader's system asks for | 5.71:1 — AA |
+| Quiet *(dark or light)* | `brand-deep` | the one the reader's system asks for | 9.60:1 dark, 11.41:1 light — AAA |
+| Quiet *(the other one)* | `brand-deep` | the opposite | as above |
+
+The first step is the project site's colours and is what a reader sees first. The second is one
+click away and measures AAA. The third covers a reader whose system setting does not suit the room.
+
+The state is held in `localStorage` under `dex-view` and survives a reload. The button's label
+names the current step, and its swatch is drawn from the live custom properties, so it shows the
+palette without being told about it.
+
+[`src/components/ThemeProvider.astro`](src/components/ThemeProvider.astro) holds the state and
+applies it, inlined in the head so no step flashes before the stored one.
+[`src/components/ThemeSelect.astro`](src/components/ThemeSelect.astro) is the button. Both are
+registered under `components` in `astro.config.mjs`. Starlight renders the control in the header
+and in the mobile menu; the script wires every copy and updates every copy on a click.
+
+To change which palettes the cycle uses, edit `resolve()` in `ThemeProvider.astro`. To change the
+number of steps, edit `STEPS` in the same file and the label.
+
 ### Palette previews
 
-Five palettes can be previewed with a query parameter. Contrast is against the background, WCAG
-2.1, for body text in each colour scheme.
+All five palettes can be previewed with a query parameter, including the two the cycle does not
+use. The parameter sets the colours; the cycle still decides the colour scheme. Contrast is against
+the background, WCAG 2.1, for body text in each colour scheme.
 
 | URL | palette | contrast |
 |---|---|---|
@@ -81,12 +109,11 @@ Five palettes can be previewed with a query parameter. Contrast is against the b
 | `?palette=amber` | amber on black, the first palette the project site shipped | 9.27:1 dark, 16.11:1 light — AAA |
 | `?palette=brand-day` | the recorded pair by day, deeper night | 12.39:1 dark, 5.71:1 light |
 
-`?palette=brand` is a no-op rather than an error: the recorded pair is the default.
+`?palette=brand` is a no-op rather than an error: the recorded pair is what the first step uses.
 
-The parameter is `palette` and not `theme` because Starlight already uses `data-theme` for its
-light and dark toggle. A short script in `astro.config.mjs` copies the parameter onto
-`<html data-palette>` before first paint, so the default palette never flashes. The script accepts
-`/^[a-z-]{1,20}$/` and ignores anything else.
+The parameter is `palette` and not `theme` because Starlight already uses `data-theme` for the
+colour scheme. `ThemeProvider.astro` copies the parameter onto `<html data-palette>` before first
+paint, so the palette never flashes. It accepts `/^[a-z-]{1,20}$/` and ignores anything else.
 
 The dimmed colour has the least room in the default palette: it has to stay under the body text's
 5.71:1 to read as secondary and over 4.5:1 to pass AA at the size the table of contents runs.

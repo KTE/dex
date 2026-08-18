@@ -1,0 +1,85 @@
+---
+/**
+ * The colour-scheme control, replacing Starlight's light and dark select.
+ *
+ * One button that steps through the cycle defined in ThemeProvider.astro. A
+ * select would need names for three steps whose difference is easier to see
+ * than to read, so the control shows the current step and its colours and
+ * changes on click.
+ *
+ * Starlight renders this component twice, in the header and in the mobile
+ * menu, so the script wires every copy and updates every copy on a click.
+ */
+---
+
+<button class="dex-view" type="button">
+  <span class="dex-view__swatch" aria-hidden="true"></span>
+  <span class="dex-view__label">Bold</span>
+</button>
+
+<script is:inline>
+  ;(() => {
+    const buttons = () => document.querySelectorAll('button.dex-view')
+
+    const sync = (button) => {
+      const label = window.dexView.label()
+      button.querySelector('.dex-view__label').textContent = label
+      button.setAttribute('aria-label', 'Colour scheme: ' + label + '. Change it.')
+      button.title = 'Colour scheme: ' + label + '. Change it.'
+    }
+
+    buttons().forEach((button) => {
+      sync(button)
+      if (button.dataset.wired) return
+      button.dataset.wired = 'yes'
+      button.addEventListener('click', () => {
+        window.dexView.advance()
+        buttons().forEach(sync)
+      })
+    })
+  })()
+</script>
+
+<style>
+  .dex-view {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.28rem 0.6rem;
+    border: 1px solid var(--sl-color-gray-5);
+    background: transparent;
+    color: var(--sl-color-gray-3);
+    font: inherit;
+    font-size: var(--sl-text-xs);
+    line-height: 1.4;
+    cursor: pointer;
+  }
+
+  .dex-view:hover,
+  .dex-view:focus-visible {
+    color: var(--sl-color-text-accent);
+    border-color: var(--sl-color-text-accent);
+  }
+
+  /* The swatch is the palette itself: the page ground with the body colour on
+   * it, so the button shows what the next step changes. */
+  .dex-view__swatch {
+    width: 0.85rem;
+    height: 0.85rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 50%;
+    background: radial-gradient(
+      circle at center,
+      var(--sl-color-text) 0 45%,
+      var(--sl-color-bg) 45% 100%
+    );
+  }
+
+  /* The header is tight on a phone; the swatch alone still identifies the
+   * step, and the accessible name carries the words. */
+  @media (max-width: 50rem) {
+    .dex-view__label {
+      display: none;
+    }
+  }
+</style>

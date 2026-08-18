@@ -17,15 +17,13 @@ export default defineConfig({
       // Loaded after Starlight's own styles, so these files override its
       // custom properties.
       customCss: ['./src/styles/dex.css'],
-      // The palette previews need a script that runs before first paint.
-      head: [
-        {
-          tag: 'script',
-          content:
-            "const p=new URLSearchParams(location.search).get('palette');" +
-            'if(p&&/^[a-z-]{1,20}$/.test(p))document.documentElement.dataset.palette=p;',
-        },
-      ],
+      // The colour-scheme control steps through three palettes instead of
+      // Starlight's light and dark pair. ThemeProvider holds the state and
+      // sets it before first paint; ThemeSelect is the button.
+      components: {
+        ThemeProvider: './src/components/ThemeProvider.astro',
+        ThemeSelect: './src/components/ThemeSelect.astro',
+      },
       sidebar: [
         { label: 'Guides', items: [{ autogenerate: { directory: 'guides' } }] },
         { label: 'Design', items: [{ autogenerate: { directory: 'design' } }] },
