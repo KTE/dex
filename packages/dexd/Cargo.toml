@@ -20,9 +20,8 @@ rust-version = "1.85"
 # crate counts, are in docs/design/packaging.md.
 #
 #   serde_json  Parses the sidecar. Its \uXXXX and UTF-16 surrogate-pair
-#               handling is required: an ingest tool may escape every
-#               non-ASCII character, and the informational `source` key can
-#               hold any filename.
+#               handling is required: a sidecar or config file may contain
+#               any Unicode character, for example in a file name.
 #   serde       The map visitor only, with no `derive` feature and so no
 #               procedural macros. The sidecar grammar makes a duplicate key
 #               an error, which serde_json's last-wins map cannot express.
@@ -54,10 +53,9 @@ copyright = "Max Albrecht"
 # binary's GPL-3+ obligations.
 license-file = "LICENSE"
 extended-description = """
-Gapless HEVC video looper for Raspberry Pi gallery installations, based on
-libmpv. dexd feeds the decoder one endless in-process byte stream, so playback
-never reaches the end of the file and never seeks; that removes the pause at
-the loop point."""
+Gapless HEVC video looper for Raspberry Pi, based on libmpv. dexd plays one
+video artwork in an endless loop with no visible break at the loop point, on
+a player that runs unattended and is switched off at the mains."""
 section = "video"
 priority = "optional"
 
