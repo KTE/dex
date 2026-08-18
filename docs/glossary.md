@@ -544,11 +544,6 @@ Also written: EOF · end of file · end-of-stream · short read (fewer bytes tha
 
 Tier: developer
 
-### event thread
-
-dexd's single thread that waits for mpv events (see mpv_wait_event), runs the health check, heartbeat and watchdog ping, and makes every mpv call. It must never block, so only non-blocking mpv calls are used on it; a hang here is what the systemd watchdog catches.
-
-Also written: supervisor thread (health.rs wording) · the event loop
 
 Tier: developer
 
@@ -1029,6 +1024,14 @@ Tier: developer
 A hardware decoder driver model in which userspace parses the bitstream and hands the driver each frame's parameters (V4L2's request API). The Pi's HEVC decoder is stateless only, so ffmpeg's stateful hevc_v4l2m2m decoder cannot drive it; the working path is the V4L2-request hardware acceleration.
 
 Also written: V4L2 stateless · request API · V4L2 Request API · v4l2request (mpv's hwdec name) · stateful / M2M (the other model)
+
+Tier: developer
+
+### supervisor thread
+
+dexd's single thread that waits for mpv events (see mpv_wait_event), runs the health check, heartbeat and watchdog ping, and makes every mpv call. It must never block, so only non-blocking mpv calls are used on it; a hang here is what the systemd watchdog catches.
+
+Also written: the event loop · event thread (retired wording)
 
 Tier: developer
 
