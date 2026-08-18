@@ -768,7 +768,7 @@ impl ExhibitConfig {
 }
 
 /// Where a bound display config came from: the exhibit config, or the bench
-/// escape hatch (`--bench-no-sidecar` [`--mode <M>`]).
+/// escape hatch (`--test-rig-no-sidecar` [`--mode <M>`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplaySource {
     Config,
@@ -803,9 +803,9 @@ pub struct ResolvedDisplay {
 pub fn resolve_display(
     config: Option<&ExhibitConfig>,
     cli_mode: Option<&str>,
-    bench_no_sidecar: bool,
+    test_rig_no_sidecar: bool,
 ) -> Result<ResolvedDisplay, String> {
-    if bench_no_sidecar {
+    if test_rig_no_sidecar {
         return match cli_mode {
             Some(m) if is_valid_display_mode(m) => Ok(ResolvedDisplay {
                 display_mode: m.to_string(),
@@ -828,7 +828,7 @@ pub fn resolve_display(
     match config {
         None => Err(
             "no exhibit config; refusing to guess the display. Create /etc/dex/exhibit.json \
-             (the .deb ships one) or use --bench-no-sidecar on a bench"
+             (the .deb ships one) or use --test-rig-no-sidecar on a bench"
                 .into(),
         ),
         Some(cfg) => match cli_mode {
@@ -905,17 +905,17 @@ pub struct ResolvedAsset {
 pub fn resolve_asset(
     config: Option<&ExhibitConfig>,
     cli_path: Option<&str>,
-    bench_no_sidecar: bool,
+    test_rig_no_sidecar: bool,
 ) -> Result<ResolvedAsset, String> {
-    if bench_no_sidecar {
+    if test_rig_no_sidecar {
         return match cli_path {
             Some(p) => Ok(ResolvedAsset {
                 path: p.to_string(),
                 source: AssetSource::Cli,
             }),
             None => Err(
-                "--bench-no-sidecar consults no exhibit config, so the asset must be given on \
-                 the command line: dexd <stream.265> --bench-no-sidecar --fps <F>"
+                "--test-rig-no-sidecar consults no exhibit config, so the asset must be given on \
+                 the command line: dexd <stream.265> --test-rig-no-sidecar --fps <F>"
                     .into(),
             ),
         };

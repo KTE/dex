@@ -569,7 +569,7 @@ fn rational_fps_reaches_playback() {
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--bench-no-sidecar",
+            "--test-rig-no-sidecar",
             "--fps",
             "30000/1001",
             "--no-defaults",
@@ -595,7 +595,7 @@ fn bench_escape_hatch_bypasses_sidecar() {
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--bench-no-sidecar",
+            "--test-rig-no-sidecar",
             "--fps",
             "30",
             "--no-defaults",
@@ -621,7 +621,7 @@ fn bench_flag_without_fps_refused_exit_2() {
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--bench-no-sidecar",
+            "--test-rig-no-sidecar",
             "--no-defaults",
             "--opt",
             "vo=null",
@@ -743,13 +743,13 @@ fn heartbeat_zero_is_emitted_at_startup() {
     );
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("heartbeat wraps="),
+        r.stderr.contains("heartbeat loops="),
         "stderr: {}",
         r.stderr
     );
 }
 
-// ---- T7: --force-recovery-after-secs, the live-fire bench probe ---------
+// ---- T7: --test-rig-force-recovery-after-secs, the live-fire bench probe ---------
 //
 // C1 (PLAN.md's F1 addendum) shipped and reached the bench without ever
 // having been exercised against a live mpv: every in-place recovery killed
@@ -764,7 +764,7 @@ fn heartbeat_zero_is_emitted_at_startup() {
 // The tests below stay INSIDE this file's mandatory `--opt vid=no --opt
 // aid=no` rule (see the module doc at the top of this file): they prove the
 // CLI plumbing -- the flag parses, the "impossible to enable accidentally
-// in a deployment" gate refuses it without --bench-no-sidecar, and the loud
+// in a deployment" gate refuses it without --test-rig-no-sidecar, and the loud
 // arming warning prints -- without ever letting the forced trigger actually
 // fire, since firing needs a health check tick against playback that is
 // still alive, and vid=no/aid=no makes mpv reach "nothing to play" and end
@@ -774,22 +774,22 @@ fn heartbeat_zero_is_emitted_at_startup() {
 // -- that scenario is the #[ignore]d test below instead.
 
 /// The gate itself (main.rs, checked on CLI shape alone, before the asset
-/// is even read): `--force-recovery-after-secs` without `--bench-no-sidecar`
+/// is even read): `--test-rig-force-recovery-after-secs` without `--test-rig-no-sidecar`
 /// is refused, regardless of what -- if anything -- exists on disk at the
 /// given path. This is the "impossible to enable accidentally in a
 /// deployment" requirement, made concrete: a real deployment's ExecStart
-/// never passes --bench-no-sidecar (deploy/dexd.service always binds a
+/// never passes --test-rig-no-sidecar (deploy/dexd.service always binds a
 /// real sidecar), so this flag can never end up armed against a gallery
 /// show, however it got pasted into a command line.
 #[test]
-fn force_recovery_without_bench_no_sidecar_refused_exit_2() {
+fn force_recovery_without_test_rig_no_sidecar_refused_exit_2() {
     let r = run_with_deadline(
-        &["/nonexistent/x.265", "--force-recovery-after-secs", "5"],
+        &["/nonexistent/x.265", "--test-rig-force-recovery-after-secs", "5"],
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("--bench-no-sidecar"),
+        r.stderr.contains("--test-rig-no-sidecar"),
         "stderr must explain the required pairing: {}",
         r.stderr
     );
@@ -802,7 +802,7 @@ fn force_recovery_without_bench_no_sidecar_refused_exit_2() {
 #[test]
 fn force_recovery_flag_missing_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
-        &["/nonexistent/x.265", "--force-recovery-after-secs"],
+        &["/nonexistent/x.265", "--test-rig-force-recovery-after-secs"],
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
@@ -816,7 +816,7 @@ fn force_recovery_flag_non_numeric_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
         &[
             "/nonexistent/x.265",
-            "--force-recovery-after-secs",
+            "--test-rig-force-recovery-after-secs",
             "soon",
         ],
         Duration::from_secs(10),
@@ -825,8 +825,8 @@ fn force_recovery_flag_non_numeric_value_refused_exit_2_with_usage() {
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
-/// Paired with --bench-no-sidecar (the only way the gate above ever
-/// accepts it), the flag is armed: startup must print the loud "BENCH ONLY
+/// Paired with --test-rig-no-sidecar (the only way the gate above ever
+/// accepts it), the flag is armed: startup must print the loud "(test rig only)
 /// (T7)... ARMED" warning, and playback must proceed exactly as it does
 /// without the flag (vid=no/aid=no's deterministic fast exit via "nothing
 /// to play"). `N` is large enough that the forced trigger provably never
@@ -834,16 +834,16 @@ fn force_recovery_flag_non_numeric_value_refused_exit_2_with_usage() {
 /// flake on the race between the two -- it exists to prove the plumbing
 /// and the warning, not the live-fire behaviour itself.
 #[test]
-fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
+fn force_recovery_flag_with_test_rig_no_sidecar_arms_and_reaches_playback() {
     let p = temp_path("forcerecovery.265");
     std::fs::write(&p, stub_annexb()).unwrap(); // bench path: no sidecar needed
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--bench-no-sidecar",
+            "--test-rig-no-sidecar",
             "--fps",
             "30",
-            "--force-recovery-after-secs",
+            "--test-rig-force-recovery-after-secs",
             "3600",
             "--no-defaults",
             "--opt",
@@ -858,7 +858,7 @@ fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("BENCH ONLY (T7)") && r.stderr.contains("ARMED"),
+        r.stderr.contains("(test rig only) (T7)") && r.stderr.contains("ARMED"),
         "must print the loud arming warning: {}",
         r.stderr
     );
@@ -911,7 +911,7 @@ fn force_recovery_flag_with_bench_no_sidecar_arms_and_reaches_playback() {
 ///
 /// Expected stderr, in order:
 ///   1. "dexd 0.1.0 (...)"                                -- normal startup
-///   2. "warning: BENCH ONLY (T7): --force-recovery-after-secs=3 is ARMED"
+///   2. "warning: (test rig only) (T7): --test-rig-force-recovery-after-secs=3 is ARMED"
 ///   3. (a few seconds of nothing -- real decode, no per-frame logging)
 ///   4. "dexd: health check: T7 bench probe: ... -- attempting in-place
 ///      recovery 1/3 ..."
@@ -961,10 +961,10 @@ fn force_recovery_survives_against_real_mpv() {
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--bench-no-sidecar",
+            "--test-rig-no-sidecar",
             "--fps",
             "30",
-            "--force-recovery-after-secs",
+            "--test-rig-force-recovery-after-secs",
             "3",
             "--no-defaults",
             "--opt",
@@ -1013,7 +1013,7 @@ fn force_recovery_survives_against_real_mpv() {
     assert!(
         !r.stderr.contains("attempting in-place recovery 2/"),
         "a second recovery fired organically after the forced one -- time-pos \
-         likely never resumed advancing post-recovery (event loop wedged \
+         likely never resumed advancing post-recovery (event loop unresponsive \
          rather than truly recovered): {}",
         r.stderr
     );
@@ -1030,7 +1030,7 @@ fn force_recovery_survives_against_real_mpv() {
 // vid=no --opt aid=no` rule.
 
 /// An `--exhibit-config` naming a file that is not there, and no
-/// `--bench-no-sidecar`: refused before even the asset path is looked at, and
+/// `--test-rig-no-sidecar`: refused before even the asset path is looked at, and
 /// refused NAMING THE PATH THE OPERATOR GAVE.
 ///
 /// The naming half is the point. Until the dual-format work this borrowed
@@ -1265,7 +1265,7 @@ fn malformed_exhibit_config_refused_exit_2_naming_the_parse_error() {
     assert!(r.stderr.contains("kms_forse"), "stderr: {}", r.stderr);
 }
 
-/// `--bench-no-sidecar` bypasses BOTH the exhibit config AND the cmdline
+/// `--test-rig-no-sidecar` bypasses BOTH the exhibit config AND the cmdline
 /// gate: no `--exhibit-config` is supplied, no `--proc-cmdline` is supplied,
 /// and the run still reaches playback (exit 1, not 2) because bench mode
 /// consults neither.
@@ -1276,7 +1276,7 @@ fn bench_flag_bypasses_the_exhibit_config_and_cmdline_gate_too() {
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--bench-no-sidecar",
+            "--test-rig-no-sidecar",
             "--fps",
             "30",
             "--no-defaults",
@@ -1388,30 +1388,30 @@ fn implausible_mode_refused_by_the_sysfs_preflight() {
     assert!(!r.stderr.contains("f6-implausible.265"), "stderr: {}", r.stderr);
 }
 
-// ---- F10: --bench-wedge-after-secs, the systemd-watchdog live-fire probe -
+// ---- F10: --test-rig-hang-after-secs, the systemd-watchdog live-fire probe -
 //
-// F9 proved a wedged mpv core produces SILENCE on this program's event
-// thread, and F1 acts on that silence in-process. Neither covers the event
+// F9 proved a wedged mpv core produces SILENCE on this program's supervisor
+// thread, and F1 acts on that silence in-process. Neither covers the supervisor
 // thread hanging in code that is NOT an mpv call at all (e.g. `eprintln!`
 // against a wedged journald) -- see dexd::watchdog's module doc
-// ("Framing"). `--bench-wedge-after-secs` deliberately reproduces that one
+// ("Framing"). `--test-rig-hang-after-secs` deliberately reproduces that one
 // remaining hazard class on a timer, so its plumbing gets the same
 // "impossible to enable accidentally in a deployment" gate as T7's
-// `--force-recovery-after-secs`, tested the same way here.
+// `--test-rig-force-recovery-after-secs`, tested the same way here.
 
 /// The gate itself, mirroring
-/// `force_recovery_without_bench_no_sidecar_refused_exit_2`:
-/// `--bench-wedge-after-secs` without `--bench-no-sidecar` is refused on CLI
+/// `force_recovery_without_test_rig_no_sidecar_refused_exit_2`:
+/// `--test-rig-hang-after-secs` without `--test-rig-no-sidecar` is refused on CLI
 /// shape alone, before the asset is even read.
 #[test]
-fn bench_wedge_without_bench_no_sidecar_refused_exit_2() {
+fn test_rig_hang_without_test_rig_no_sidecar_refused_exit_2() {
     let r = run_with_deadline(
-        &["/nonexistent/x.265", "--bench-wedge-after-secs", "5"],
+        &["/nonexistent/x.265", "--test-rig-hang-after-secs", "5"],
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("--bench-no-sidecar"),
+        r.stderr.contains("--test-rig-no-sidecar"),
         "stderr must explain the required pairing: {}",
         r.stderr
     );
@@ -1419,9 +1419,9 @@ fn bench_wedge_without_bench_no_sidecar_refused_exit_2() {
 
 /// Same missing-value discipline as every other flag taking a value.
 #[test]
-fn bench_wedge_flag_missing_value_refused_exit_2_with_usage() {
+fn test_rig_hang_flag_missing_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
-        &["/nonexistent/x.265", "--bench-wedge-after-secs"],
+        &["/nonexistent/x.265", "--test-rig-hang-after-secs"],
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
@@ -1431,16 +1431,16 @@ fn bench_wedge_flag_missing_value_refused_exit_2_with_usage() {
 /// A non-numeric value must also refuse via usage(), not silently parse as
 /// 0 or panic the process.
 #[test]
-fn bench_wedge_flag_non_numeric_value_refused_exit_2_with_usage() {
+fn test_rig_hang_flag_non_numeric_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
-        &["/nonexistent/x.265", "--bench-wedge-after-secs", "soon"],
+        &["/nonexistent/x.265", "--test-rig-hang-after-secs", "soon"],
         Duration::from_secs(10),
     );
     assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
-/// The mechanism itself: with `--bench-wedge-after-secs 0`, the wedge check
+/// The mechanism itself: with `--test-rig-hang-after-secs 0`, the hang check
 /// fires on the very first loop iteration, unconditionally, BEFORE that same
 /// iteration's event-id dispatch can act on whatever `mpv_wait_event`
 /// happened to return (see the firing site's comment in main.rs for why
@@ -1454,22 +1454,22 @@ fn bench_wedge_flag_non_numeric_value_refused_exit_2_with_usage() {
 /// signal on its own").
 ///
 /// This proves the MECHANISM -- that the flag genuinely, permanently parks
-/// the event thread -- not that a systemd watchdog then kills it: this
+/// the supervisor thread -- not that a systemd watchdog then kills it: this
 /// harness has no systemd to observe. That half is proved on the Pi; see
 /// PLAN.md's F10 entry and README.md for the on-device procedure
 /// (journalctl showing `Watchdog timeout`, a SIGABRT, and a supervisor
 /// restart).
 #[test]
-fn bench_wedge_flag_actually_hangs_the_event_thread_forever() {
-    let p = temp_path("wedge.265");
+fn test_rig_hang_flag_actually_hangs_the_supervisor_thread_forever() {
+    let p = temp_path("hang.265");
     std::fs::write(&p, stub_annexb()).unwrap();
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
-            "--bench-no-sidecar",
+            "--test-rig-no-sidecar",
             "--fps",
             "30",
-            "--bench-wedge-after-secs",
+            "--test-rig-hang-after-secs",
             "0",
             "--no-defaults",
             "--opt",
@@ -1483,18 +1483,18 @@ fn bench_wedge_flag_actually_hangs_the_event_thread_forever() {
     );
     assert!(
         r.deadline_killed,
-        "a genuinely wedged event thread must never exit on its own -- exit_code {:?}, \
+        "a genuinely unresponsive supervisor thread must never exit on its own -- exit_code {:?}, \
          stderr: {}",
         r.exit_code, r.stderr
     );
     assert!(
-        r.stderr.contains("BENCH ONLY (F10 wedge probe)") && r.stderr.contains("ARMED"),
+        r.stderr.contains("(test rig only) (F10 hang probe)") && r.stderr.contains("ARMED"),
         "must print the loud arming warning: {}",
         r.stderr
     );
     assert!(
         r.stderr
-            .contains("deliberately parking the event thread forever"),
+            .contains("deliberately parking the supervisor thread forever"),
         "must print the firing line proving the probe actually triggered: {}",
         r.stderr
     );

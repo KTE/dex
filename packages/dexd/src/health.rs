@@ -98,7 +98,7 @@
 //!   (safe there — nothing has had a chance to wedge before the first
 //!   frame). Using the async variant for recovery means the one new
 //!   synchronous-shaped risk this feature could have introduced — blocking
-//!   on `loadfile` from the event thread while trying to fix a wedged core —
+//!   on `loadfile` from the supervisor thread while trying to fix a wedged core —
 //!   does not exist either.
 //!
 //! In short: every new mpv-facing call this feature adds is either
@@ -204,7 +204,7 @@ impl HealthMonitor {
     /// attempt killing the process on its own first step) shipped and
     /// reached the bench without ever having been exercised against a live
     /// mpv, because nothing -- test or otherwise -- had ever driven this
-    /// path for real. See main.rs's `--force-recovery-after-secs` for what
+    /// path for real. See main.rs's `--test-rig-force-recovery-after-secs` for what
     /// decides WHEN to call this.
     ///
     /// Not a stall: whatever jitter `consecutive_stalls` was accumulating
@@ -253,7 +253,7 @@ impl HealthMonitor {
 /// an ongoing chaos-monkey campaign against it -- a single forced episode,
 /// same as the reviewer's manual probe that caught C1, is the minimal thing
 /// that closes the gap PLAN.md describes. See `main.rs`'s
-/// `--force-recovery-after-secs` for how a run arms this, and
+/// `--test-rig-force-recovery-after-secs` for how a run arms this, and
 /// `HealthMonitor::force_recovery` for what firing does once armed.
 pub struct ForceRecoveryTrigger {
     after_secs: u64,

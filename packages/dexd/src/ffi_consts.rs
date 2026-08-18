@@ -15,7 +15,7 @@ pub const MPV_EVENT_SHUTDOWN: c_int = 1;
 pub const MPV_EVENT_LOG_MESSAGE: c_int = 2;
 /// Delivered in reply to `mpv_command_async`. F1's tier-0 in-place recovery
 /// issues its `loadfile` through the async command API specifically so the
-/// event thread can never block on it (see src/health.rs's module doc);
+/// supervisor thread can never block on it (see src/health.rs's module doc);
 /// this event is used only to log whether the queued command was accepted,
 /// nothing gates on it.
 pub const MPV_EVENT_COMMAND_REPLY: c_int = 5;

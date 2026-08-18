@@ -7,12 +7,12 @@
 //! # F9 — why every field here comes from an event, never a synchronous read
 //!
 //! Before F9, `emit_heartbeat` called `mpv_get_property_string` directly from
-//! the event thread. Verified against mpv v0.40.0 source:
+//! the supervisor thread. Verified against mpv v0.40.0 source:
 //! `mpv_get_property_string` -> `run_locked` -> `mp_dispatch_lock`
 //! (misc/dispatch.c:364-394) spins on `mp_cond_wait` with **no timeout**
 //! until the core thread is trapped inside `mp_dispatch_queue_process()`. A
 //! core thread wedged in a DRM ioctl mid-playloop never reaches that trap
-//! point, so the caller -- this event thread, the same one `mpv_wait_event`
+//! point, so the caller -- this supervisor thread, the same one `mpv_wait_event`
 //! runs on -- blocks forever. That is bug #1's exact shape (process alive,
 //! supervisor green, screen black) entered through the one diagnostic that
 //! was supposed to help detect it.
@@ -27,7 +27,7 @@
 //!    the core thread via `send_client_property_changes()`, which explicitly
 //!    drops the client lock around the getter call (player/client.c
 //!    :1694-1699, "property getters can do whatever they want"). A wedged
-//!    getter blocks neither our event thread nor `mpv_wait_event`. If the
+//!    getter blocks neither our supervisor thread nor `mpv_wait_event`. If the
 //!    core is wedged we get silence, not a hang -- and silence is exactly
 //!    the signal `pos-age=` below exists to surface.
 //! 2. **Steady-state cost is a handful of events per counter, ever, never
@@ -137,7 +137,7 @@ impl ObservedCounter {
     /// property-change events -- only the latest state per changed property
     /// survives to the next drain (client.h). If a recovery's teardown
     /// (unavailable), the new session's restart at 0, and a climb past the
-    /// old session's total all happen before this program's event thread
+    /// old session's total all happen before this program's supervisor thread
     /// drains -- plausible exactly during a recovery, when that thread is
     /// busy absorbing the END_FILE/START_FILE burst -- the visible sequence
     /// can be e.g. 5 -> 7 with no decrease at all, and `sample` would count
@@ -194,11 +194,11 @@ pub struct PositionSample {
 /// Everything one heartbeat line prints. A struct with NAMED fields, not a
 /// multi-argument function: two of the fields are `ObservedCounter` and two
 /// are integers, so a positional call site could silently transpose
-/// frame_drops/vo_delayed (or wraps/uptime) and no test in the crate would
+/// frame_drops/vo_delayed (or loops/uptime) and no test in the crate would
 /// catch it -- main.rs is the one file the Mac cannot run.
 #[derive(Debug, Clone, Copy)]
 pub struct HeartbeatSnapshot {
-    pub wraps: u64,
+    pub loops: u64,
     pub uptime_secs: u64,
     pub temp_millicelsius: Option<i64>,
     pub position: Option<PositionSample>,
@@ -246,9 +246,9 @@ impl HeartbeatSnapshot {
             None => "inert".to_string(),
         };
         format!(
-            "dexd: heartbeat wraps={} uptime={}s temp={temp} frame-drops={} \
+            "dexd: heartbeat loops={} uptime={}s temp={temp} frame-drops={} \
              vo-delayed={} pos={pos} pos-age={pos_age} watchdog={watchdog}",
-            self.wraps, self.uptime_secs, self.frame_drops, self.vo_delayed,
+            self.loops, self.uptime_secs, self.frame_drops, self.vo_delayed,
         )
     }
 }
@@ -377,7 +377,7 @@ mod tests {
         let mut vo_delayed = ObservedCounter::observed();
         vo_delayed.sample(2);
         let snap = HeartbeatSnapshot {
-            wraps: 143,
+            loops: 143,
             uptime_secs: 3600,
             temp_millicelsius: Some(48_250),
             position: Some(PositionSample { secs: 3599.4, age_secs: 0 }),
@@ -387,7 +387,7 @@ mod tests {
         };
         assert_eq!(
             snap.render(),
-            "dexd: heartbeat wraps=143 uptime=3600s temp=48.2C frame-drops=0 \
+            "dexd: heartbeat loops=143 uptime=3600s temp=48.2C frame-drops=0 \
              vo-delayed=2 pos=3599.4s pos-age=0s watchdog=armed pings-dropped=0"
         );
     }
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn all_missing_sources_degrade_to_na_not_errors() {
         let snap = HeartbeatSnapshot {
-            wraps: 0,
+            loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
             position: None,
@@ -405,7 +405,7 @@ mod tests {
         };
         assert_eq!(
             snap.render(),
-            "dexd: heartbeat wraps=0 uptime=0s temp=n/a frame-drops=n/a \
+            "dexd: heartbeat loops=0 uptime=0s temp=n/a frame-drops=n/a \
              vo-delayed=n/a pos=n/a pos-age=n/a watchdog=inert"
         );
     }
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn unregistered_counters_render_off() {
         let snap = HeartbeatSnapshot {
-            wraps: 0,
+            loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
             position: None,
@@ -423,7 +423,7 @@ mod tests {
         };
         assert_eq!(
             snap.render(),
-            "dexd: heartbeat wraps=0 uptime=0s temp=n/a frame-drops=off \
+            "dexd: heartbeat loops=0 uptime=0s temp=n/a frame-drops=off \
              vo-delayed=off pos=n/a pos-age=n/a watchdog=inert"
         );
     }
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn armed_watchdog_prints_the_dropped_ping_count() {
         let snap = HeartbeatSnapshot {
-            wraps: 0,
+            loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
             position: None,
@@ -453,7 +453,7 @@ mod tests {
         // above). A dropped-count number here would misleadingly suggest a
         // watchdog exists when it does not.
         let snap = HeartbeatSnapshot {
-            wraps: 0,
+            loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
             position: None,
@@ -474,7 +474,7 @@ mod tests {
         // wrong reading in exactly the diagnostic line this module exists
         // to make trustworthy. Carried over verbatim from F7.
         let base = HeartbeatSnapshot {
-            wraps: 0,
+            loops: 0,
             uptime_secs: 0,
             temp_millicelsius: Some(-250),
             position: None,
@@ -484,14 +484,14 @@ mod tests {
         };
         assert_eq!(
             base.render(),
-            "dexd: heartbeat wraps=0 uptime=0s temp=-0.2C frame-drops=n/a \
+            "dexd: heartbeat loops=0 uptime=0s temp=-0.2C frame-drops=n/a \
              vo-delayed=n/a pos=n/a pos-age=n/a watchdog=inert"
         );
         let mut base = base;
         base.temp_millicelsius = Some(-1_500);
         assert_eq!(
             base.render(),
-            "dexd: heartbeat wraps=0 uptime=0s temp=-1.5C frame-drops=n/a \
+            "dexd: heartbeat loops=0 uptime=0s temp=-1.5C frame-drops=n/a \
              vo-delayed=n/a pos=n/a pos-age=n/a watchdog=inert"
         );
         // i64::MIN: the one value where a naive `.abs()` would panic.
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn position_formats_to_one_decimal() {
         let snap = HeartbeatSnapshot {
-            wraps: 0,
+            loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
             position: Some(PositionSample { secs: 12.049, age_secs: 4 }),
@@ -522,7 +522,7 @@ mod tests {
         // Display impl instead of a fixed `{:.1}` format.
         let three_weeks_secs = 3600.0 * 24.0 * 21.0;
         let snap = HeartbeatSnapshot {
-            wraps: 0,
+            loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
             position: Some(PositionSample { secs: three_weeks_secs, age_secs: 0 }),

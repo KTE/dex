@@ -10,7 +10,7 @@ dexd \- gapless HEVC loop player for unattended installations
 .IR WxH@R ]
 .RB [ \-\-exhibit\-config
 .IR PATH ]
-.RB [ \-\-bench\-no\-sidecar ]
+.RB [ \-\-test\-rig\-no\-sidecar ]
 .RB [ \-\-no\-defaults ]
 .RB [ \-\-opt
 .IR K=V ...]
@@ -28,7 +28,7 @@ with the exhibit choosing one \(em the packaged unit runs
 .B dexd
 with no arguments at all. Given here as well, the path must AGREE with the
 config or startup is refused, naming both; it is REQUIRED with
-.B \-\-bench\-no\-sidecar
+.B \-\-test\-rig\-no\-sidecar
 (which consults no config). If neither names an asset, startup refuses rather
 than guessing an artwork.
 .PP
@@ -43,7 +43,7 @@ it comes from the sidecar; passing it here is only permitted if it agrees.
 .TP
 .BI \-\-mode " WxH@R"
 Cross\-check against the exhibit config's \fBdisplay_mode\fR (F6); refused if
-it disagrees, naming both. Under \fB\-\-bench\-no\-sidecar\fR this is the only
+it disagrees, naming both. Under \fB\-\-test\-rig\-no\-sidecar\fR this is the only
 source (no exhibit config is consulted): omitted there, it defaults to
 \fBauto\fR (the connector's preferred mode).
 .TP
@@ -55,7 +55,7 @@ file EXTENSION decides the parser: \fB.json\fR is strict JSON,
 \fB.yaml\fR/\fB.yml\fR is YAML, same schema either way. See \fBFILES\fR and
 \fBdex-exhibit-apply\fR(1).
 .TP
-.B \-\-bench\-no\-sidecar
+.B \-\-test\-rig\-no\-sidecar
 Run without a sidecar AND without the exhibit config. Requires an explicit
 \fB\-\-fps\fR. For bench use only: deployments must bind the rate to the asset
 and the display to the exhibit config.
@@ -82,7 +82,7 @@ F6 exhibit config: binds \fBasset\fR (which artwork plays) and
 \fBdisplay_mode\fR, and optionally \fBkms_force\fR and \fBconnector\fR. The \fB.json\fR form is what the package ships, as a dpkg
 conffile so a hand edit survives an upgrade; the \fB.yaml\fR form is for hand
 editing on site and takes comments. Exactly one may exist. Required
-outside \fB\-\-bench\-no\-sidecar\fR \(em a missing
+outside \fB\-\-test\-rig\-no\-sidecar\fR \(em a missing
 or invalid one refuses startup rather than guessing the display, the same
 fail\-closed contract the sidecar has for frame rate. See
 \fBdex-exhibit-apply\fR(1) for the schema and the migration from the

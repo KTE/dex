@@ -7,11 +7,11 @@
 //!
 //! # Framing: what F10 is for, and why it is a separate feature from F1/F9
 //!
-//! F9 proved a wedged mpv core produces SILENCE on this program's event
+//! F9 proved a wedged mpv core produces SILENCE on this program's supervisor
 //! thread, not a block (`mpv_observe_property` getters run on the core
 //! thread with the client lock dropped — verified against mpv 0.40 source,
 //! see `dexd::health`'s module doc). F1 acts on that silence in-process,
-//! with a bounded budget. Neither covers the one thing left: **our own event
+//! with a bounded budget. Neither covers the one thing left: **our own supervisor
 //! thread hanging in code that is not an mpv call at all** — the canonical
 //! case being `eprintln!` blocking against a wedged journald, including on
 //! the `Escalate` arm whose entire job is "exit so tier 1 can take over" (see
@@ -38,7 +38,7 @@
 //! hang anywhere else in the loop body), STOPS pinging entirely — because
 //! the ping sits at the very end of a duty cycle that a genuine hang, by
 //! definition, never completes again. Within this hazard class — a wedged
-//! mpv core or a hung event thread — there is no third state: either
+//! mpv core or a hung supervisor thread — there is no third state: either
 //! progress continues (pings continue, correctly, nothing to do), or the
 //! duty cycle stops completing (pings stop, watchdog fires). The loop
 //! cannot both hang and ping.

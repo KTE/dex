@@ -20,7 +20,7 @@
 //! mid-stream IDR rather than a seek.
 //!
 //! `while true; do cat loop.265; done | mpv -` proves it (verified seamless:
-//! zero held frames across 19 wraps at 4K30, and a 3.5 h soak with flat memory)
+//! zero held frames across 19 loops at 4K30, and a 3.5 h soak with flat memory)
 //! but is not shippable: a process per loop (~29k/day for a 3 s card), and a
 //! SIGPIPE hot-spin burning a core if mpv ever exits.
 //!
@@ -142,7 +142,7 @@ extern "C" {
     // Async counterpart of mpv_command: queues the command and returns
     // immediately (client.h), replying later via MPV_EVENT_COMMAND_REPLY.
     // F1's in-place recovery uses this, never the synchronous mpv_command,
-    // specifically so the event thread cannot block on it -- see
+    // specifically so the supervisor thread cannot block on it -- see
     // src/health.rs's module doc.
     fn mpv_command_async(
         ctx: *mut MpvHandle,
@@ -207,10 +207,10 @@ const _: () = {
 
 /// Completed passes over the payload — incremented by `read_fn` on the demux
 /// thread each time the position wraps to 0, read by the heartbeat on the
-/// event thread. This counts DEMUXER passes, which run ~1 s (readahead)
+/// supervisor thread. This counts DEMUXER passes, which run ~1 s (readahead)
 /// ahead of what is on screen. Relaxed ordering: a monotonic diagnostic
 /// counter, not a synchronization point.
-static WRAP_COUNT: AtomicU64 = AtomicU64::new(0);
+static LOOP_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Heartbeat cadence: frequent enough to bound "when did it die" to a useful
 /// journal window, rare enough to cost nothing.
@@ -308,7 +308,7 @@ extern "C" fn read_fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64
     s.pos = c.next_pos;
     if c.next_pos == 0 {
         // The copy reached the payload's end: one full pass completed.
-        WRAP_COUNT.fetch_add(1, Ordering::Relaxed);
+        LOOP_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     c.n as i64
 }
@@ -402,7 +402,7 @@ fn observe(ctx: *mut MpvHandle, userdata: u64, name: &str, format: c_int) -> boo
     rc >= 0
 }
 
-/// One heartbeat line to stderr. Runs on the event thread, off the decode
+/// One heartbeat line to stderr. Runs on the supervisor thread, off the decode
 /// path. Takes no `*mut MpvHandle` -- see the module doc on
 /// `dexd::heartbeat` for why that absence is the point of F9: with no
 /// mpv handle in scope, it is type-level impossible for this function to
@@ -417,7 +417,7 @@ fn emit_heartbeat(
     eprintln!(
         "{}",
         HeartbeatSnapshot {
-            wraps: WRAP_COUNT.load(Ordering::Relaxed),
+            loops: LOOP_COUNT.load(Ordering::Relaxed),
             uptime_secs: started.elapsed().as_secs(),
             temp_millicelsius: read_temp_millicelsius(),
             position: last_position.map(|(secs, at)| PositionSample {
@@ -555,11 +555,14 @@ fn setup_watchdog(tick_secs: u64) -> Option<WatchdogRuntime> {
     };
     // LOAD-BEARING: see dexd::watchdog's module doc §"no new blocking
     // call" -- a blocking send against a full receiver queue would be a new
-    // way for THIS feature to hang the event thread, exactly the class of
+    // way for THIS feature to hang the supervisor thread, exactly the class of
     // bug F9 already had to fix once for the heartbeat.
     if let Err(e) = socket.set_nonblocking(true) {
         return watchdog_setup_failed(
-            &format!("set_nonblocking failed: {e} (refusing a socket that could block the event thread)"),
+            &format!(
+                "set_nonblocking failed: {e} (refusing a socket that could block the \
+                 supervisor thread)"
+            ),
             kill_timer_armed,
             window_secs,
         );
@@ -598,7 +601,7 @@ fn is_expected_recovery_stop(recovery_stops_pending: u32, reason: c_int) -> bool
 }
 
 /// Act on a [`HealthAction`], whatever produced it. Shared by the organic
-/// health-check tick and T7's `--force-recovery-after-secs` bench probe
+/// health-check tick and T7's `--test-rig-force-recovery-after-secs` bench probe
 /// (`HealthMonitor::force_recovery`) specifically so a forced probe drives
 /// the EXACT SAME mpv-facing mechanics -- `mpv_command_async(loadfile ...
 /// replace)`, then incrementing `recovery_stops_pending` so the resulting
@@ -637,7 +640,7 @@ fn act_on_health_action(
             // `pos-age=`'s staleness clock too.
             *last_position = None;
             // mpv_command_async, not mpv_command: this call runs on the
-            // SAME event thread that also has to keep detecting every fatal
+            // SAME supervisor thread that also has to keep detecting every fatal
             // event, and a synchronous command could block that thread
             // against a wedged core -- see dexd::health's module doc.
             let cmd_loadfile = CString::new("loadfile").unwrap();
@@ -705,21 +708,21 @@ fn act_on_health_action(
 
 fn usage() -> ! {
     eprintln!(
-        "usage: dexd [<stream.265>] [--fps <F>] [--mode WxH@R] [--bench-no-sidecar] [--no-defaults] [--opt K=V ...]
+        "usage: dexd [<stream.265>] [--fps <F>] [--mode WxH@R] [--test-rig-no-sidecar] [--no-defaults] [--opt K=V ...]
 
   <stream.265>        raw Annex-B HEVC elementary stream, looped endlessly.
                       OPTIONAL in a deployment: the exhibit config's `asset`
                       key names it, which is what lets several assets sit in
                       /opt/dex with the exhibit choosing one. Given here too,
                       it must AGREE with the config or startup refuses, naming
-                      both. REQUIRED with --bench-no-sidecar, which consults no
+                      both. REQUIRED with --test-rig-no-sidecar, which consults no
                       config. If neither names an asset, startup refuses rather
                       than guessing an artwork.
   <stream.265>.json   ingest sidecar, REQUIRED: {{\"fps\":\"30\",\"sha256\":\"<64 hex>\"}}
                       fps comes from it; the sha256 must match the asset bytes
   --fps F             optional cross-check; must equal the sidecar fps exactly
   --mode WxH@R        cross-check against the exhibit config's display_mode (F6);
-                      optional alongside --bench-no-sidecar, where it is the only
+                      optional alongside --test-rig-no-sidecar, where it is the only
                       source instead (defaults to auto there)
   --exhibit-config PATH
                       F6: path to the exhibit config. Default: whichever of
@@ -729,25 +732,26 @@ fn usage() -> ! {
                       strict JSON, .yaml/.yml is YAML; same schema either way.
                       Binds the display mode, the expected KMS force, and the
                       connector -- see man dex-exhibit-apply.
-  --bench-no-sidecar  BENCH ONLY: skip the sidecar AND the exhibit config, take
-                      --fps/--mode as given
-  --force-recovery-after-secs N
-                      T7 BENCH ONLY: force a tier-0 in-place recovery N seconds after
+  --test-rig-no-sidecar
+                      (test rig only): skip the sidecar AND the exhibit config,
+                      take --fps/--mode as given
+  --test-rig-force-recovery-after-secs N
+                      T7 (test rig only): force a tier-0 in-place recovery N seconds after
                       the loadfile request (NOT N seconds of confirmed playback --
                       decode startup takes time too), whether or not anything has
                       stalled. For a live-fire run meant to catch mid-playback issues
                       rather than startup ones, pick N with margin over real decode
-                      startup latency. REQUIRES --bench-no-sidecar (refused otherwise)
+                      startup latency. REQUIRES --test-rig-no-sidecar (refused otherwise)
                       so it can never fire against a real, sidecar-bound deployment
                       asset.
-  --bench-wedge-after-secs N
-                      F10 BENCH ONLY: N seconds after startup, deliberately hang the
-                      event thread FOREVER -- simulates the one hazard class F1/F9
-                      cannot see (an event-thread hang outside any mpv call), to prove
+  --test-rig-hang-after-secs N
+                      F10 (test rig only): N seconds after startup, deliberately hang the
+                      supervisor thread FOREVER -- simulates the one hazard class F1/F9
+                      cannot see (a supervisor-thread hang outside any mpv call), to prove
                       whether a systemd watchdog (WatchdogSec=) actually fires and
                       restarts this process. The process never recovers on its own once
                       this fires; only an external actor (systemd, or a test harness's
-                      own kill) can end it. REQUIRES --bench-no-sidecar (refused
+                      own kill) can end it. REQUIRES --test-rig-no-sidecar (refused
                       otherwise) so it can never fire against a real, sidecar-bound
                       deployment asset.
   --opt K=V           pass an extra mpv option (repeatable)
@@ -804,9 +808,9 @@ fn main() -> ExitCode {
     let mut mode: Option<String> = None;
     let mut extra: Vec<(String, String)> = Vec::new();
     let mut defaults = true;
-    let mut bench_no_sidecar = false;
-    let mut force_recovery_after_secs: Option<u64> = None;
-    let mut bench_wedge_after_secs: Option<u64> = None;
+    let mut test_rig_no_sidecar = false;
+    let mut test_rig_force_recovery_after_secs: Option<u64> = None;
+    let mut test_rig_hang_after_secs: Option<u64> = None;
     let mut exhibit_config_path: Option<String> = None;
     // Test-only override so integration tests can supply a synthetic kernel
     // cmdline instead of depending on the actual host's /proc/cmdline, which
@@ -845,8 +849,8 @@ fn main() -> ExitCode {
                 proc_cmdline_path = Some(v.clone());
             }
             "--no-defaults" => defaults = false,
-            "--bench-no-sidecar" => bench_no_sidecar = true,
-            "--force-recovery-after-secs" => {
+            "--test-rig-no-sidecar" => test_rig_no_sidecar = true,
+            "--test-rig-force-recovery-after-secs" => {
                 i += 1;
                 // Same "refuse loudly, never evaporate" discipline as
                 // --fps/--mode above: a dropped value here would silently
@@ -855,15 +859,15 @@ fn main() -> ExitCode {
                 // "flag absent" either -- usage() either way.
                 let Some(v) = args.get(i) else { usage() };
                 let Ok(n) = v.parse::<u64>() else { usage() };
-                force_recovery_after_secs = Some(n);
+                test_rig_force_recovery_after_secs = Some(n);
             }
-            "--bench-wedge-after-secs" => {
+            "--test-rig-hang-after-secs" => {
                 i += 1;
                 // Same "refuse loudly, never evaporate" discipline as
-                // --force-recovery-after-secs above.
+                // --test-rig-force-recovery-after-secs above.
                 let Some(v) = args.get(i) else { usage() };
                 let Ok(n) = v.parse::<u64>() else { usage() };
-                bench_wedge_after_secs = Some(n);
+                test_rig_hang_after_secs = Some(n);
             }
             "--opt" => {
                 i += 1;
@@ -888,40 +892,41 @@ fn main() -> ExitCode {
 
     // T7 (PLAN.md) -- the "impossible to enable accidentally in a
     // deployment" requirement, enforced as a gate rather than left to
-    // operator discipline. `--force-recovery-after-secs` REQUIRES
-    // `--bench-no-sidecar`. This is not an arbitrary pairing: it ties the
+    // operator discipline. `--test-rig-force-recovery-after-secs` REQUIRES
+    // `--test-rig-no-sidecar`. This is not an arbitrary pairing: it ties the
     // bench-only recovery probe to the SAME escape hatch that already keeps
-    // `--bench-no-sidecar` out of every real deployment (deploy/dexd.service
+    // `--test-rig-no-sidecar` out of every real deployment (deploy/dexd.service
     // never passes it -- a real asset is bound to its ingest sidecar, full
     // stop), so a live-fire probe can never end up armed against a gallery
     // show by an operator pasting a bench command line into the wrong
     // place. Checked here, before the asset is even read, so the refusal is
     // unconditional on CLI shape alone -- it does not depend on whether a
     // sidecar happens to exist on disk.
-    if force_recovery_after_secs.is_some() && !bench_no_sidecar {
+    if test_rig_force_recovery_after_secs.is_some() && !test_rig_no_sidecar {
         eprintln!(
-            "error: --force-recovery-after-secs requires --bench-no-sidecar -- it is a \
-             T7 BENCH-ONLY live-fire probe (PLAN.md) that forces a tier-0 in-place \
+            "error: --test-rig-force-recovery-after-secs requires --test-rig-no-sidecar -- it is a \
+             T7 test-rig-only live-fire probe (PLAN.md) that forces a tier-0 in-place \
              recovery on a timer, whether or not anything has actually stalled, and \
              must never be armed against what could be a real, sidecar-bound \
-             deployment asset. Add --bench-no-sidecar --fps <F> to run it on a bench, \
-             or drop --force-recovery-after-secs to run normally."
+             deployment asset. Add --test-rig-no-sidecar --fps <F> to run it on a bench, \
+             or drop --test-rig-force-recovery-after-secs to run normally."
         );
         return ExitCode::from(2);
     }
 
     // F10 (PLAN.md) -- the identical "impossible to enable accidentally in
     // a deployment" gate as T7 above, for the same reason: a probe that
-    // deliberately hangs the event thread forever must never be reachable
+    // deliberately hangs the supervisor thread forever must never be reachable
     // against a real, sidecar-bound show, however it got pasted into a
     // command line.
-    if bench_wedge_after_secs.is_some() && !bench_no_sidecar {
+    if test_rig_hang_after_secs.is_some() && !test_rig_no_sidecar {
         eprintln!(
-            "error: --bench-wedge-after-secs requires --bench-no-sidecar -- it is an F10 \
-             BENCH-ONLY probe (PLAN.md) that deliberately hangs the event thread forever to \
+            "error: --test-rig-hang-after-secs requires --test-rig-no-sidecar -- it is an F10 \
+             test-rig-only probe (PLAN.md) that deliberately hangs the supervisor \
+             thread forever to \
              prove whether a systemd watchdog actually fires, and must never be armed against \
-             what could be a real, sidecar-bound deployment asset. Add --bench-no-sidecar \
-             --fps <F> to run it on a bench, or drop --bench-wedge-after-secs to run normally."
+             what could be a real, sidecar-bound deployment asset. Add --test-rig-no-sidecar \
+             --fps <F> to run it on a bench, or drop --test-rig-hang-after-secs to run normally."
         );
         return ExitCode::from(2);
     }
@@ -931,7 +936,7 @@ fn main() -> ExitCode {
     // presence (a wrong-panel install is worth catching even if the asset
     // path is also wrong). Order: config parse -> cmdline gate -> sysfs mode
     // pre-flight. See src/exhibit.rs module docs and PLAN.md's F6 entry.
-    let found = if bench_no_sidecar {
+    let found = if test_rig_no_sidecar {
         None
     } else {
         match load_exhibit_config(exhibit_config_path.as_deref(), &DEFAULT_EXHIBIT_CONFIG_PATHS) {
@@ -950,7 +955,11 @@ fn main() -> ExitCode {
         None => (None, DEFAULT_EXHIBIT_CONFIG_PATH.to_string()),
     };
 
-    let display = match resolve_display(exhibit_config.as_ref(), mode.as_deref(), bench_no_sidecar)
+    let display = match resolve_display(
+        exhibit_config.as_ref(),
+        mode.as_deref(),
+        test_rig_no_sidecar,
+    )
     {
         Ok(d) => d,
         Err(e) => {
@@ -962,9 +971,9 @@ fn main() -> ExitCode {
     // The cmdline gate: keeps the exhibit config and the KMS-layer `video=`
     // token honest with each other. Skipped under the bench flag, since a
     // ~/bench build runs on hand-managed boot state by definition (§2.3/§3.3
-    // of the F6 design) -- the whole POINT of --bench-no-sidecar is running
+    // of the F6 design) -- the whole POINT of --test-rig-no-sidecar is running
     // outside the deployment config's authority.
-    if !bench_no_sidecar {
+    if !test_rig_no_sidecar {
         let proc_cmdline_path = proc_cmdline_path
             .clone()
             .unwrap_or_else(|| "/proc/cmdline".to_string());
@@ -1031,7 +1040,7 @@ fn main() -> ExitCode {
             DisplaySource::Bench => "BENCH OVERRIDE, unbound".to_string(),
         },
         display.connector,
-        if bench_no_sidecar {
+        if test_rig_no_sidecar {
             "not checked (bench)".to_string()
         } else {
             display.kms_force.clone()
@@ -1043,7 +1052,7 @@ fn main() -> ExitCode {
     // (exhibit::resolve_asset). This is what lets several assets sit in
     // /opt/dex with the exhibit choosing one, instead of ExecStart naming a
     // single hardcoded path.
-    let asset = match resolve_asset(exhibit_config.as_ref(), path.as_deref(), bench_no_sidecar) {
+    let asset = match resolve_asset(exhibit_config.as_ref(), path.as_deref(), test_rig_no_sidecar) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1083,10 +1092,10 @@ fn main() -> ExitCode {
     // timestamps: a WRONG --fps plays slow/fast forever with zero errors and
     // every metric nominal — the one failure that is undetectable by
     // construction. So the frame rate travels WITH the asset, bound by a
-    // sha256, and an unbound asset is refused. `--bench-no-sidecar --fps F`
+    // sha256, and an unbound asset is refused. `--test-rig-no-sidecar --fps F`
     // is the deliberate two-flag bench escape hatch.
     let sidecar_path = format!("{path}.json");
-    let sidecar: Option<Sidecar> = if bench_no_sidecar {
+    let sidecar: Option<Sidecar> = if test_rig_no_sidecar {
         None
     } else {
         match fs::read_to_string(&sidecar_path) {
@@ -1101,8 +1110,8 @@ fn main() -> ExitCode {
                 eprintln!(
                     "error: cannot read sidecar {sidecar_path}: {e}\n\
                      an asset without its ingest sidecar is unbound (fps would be a \
-                     guess); re-ingest to produce it, or use --bench-no-sidecar \
-                     --fps <F> on a bench"
+                     guess); prepare the video again with dex-sidecar write to \
+                     produce it, or use --test-rig-no-sidecar --fps <F> on a bench"
                 );
                 return ExitCode::from(2);
             }
@@ -1112,7 +1121,7 @@ fn main() -> ExitCode {
     let (fps, fps_source) = match resolve_fps(
         sidecar.as_ref().map(|s| s.fps.as_str()),
         cli_fps.as_deref(),
-        bench_no_sidecar,
+        test_rig_no_sidecar,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -1181,15 +1190,16 @@ fn main() -> ExitCode {
         }
     );
 
-    if let Some(n) = force_recovery_after_secs {
+    if let Some(n) = test_rig_force_recovery_after_secs {
         // Loud on purpose (principle 2): the gate above makes this
-        // impossible to reach without --bench-no-sidecar already having
+        // impossible to reach without --test-rig-no-sidecar already having
         // been accepted, but a run that silently, quietly forces its own
         // recovery mid-show is exactly the kind of surprise that belongs in
         // the journal in giant letters, not inferred later from a
         // recovery log line with no explanation of why it fired.
         eprintln!(
-            "warning: BENCH ONLY (T7): --force-recovery-after-secs={n} is ARMED -- this \
+            "warning: (test rig only) (T7): --test-rig-force-recovery-after-secs={n} \
+             is ARMED -- this \
              run will FORCE a tier-0 in-place recovery {n}s after the loadfile request was \
              queued (NOT {n}s of confirmed playback -- decode startup can itself take a \
              few seconds, so a small N can fire during startup rather than steady \
@@ -1198,12 +1208,12 @@ fn main() -> ExitCode {
         );
     }
 
-    if let Some(n) = bench_wedge_after_secs {
+    if let Some(n) = test_rig_hang_after_secs {
         // Same "loud on purpose" discipline as T7 above.
         eprintln!(
-            "warning: BENCH ONLY (F10 wedge probe): --bench-wedge-after-secs={n} is ARMED -- \
-             this run will deliberately hang the event thread FOREVER {n}s after startup, \
-             simulating F10's hazard class (an event-thread hang outside any mpv call). \
+            "warning: (test rig only) (F10 hang probe): --test-rig-hang-after-secs={n} is ARMED -- \
+             this run will deliberately hang the supervisor thread FOREVER {n}s after startup, \
+             simulating F10's hazard class (a supervisor-thread hang outside any mpv call). \
              Never pass this flag on a real deployment asset (see PLAN.md's F10 entry)."
         );
     }
@@ -1443,17 +1453,17 @@ fn main() -> ExitCode {
     };
     let mut last_health_check = Instant::now();
     // T7 (PLAN.md): armed only when the CLI gate above accepted
-    // --force-recovery-after-secs (which itself required --bench-no-sidecar).
+    // --test-rig-force-recovery-after-secs (which itself required --test-rig-no-sidecar).
     // `None` here is the overwhelmingly common case -- every real deployment
     // run -- and costs one `Option` check per loop iteration.
     let mut force_recovery_trigger: Option<ForceRecoveryTrigger> =
-        force_recovery_after_secs.map(ForceRecoveryTrigger::new);
-    // F10 (PLAN.md): the bench-only wedge probe, armed only when the CLI
-    // gate below accepted --bench-wedge-after-secs (which itself requires
-    // --bench-no-sidecar, same escape hatch as T7). See its firing site
+        test_rig_force_recovery_after_secs.map(ForceRecoveryTrigger::new);
+    // F10 (PLAN.md): the bench-only hang probe, armed only when the CLI
+    // gate below accepted --test-rig-hang-after-secs (which itself requires
+    // --test-rig-no-sidecar, same escape hatch as T7). See its firing site
     // below for what it proves and why.
-    let mut bench_wedge_trigger: Option<ForceRecoveryTrigger> =
-        bench_wedge_after_secs.map(ForceRecoveryTrigger::new);
+    let mut test_rig_hang_trigger: Option<ForceRecoveryTrigger> =
+        test_rig_hang_after_secs.map(ForceRecoveryTrigger::new);
     // Counts recoveries issued whose matching END_FILE(reason=stop) has not
     // yet been observed (bench-confirmed live, three independent reviews,
     // 2026-08-15) -- see the MPV_EVENT_END_FILE handler below and PLAN.md's
@@ -1477,7 +1487,7 @@ fn main() -> ExitCode {
         // (that absence IS the stall signal; see dexd::health), so the
         // timeout is what guarantees the health check still gets evaluated
         // on schedule in precisely the one case that matters. A wake this
-        // cheap (drain one event, compare two numbers) on the event thread,
+        // cheap (drain one event, compare two numbers) on the supervisor thread,
         // separate from the decode/VO threads, costs nothing on the decode
         // path.
         let ev = unsafe { mpv_wait_event(ctx, HEALTH_CHECK_SECS as f64) };
@@ -1546,7 +1556,7 @@ fn main() -> ExitCode {
         // `None` and this whole block skipped on every real deployment run)
         // rather than gated on the HEALTH_CHECK_SECS cadence above, so it
         // does not additionally wait out however much of that ~10s window
-        // was already elapsed when `--force-recovery-after-secs` was
+        // was already elapsed when `--test-rig-force-recovery-after-secs` was
         // reached. It can still be delayed up to HEALTH_CHECK_SECS in the
         // worst case (mpv_wait_event's timeout bounds how often this loop
         // body runs at all when nothing else is waking it) -- acceptable
@@ -1560,7 +1570,7 @@ fn main() -> ExitCode {
                         act_on_health_action(
                             ctx,
                             action,
-                            "T7 bench probe: --force-recovery-after-secs elapsed",
+                            "T7 bench probe: --test-rig-force-recovery-after-secs elapsed",
                             &mut last_position,
                             &mut recovery_stops_pending,
                         );
@@ -1573,7 +1583,8 @@ fn main() -> ExitCode {
                         // inert. Loud, not silent: a bench operator staring
                         // at a run that never fires needs to know why.
                         eprintln!(
-                            "warning: --force-recovery-after-secs elapsed but cannot fire: \
+                            "warning: --test-rig-force-recovery-after-secs elapsed \
+                             but cannot fire: \
                              tier-0 health check is DISABLED for this run (time-pos \
                              subscription failed above)"
                         );
@@ -1582,7 +1593,7 @@ fn main() -> ExitCode {
             }
         }
 
-        // F10: the bench-only wedge probe -- deliberately parks THIS event
+        // F10: the bench-only hang probe -- deliberately parks THIS supervisor
         // thread forever, simulating the one hazard class F1/F9 cannot see
         // (a hang in our own code that is not an mpv call at all -- see
         // dexd::watchdog's module doc "Framing"). Checked every
@@ -1600,12 +1611,13 @@ fn main() -> ExitCode {
         // from here on. If nothing ever un-hangs it, that IS the pass
         // condition -- see PLAN.md's F10 entry and README.md for how this
         // is used on the Pi to prove the watchdog fires.
-        if let Some(trigger) = bench_wedge_trigger.as_mut() {
+        if let Some(trigger) = test_rig_hang_trigger.as_mut() {
             if trigger.should_fire(started.elapsed().as_secs()) {
                 eprintln!(
-                    "warning: BENCH ONLY (F10 wedge probe): --bench-wedge-after-secs elapsed -- \
-                     deliberately parking the event thread forever to simulate F10's hazard \
-                     class (an event-thread hang outside any mpv call). If a systemd watchdog \
+                    "warning: (test rig only) (F10 hang probe): \
+                     --test-rig-hang-after-secs elapsed -- \
+                     deliberately parking the supervisor thread forever to simulate F10's hazard \
+                     class (a supervisor-thread hang outside any mpv call). If a systemd watchdog \
                      is armed above, it should fire and this process should be restarted by \
                      the supervisor; if this process is still alive well past WatchdogSec, the \
                      watchdog did not fire and F10 has a gap."
@@ -1678,7 +1690,7 @@ fn main() -> ExitCode {
                 // empty ... one event per changed property"), so if a
                 // recovery's teardown (unavailable), the new session's
                 // restart at 0, and a climb past the old session's total all
-                // happen before this event thread next drains -- plausible
+                // happen before this supervisor thread next drains -- plausible
                 // exactly then, since the thread is busy absorbing the
                 // recovery's END_FILE/START_FILE burst -- `sample()` would
                 // see e.g. 5 -> 7 with no visible decrease and under-count

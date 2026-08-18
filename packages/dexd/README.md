@@ -218,11 +218,11 @@ subset refuses startup — fail closed.
 | flag | meaning |
 |---|---|
 | `--fps F` | optional cross-check; must equal the sidecar fps exactly, or startup is refused |
-| `--mode WxH@R` | optional cross-check against the exhibit config's `display_mode` (F6); refused if it disagrees, naming both. Under `--bench-no-sidecar` it is the only source (default there: `auto`) |
+| `--mode WxH@R` | optional cross-check against the exhibit config's `display_mode` (F6); refused if it disagrees, naming both. Under `--test-rig-no-sidecar` it is the only source (default there: `auto`) |
 | `--exhibit-config PATH` | F6: path to the exhibit config, default `/etc/dex/exhibit.json` — see below |
-| `--bench-no-sidecar` | BENCH ONLY: skip the sidecar AND the exhibit config, and take `--fps`/`--mode` as given (both flags required alongside `--fps` — the escape hatch is a deliberate two-flag act) |
-| `--force-recovery-after-secs N` | T7, BENCH ONLY: force a tier-0 in-place recovery N seconds into playback, whether or not anything has stalled — a live-fire probe for F1's recovery command. Requires `--bench-no-sidecar` (refused otherwise), so it can never end up armed against a real, sidecar-bound deployment asset |
-| `--bench-wedge-after-secs N` | F10, BENCH ONLY: deliberately hang the event thread FOREVER N seconds after startup, simulating the one hazard class F1/F9 cannot see (an event-thread hang outside any mpv call) — proves whether a systemd watchdog (`WatchdogSec=`) actually fires. The process never recovers on its own once armed and fired. Requires `--bench-no-sidecar` (refused otherwise) |
+| `--test-rig-no-sidecar` | (test rig only): skip the sidecar AND the exhibit config, and take `--fps`/`--mode` as given (both flags required alongside `--fps` — the escape hatch is a deliberate two-flag act) |
+| `--test-rig-force-recovery-after-secs N` | T7, (test rig only): force a tier-0 in-place recovery N seconds into playback, whether or not anything has stalled — a live-fire probe for F1's recovery command. Requires `--test-rig-no-sidecar` (refused otherwise), so it can never end up armed against a real, sidecar-bound deployment asset |
+| `--test-rig-hang-after-secs N` | F10, (test rig only): deliberately hang the supervisor thread FOREVER N seconds after startup, simulating the one hazard class F1/F9 cannot see (a supervisor-thread hang outside any mpv call) — proves whether a systemd watchdog (`WatchdogSec=`) actually fires. The process never recovers on its own once armed and fired. Requires `--test-rig-no-sidecar` (refused otherwise) |
 | `--opt K=V` | pass any extra mpv option (repeatable) |
 | `--no-defaults` | omit the built-in Pi 4 zero-copy option set |
 
@@ -237,7 +237,7 @@ when the asset path is also wrong. Exit codes: **2** = refused before playback (
 asset/invocation/exhibit config — including a rejected mpv option; restarting cannot
 help), **1** = playback/runtime failure (the supervisor restarts). Every start logs
 `dex-loop <version> (<git hash>)`, the resolved display binding (`display ... (...),
-connector ..., kms-force ...`), and a heartbeat line (`wraps=`, `temp=`, `frame-drops=`,
+connector ..., kms-force ...`), and a heartbeat line (`loops=`, `temp=`, `frame-drops=`,
 `pos-age=`, `watchdog=`) at boot and every 10 minutes. The drop counters
 (`frame-drops=`, `vo-delayed=`) are cumulative since process start and read `n/a`
 until the first value arrives from mpv, or `off` if the subscription failed at
@@ -355,7 +355,7 @@ It would be wrong for `.yaml` too, in the other direction: under the JSON schema
 scalar matching none of null/bool/int/float is an *error*, so `display_mode: 3840x2160@30`
 would not resolve at all. (Moot anyway — `yaml-rust2` exposes no schema selection.)
 
-Outside `--bench-no-sidecar`, a missing or invalid exhibit config refuses startup —
+Outside `--test-rig-no-sidecar`, a missing or invalid exhibit config refuses startup —
 the same fail-closed contract F3 has for frame rate: a wrong guess plays wrong forever
 with every metric green. Two more gates keep the config honest against reality:
 
@@ -468,7 +468,7 @@ survives its own recovery under software decode with no display. What it does no
 prove: the picture actually comes back with `hwdec=drm` / `drmprime-overlay` / the
 DRM plane swap on real hardware.
 
-**2026-08-17, that manual on-Pi run happened.** `--force-recovery-after-secs`
+**2026-08-17, that manual on-Pi run happened.** `--test-rig-force-recovery-after-secs`
 against `~/bench/loop4k.265` with defaults ON (the real `hwdec=drm` /
 `drmprime-overlay` / DRM-plane path, not CI's `vo=null` stand-in): the forced
 recovery fired, was absorbed cleanly, and the process kept running — sampled
@@ -583,7 +583,7 @@ the intended mode is present rather than depending on boot order — see
 belt-and-braces fallback for connectors that have not been given a `kms_force`.
 
 **Watchdog (F10).** The unit also carries `WatchdogSec=180` + `NotifyAccess=main`
-— an EXTERNAL actor for the one hazard tier 0/F9 cannot see: the event thread
+— an EXTERNAL actor for the one hazard tier 0/F9 cannot see: the supervisor thread
 hanging in our own code that is not an mpv call at all (e.g. `eprintln!` against
 a wedged journald). `dex-loop` pings `WATCHDOG=1` once per ~10 s health-check
 tick over a non-blocking `AF_UNIX` datagram socket (hand-written, `std` only —
@@ -601,8 +601,8 @@ timestamps), on a bench, as an unprivileged user:
 sudo systemd-run --unit=wedge-test -p Type=simple -p NotifyAccess=main \
   -p WatchdogSec=15 -p Restart=on-failure -p RestartSec=2 \
   -p User=dex -p Group=dex -p SupplementaryGroups=video \
-  /usr/bin/dex-loop /opt/dex/loop.265 --bench-no-sidecar --fps 30 \
-  --bench-wedge-after-secs 0 --no-defaults --opt vo=null --opt vid=no --opt aid=no
+  /usr/bin/dex-loop /opt/dex/loop.265 --test-rig-no-sidecar --fps 30 \
+  --test-rig-hang-after-secs 0 --no-defaults --opt vo=null --opt vid=no --opt aid=no
 
 journalctl -u wedge-test -f   # expect, ~15s later:
 #   wedge-test.service: Watchdog timeout (limit 15s)!

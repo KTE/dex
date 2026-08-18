@@ -224,7 +224,7 @@ impl Sidecar {
 }
 
 /// Where a bound fps value came from: the asset's sidecar, or the bench
-/// escape hatch (`--bench-no-sidecar --fps <F>`).
+/// escape hatch (`--test-rig-no-sidecar --fps <F>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FpsSource {
     Sidecar,
@@ -237,17 +237,17 @@ pub enum FpsSource {
 /// allowed only if it agrees with the sidecar (a mismatch is refused, naming
 /// both values, since the sidecar is authoritative). With no sidecar, the
 /// deploy path refuses to guess — the bench escape hatch is a deliberate,
-/// two-flag act (`--bench-no-sidecar` AND `--fps`), never a silent fallback.
+/// two-flag act (`--test-rig-no-sidecar` AND `--fps`), never a silent fallback.
 pub fn resolve_fps(
     sidecar_fps: Option<&str>,
     cli_fps: Option<&str>,
-    bench_no_sidecar: bool,
+    test_rig_no_sidecar: bool,
 ) -> Result<(String, FpsSource), String> {
-    if bench_no_sidecar {
+    if test_rig_no_sidecar {
         return match cli_fps {
             Some(f) if is_valid_fps(f) => Ok((f.to_string(), FpsSource::BenchOverride)),
             Some(f) => Err(format!("--fps {f:?} is not a valid frame rate")),
-            None => Err("--bench-no-sidecar requires an explicit --fps".into()),
+            None => Err("--test-rig-no-sidecar requires an explicit --fps".into()),
         };
     }
     match (sidecar_fps, cli_fps) {
@@ -258,8 +258,9 @@ pub fn resolve_fps(
              or fix the sidecar"
         )),
         (None, _) => Err(
-            "no sidecar found; refusing to guess the frame rate. Re-ingest the asset to \
-             produce <asset>.json, or use --bench-no-sidecar --fps <F> on a bench"
+            "no sidecar found; refusing to guess the frame rate. Prepare the video \
+             again with dex-sidecar write to produce <asset>.json, or use \
+             --test-rig-no-sidecar --fps <F> on a bench"
                 .into(),
         ),
     }
@@ -273,7 +274,8 @@ pub fn verify_payload(payload: &[u8], sidecar: &Sidecar) -> Result<(), String> {
     if actual != sidecar.sha256 {
         return Err(format!(
             "asset does not match its sidecar: sha256 {actual} != sidecar {}; the asset or \
-             sidecar is stale, wrong, or truncated — re-ingest",
+             sidecar is stale, wrong, or truncated — prepare the video again with \
+             dex-sidecar write",
             sidecar.sha256
         ));
     }

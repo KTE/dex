@@ -61,7 +61,7 @@ pub fn validate_leading_nals(data: &[u8]) -> Result<(), String> {
                 if !missing.is_empty() {
                     return Err(format!(
                         "first slice appears before parameter sets ({} missing); not a \
-                         valid loop asset — re-ingest with a closed-GOP encode",
+                         valid loop asset — prepare the video again with a closed-GOP encode",
                         missing.join("/")
                     ));
                 }
@@ -69,13 +69,15 @@ pub fn validate_leading_nals(data: &[u8]) -> Result<(), String> {
                     NAL_IDR_W_RADL | NAL_IDR_N_LP => Ok(()),
                     21 => Err(
                         "leading keyframe is CRA (open GOP), not IDR; the wrap would \
-                         splice mid-GOP — re-ingest with a closed-GOP encode (IDR at \
+                         splice mid-GOP — prepare the video again with a closed-GOP \
+                         encode (IDR at \
                          frame 0)"
                             .into(),
                     ),
                     t => Err(format!(
                         "first slice NAL is type {t}, not an IDR (19/20); the stream does \
-                         not start on a clean keyframe — re-ingest with a closed-GOP encode"
+                         not start on a clean keyframe — prepare the video again with \
+                         a closed-GOP encode"
                     )),
                 };
             }
