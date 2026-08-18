@@ -54,8 +54,19 @@
 
     let state = apply(stored())
 
+    // The name and the glyph the control shows for the current step. The
+    // glyphs are the text presentations of cloud, last-quarter moon and sun,
+    // so each one takes the surrounding colour instead of drawing itself in
+    // an emoji font's own palette. U+263E has no emoji presentation to
+    // suppress; the other two carry U+FE0E, the text variation selector.
+    const describe = () => {
+      if (state.step === 'bold') return { name: 'Blue', glyph: '☁︎' }
+      if (state.theme === 'dark') return { name: 'Dark', glyph: '☾' }
+      return { name: 'Light', glyph: '☀︎' }
+    }
+
     return {
-      label: () => (state.step === 'bold' ? 'Bold' : 'Quiet ' + state.theme),
+      describe: describe,
       advance: () => {
         const next = STEPS[(STEPS.indexOf(state.step) + 1) % STEPS.length]
         try {

@@ -73,18 +73,26 @@ dark-first arrangement.
 The header button steps through three colour schemes in one cycle, replacing Starlight's light and
 dark select. The palettes differ in more than lightness, so a pair does not describe them.
 
-| Step | Palette | Colour scheme | Body contrast |
-|---|---|---|---|
-| Bold | `brand` | always dark, whatever the reader's system asks for | 5.71:1 — AA |
-| Quiet *(dark or light)* | `brand-deep` | the one the reader's system asks for | 9.60:1 dark, 11.41:1 light — AAA |
-| Quiet *(the other one)* | `brand-deep` | the opposite | as above |
+| Step | Glyph | Palette | Colour scheme | Body contrast |
+|---|---|---|---|---|
+| Blue | ☁︎ | `brand` | always dark, whatever the reader's system asks for | 5.71:1 — AA |
+| Dark | ☾ | `brand-deep` | dark | 9.60:1 — AAA |
+| Light | ☀︎ | `brand-deep` | light | 11.41:1 — AAA |
 
-The first step is the project site's colours and is what a reader sees first. The second is one
-click away and measures AAA. The third covers a reader whose system setting does not suit the room.
+Blue is the project site's colours and is what a reader sees first. From there the cycle goes to
+the scheme the reader's system asks for, then to the other one, then back to Blue. So Dark and
+Light appear in the order the system prefers, and the second click covers a reader whose system
+setting does not suit the room.
 
-The state is held in `localStorage` under `dex-view` and survives a reload. The button's label
-names the current step, and its swatch is drawn from the live custom properties, so it shows the
-palette without being told about it.
+The state is held in `localStorage` under `dex-view` and survives a reload.
+
+The button shows the glyph alone. Each step's name reaches a screen reader through the button's
+accessible name and a pointer through the tooltip, both reading *Colour scheme: Blue. Change it.*
+The glyphs are the text presentations of cloud, last-quarter moon and sun, so each takes the
+button's colour instead of drawing itself in an emoji font's own palette. `U+263E` has no emoji
+presentation to suppress; the other two carry `U+FE0E`, the text variation selector. The script
+also writes the step onto `data-scheme`, which is what the stylesheet uses to put the cloud on the
+same optical centre as the other two.
 
 [`src/components/ThemeProvider.astro`](src/components/ThemeProvider.astro) holds the state and
 applies it, inlined in the head so no step flashes before the stored one.
@@ -93,7 +101,8 @@ registered under `components` in `astro.config.mjs`. Starlight renders the contr
 and in the mobile menu; the script wires every copy and updates every copy on a click.
 
 To change which palettes the cycle uses, edit `resolve()` in `ThemeProvider.astro`. To change the
-number of steps, edit `STEPS` in the same file and the label.
+names or the glyphs, edit `describe()` in the same file. To change the number of steps, edit
+`STEPS` there too.
 
 ### Palette previews
 

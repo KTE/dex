@@ -4,17 +4,20 @@
  *
  * One button that steps through the cycle defined in ThemeProvider.astro. A
  * select would need names for three steps whose difference is easier to see
- * than to read, so the control shows the current step and its colours and
+ * than to read, so the control shows one glyph for the current step and
  * changes on click.
+ *
+ * The glyph is decorative. The step's name reaches a screen reader through the
+ * button's accessible name and a pointer through the tooltip, both written by
+ * the script from window.dexView.describe().
  *
  * Starlight renders this component twice, in the header and in the mobile
  * menu, so the script wires every copy and updates every copy on a click.
  */
 ---
 
-<button class="dex-view" type="button">
-  <span class="dex-view__swatch" aria-hidden="true"></span>
-  <span class="dex-view__label">Bold</span>
+<button class="dex-view" type="button" aria-label="Colour scheme">
+  <span class="dex-view__glyph" aria-hidden="true">☁︎</span>
 </button>
 
 <script is:inline>
@@ -22,10 +25,12 @@
     const buttons = () => document.querySelectorAll('button.dex-view')
 
     const sync = (button) => {
-      const label = window.dexView.label()
-      button.querySelector('.dex-view__label').textContent = label
-      button.setAttribute('aria-label', 'Colour scheme: ' + label + '. Change it.')
-      button.title = 'Colour scheme: ' + label + '. Change it.'
+      const step = window.dexView.describe()
+      button.querySelector('.dex-view__glyph').textContent = step.glyph
+      button.dataset.scheme = step.name.toLowerCase()
+      const name = 'Colour scheme: ' + step.name + '. Change it.'
+      button.setAttribute('aria-label', name)
+      button.title = name
     }
 
     buttons().forEach((button) => {
@@ -44,14 +49,13 @@
   .dex-view {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.28rem 0.6rem;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
     border: 1px solid var(--sl-color-gray-5);
     background: transparent;
     color: var(--sl-color-gray-3);
-    font: inherit;
-    font-size: var(--sl-text-xs);
-    line-height: 1.4;
     cursor: pointer;
   }
 
@@ -61,25 +65,17 @@
     border-color: var(--sl-color-text-accent);
   }
 
-  /* The swatch is the palette itself: the page ground with the body colour on
-   * it, so the button shows what the next step changes. */
-  .dex-view__swatch {
-    width: 0.85rem;
-    height: 0.85rem;
-    border: 1px solid var(--sl-color-gray-5);
-    border-radius: 50%;
-    background: radial-gradient(
-      circle at center,
-      var(--sl-color-text) 0 45%,
-      var(--sl-color-bg) 45% 100%
-    );
+  /* The glyph inherits the button's colour, so it follows the palette. The
+   * text presentations of these three characters are small against the
+   * surrounding interface text, so the size is set here. */
+  .dex-view__glyph {
+    font-size: 1.3rem;
+    line-height: 1;
   }
 
-  /* The header is tight on a phone; the swatch alone still identifies the
-   * step, and the accessible name carries the words. */
-  @media (max-width: 50rem) {
-    .dex-view__label {
-      display: none;
-    }
+  /* The moon and the sun fill their em box; U+2601 draws in the lower half of
+   * its own, so on the shared centre it reads as sitting low. */
+  .dex-view[data-scheme='blue'] .dex-view__glyph {
+    transform: translateY(-0.1em);
   }
 </style>
