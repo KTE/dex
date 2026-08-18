@@ -88,6 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       crate: ${{ steps.detect.outputs.crate }}
+      docs: ${{ steps.detect.outputs.docs }}
       reason: ${{ steps.detect.outputs.reason }}
     steps:
       - uses: actions/checkout@v4
@@ -100,11 +101,11 @@ jobs:
           # must never be decided by a diff, and a human pressing the button
           # means "run it".
           case "${{ github.event_name }}" in
-            workflow_dispatch) echo "crate=true" >> "$GITHUB_OUTPUT"
+            workflow_dispatch) echo "crate=true" >> "$GITHUB_OUTPUT"; echo "docs=true" >> "$GITHUB_OUTPUT"
                                echo "reason=manual dispatch" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           case "${{ github.ref }}" in
-            refs/tags/*) echo "crate=true" >> "$GITHUB_OUTPUT"
+            refs/tags/*) echo "crate=true" >> "$GITHUB_OUTPUT"; echo "docs=true" >> "$GITHUB_OUTPUT"
                          echo "reason=tag build" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
 
@@ -118,19 +119,24 @@ jobs:
           # skipping on an unknown diff is how a real change slips through.
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
              || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            echo "crate=true" >> "$GITHUB_OUTPUT"
+            echo "crate=true" >> "$GITHUB_OUTPUT"; echo "docs=true" >> "$GITHUB_OUTPUT"
             echo "reason=no usable diff base, running everything" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           changed=$(git diff --name-only "$base" HEAD)
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          crate=false; docs=false; reason=""
           if echo "$changed" | grep -qE '^(packages/dexd/|\.github/workflows/dexd\.yml$)'; then
-            echo "crate=true" >> "$GITHUB_OUTPUT"
-            echo "reason=crate or this workflow changed" >> "$GITHUB_OUTPUT"
-          else
-            echo "crate=false" >> "$GITHUB_OUTPUT"
-            echo "reason=nothing relevant changed" >> "$GITHUB_OUTPUT"
+            crate=true; reason="crate or this workflow changed"
           fi
+          # The documentation gate: the public docs, the writing rules, the
+          # glossary and the lint tool itself.
+          if echo "$changed" | grep -qE '^(docs/|AGENTS\.md$|CLAUDE\.md$|scripts/docs-lint|\.github/workflows/dexd\.yml$)'; then
+            docs=true; reason="${reason:+$reason; }docs, rules or the docs lint changed"
+          fi
+          echo "crate=$crate" >> "$GITHUB_OUTPUT"
+          echo "docs=$docs" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason:-nothing relevant changed}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: changes
@@ -580,6 +586,26 @@ jobs:
 
   # THE REQUIRED CHECK. Mark exactly this one as required in branch protection.
   #
+  # The writing gate. docs/, the glossary and AGENTS.md must pass
+  # scripts/docs-lint.mjs (plan codes, private references, coinages, caps
+  # emphasis, first person, dates as structure ... see AGENTS.md). Scope widens
+  # to the crate's own comments and README when their rewrite lands; until
+  # then those are linted locally, not here, so this job can be required from
+  # day one without being red for the whole rewrite.
+  docs-lint:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Lint tool self-test
+        run: node --test scripts/docs-lint.test.mjs
+      - name: Lint the public docs and the rules
+        run: node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md
+
   # It always runs (if: always()), so it always reports -- which is the whole
   # point: a check that can be skipped can never be required. It then decides
   # PROGRAMMATICALLY rather than by GitHub's own skip semantics, which lets it
@@ -589,14 +615,14 @@ jobs:
   gate:
     name: required
     if: always()
-    needs: [changes, build, lint, deny, lifecycle]
+    needs: [changes, build, lint, deny, lifecycle, docs-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Decide
         run: |
           set -eu
           printf '%s' '${{ toJSON(needs) }}' > /tmp/needs.json
-          echo "relevant: ${{ needs.changes.outputs.crate }} (${{ needs.changes.outputs.reason }})"
+          echo "relevant: crate=${{ needs.changes.outputs.crate }} docs=${{ needs.changes.outputs.docs }} (${{ needs.changes.outputs.reason }})"
           jq -r 'to_entries[] | "  \(.key): \(.value.result)"' /tmp/needs.json
 
           # failure or cancelled is a hard no. `skipped` is only acceptable when
@@ -605,9 +631,13 @@ jobs:
           if jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' /tmp/needs.json >/dev/null; then
             echo "::error::a required job failed or was cancelled"; exit 1
           fi
-          if [ "${{ needs.changes.outputs.crate }}" = "true" ] \
-             && jq -e 'any(to_entries[]; .key != "changes" and .value.result == "skipped")' /tmp/needs.json >/dev/null; then
-            echo "::error::a job was skipped although the crate changed -- that is a dependency failure, not a legitimate skip"
+          # Each job is relevant to one flag: docs-lint to `docs`, the rest to
+          # `crate`. A skip is legitimate only when its flag is false.
+          if jq -e --arg crate "${{ needs.changes.outputs.crate }}" --arg docs "${{ needs.changes.outputs.docs }}" \
+               'any(to_entries[]; .key != "changes" and .value.result == "skipped"
+                    and ((.key == "docs-lint" and $docs == "true") or (.key != "docs-lint" and $crate == "true")))' \
+               /tmp/needs.json >/dev/null; then
+            echo "::error::a job was skipped although its inputs changed -- that is a dependency failure, not a legitimate skip"
             exit 1
           fi
           echo "gate: PASS"
