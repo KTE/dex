@@ -40,7 +40,8 @@ The reference points are a user manual written by the project owner (short parag
 - **Lead with what to do or what it is; keep the why to one sentence**, or one short `Why` subsection at the end of the page when the reader needs it to decide. Do not stack a reason on a reason.
 - **No history in shipped text.** Not what was tried on which day, not the shell loop that proved something, not who found what. A compact `Other options` list — one line per option, name and outcome — is allowed where it helps the reader choose. Longer history belongs in a project log, if one is created later.
 - **Length: as short as completeness allows.** A page is finished when every must-cover claim is present once; if it is longer than that, cut. Do not restate conditions or caveats sentence after sentence — state them once, where they matter.
-- **User guides say "you" and use imperatives** (`Copy the file`, `Run`, `Check`). Design documents use a neutral third person, still direct.
+- **User guides: brief but friendly, for a competent adult.** The reader can use a terminal and follow instructions; explain an unfamiliar notion once, in half a sentence, and move on — do not explain what a file, a restart or a command line is. Shape each topic as one sentence of what → the command or the file → one line of what to expect → a `Note:` or `Important:` for the one thing that goes wrong. A code block and one line beat a paragraph. No reassuring filler (`simply`, `just`, `all you need`, `don't worry`), no warning repeated in prose that a callout already carries. Say "you" and use imperatives for steps.
+- **Design documents describe the implementation as it is.** The first paragraph says what the page explains and for whom. Then the mechanism (how it works now), the interfaces and requirements it imposes on other parts, and at the end an `Alternatives` table — one line per option: name, outcome, why not. Numbers link to the measurement record. The page does not narrate how the design was arrived at, what was tried on which day, or what the team learned; that history is not told in the public repository. Neutral third person, still direct.
 - **Headings name the subject.** A noun phrase of one to four words — `Technical stack`, `Frame pipeline`, `Configuration file`, `Exit codes` — never a sentence, a contrast, an intensifier or a tease (`The stack, and where each layer stops`; `How a frame actually travels`; `The extension is honoured, not sniffed`).
 - **State it once, without defending it.** Do not answer an objection the reader has not raised, and do not grade the project's own honesty or restraint (`the honest count is 228 shared objects, not zero`). State what it is, once, and link the thing it builds on.
 
@@ -56,6 +57,7 @@ Bad → good, from the first drafts:
 | `The stack, and where each layer stops` (heading) | Technical stack |
 | `How a frame actually travels` (heading) | Frame pipeline |
 | `The extension is honoured, not sniffed` (heading) | Format by file extension |
+| `What the video must be` (heading) | Requirements on the video |
 | `Gapless HEVC looper for the Raspberry Pi. One process, no shell, and a dependency set small enough to read — all of it declared (SPEC §5c). It links libmpv, so the honest count is 228 shared objects, not zero.` | Gapless HEVC video looper for Raspberry Pi, based on [libmpv](https://mpv.io/). |
 
 ### Comments and configuration files
