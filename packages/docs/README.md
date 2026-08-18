@@ -75,7 +75,7 @@ dark select. The palettes differ in more than lightness, so a pair does not desc
 
 | Step | Palette | Colour scheme | Body contrast |
 |---|---|---|---|
-| Bold | `brand` | dark, whatever the reader's system asks for | 5.71:1 — AA |
+| Bold | `brand` | always dark, whatever the reader's system asks for | 5.71:1 — AA |
 | Quiet *(dark or light)* | `brand-deep` | the one the reader's system asks for | 9.60:1 dark, 11.41:1 light — AAA |
 | Quiet *(the other one)* | `brand-deep` | the opposite | as above |
 
