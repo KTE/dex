@@ -2,121 +2,87 @@
 name = "dexd"
 version = "0.1.0"
 edition = "2021"
-description = "Gapless HEVC looper: libmpv fed by an endless in-process byte stream"
-# The dex project releases its works to the public domain as far as legally and
-# practically possible: CC0-1.0 for content, MIT-0 for software. MIT-0 is MIT
-# minus the attribution clause — maximally permissive, OSI-approved, and unlike
-# CC0 it is accepted by every distributor for CODE (Fedora has disallowed CC0
-# for code since 2022, because CC0 expressly disclaims patent grants).
+description = "Gapless HEVC video looper for Raspberry Pi, based on libmpv"
+# Source, packaging and documentation are MIT-0; content is CC0-1.0. Per-file
+# licensing is machine-readable through REUSE.toml (reuse.software).
 #
-# This describes THE SOURCE ONLY. The .deb links libmpv, which Debian ships as
-# GPL-3+ (it links GPL-3+ libsmbclient), so the shipped binary is a combined
-# work conveyed under GPL-3+. No conflict — MIT-0 is GPL-compatible, and the two
-# statements are about different artifacts. See LICENSE, which the package
-# embeds verbatim as its copyright file so the distinction ships with it.
-# Machine-readable per-file licensing: REUSE.toml + LICENSES/ (reuse.software).
+# The shipped binary links Debian's libmpv, which links GPL-3+ libsmbclient, so
+# the .deb is a GPL-3+ combined work. MIT-0 is GPL-compatible; the package's
+# copyright file states both. See docs/design/packaging.md.
 license = "MIT-0"
-# The compiler Debian trixie ships, which is what the Pi has. The device is a
-# development host, so the crate must stay buildable with the fleet's own
-# toolchain — CI compiles with apt's rustc to enforce it, not rustup's stable.
-# Raising this floor is a decision about whether devices can still build their
-# own software, not a routine bump.
+# The compiler Debian trixie ships, which is the one the devices have; a device
+# is also a development host, so the crate stays buildable there. Only raise
+# this after confirming the target devices can still build the package.
 rust-version = "1.85"
 
-# Dependencies are DECLARED, not avoided — SPEC §5c. This binary links libmpv
-# and, transitively, 228 shared objects; a rule that forbade four small cargo
-# crates while linking that was bookkeeping, not restraint. The requirement is
-# that the set stays small enough to read: 23 crates, no proc macros.
+# Dependencies: keep the set small enough to read; no procedural macros. Each
+# entry says what it is for. The alternatives weighed against them, with their
+# crate counts, are in docs/design/packaging.md.
 #
-#   serde_json  Replaces a 585-line hand-rolled JSON subset parser. Its \uXXXX
-#               and UTF-16 surrogate-pair handling is load-bearing, not
-#               decoration: Python's json.dumps escapes ALL non-ASCII by
-#               default, and a sidecar's informational `source` key can hold
-#               any filename, so refusing escapes would refuse byte-perfect
-#               assets over an ingest tool's serializer settings.
-#   serde       For the map visitor ONLY — no `derive` feature, so no
-#               syn/quote/proc-macro2 on the build's critical path. Needed
-#               because the sidecar grammar REJECTS duplicate keys, which
-#               serde_json's last-wins Map cannot express.
-#   sha2        Replaces a hand-rolled SHA-256. Confirmed byte-identical on the
-#               real bench assets before the swap, so sidecars already in the
-#               field stay valid — a hash change is a data-format change.
-#   yaml-rust2  F6's `.yaml` exhibit config, so the file a human edits in a
-#               venue can carry comments. Measured 2026-08-17 against the three
-#               live options — yaml-rust2 adds 8 crates and 0 proc macros;
-#               serde_yaml_ng 10; saphyr 20 and SIX proc macros, which
-#               deny.toml bans outright. (serde_yaml itself was archived in
-#               2024 and is not an option.) `default-features = false` drops
-#               the `encoding` feature and encoding_rs with it, bringing the
-#               real cost to +5: an exhibit config is read with
-#               fs::read_to_string, which already requires UTF-8, so charset
-#               transcoding would be dead weight.
-#
-#               It also earns its place by REMOVING code rather than adding a
-#               capability: its loader errors on a duplicate mapping key
-#               instead of last-wins, which is the single rule the JSON side
-#               had to hand-roll a serde visitor for.
+#   serde_json  Parses the sidecar. Its \uXXXX and UTF-16 surrogate-pair
+#               handling is required: an ingest tool may escape every
+#               non-ASCII character, and the informational `source` key can
+#               hold any filename.
+#   serde       The map visitor only, with no `derive` feature and so no
+#               procedural macros. The sidecar grammar makes a duplicate key
+#               an error, which serde_json's last-wins map cannot express.
+#   sha2        SHA-256 for the asset checksum. A hash change is a change to
+#               the sidecar format: every sidecar already written stops
+#               validating.
+#   yaml-rust2  Parses the `.yaml` exhibit config, so the file a technician
+#               edits can carry comments, and errors on a duplicate mapping
+#               key. `default-features = false` drops the `encoding` feature;
+#               the config is read with fs::read_to_string, which requires
+#               UTF-8.
 [dependencies]
 serde = "1.0.229"
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 yaml-rust2 = { version = "0.11.0", default-features = false }
 
-# --- Debian package (SPEC §5c) ----------------------------------------------
-# `cargo deb` builds dexd_<version>_arm64.deb. The package exists to make
-# the dependency set CHECKED rather than merely written down: libmpv's version
-# is verified by apt at install time, on a bench, instead of surfacing as a
-# black screen in a gallery.
+# --- Debian package ---------------------------------------------------------
+# `cargo deb` builds dexd_<version>_arm64.deb. apt checks the declared libmpv
+# version when the package is installed. See docs/design/packaging.md.
 #
 # Build:   cargo deb            (on arm64; CI does it in a debian:trixie container)
 # Install: sudo apt install ./dexd_0.1.0_arm64.deb
 [package.metadata.deb]
 maintainer = "Max Albrecht <1@178.is>"
 copyright = "Max Albrecht"
-# Ship LICENSE verbatim as the package's copyright file. Without this, cargo-deb
-# emits `License: CC0-1.0` alone — true of the source and misleading about the
-# binary, which is a GPL-3+ combined work. A package that understates its own
-# obligations is the one licensing bug worth going out of the way to avoid.
+# Ship the project's licence text as the package's copyright file. Without it
+# cargo-deb records the source licence alone, which understates the shipped
+# binary's GPL-3+ obligations.
 license-file = "LICENSE"
 extended-description = """
-Gapless 4K HEVC loop player for Raspberry Pi gallery installations. Feeds
-libmpv an endless in-process byte stream so the decoder never sees EOF and
-never seeks, which is what removes the seam at the loop point."""
+Gapless HEVC video looper for Raspberry Pi gallery installations, based on
+libmpv. dexd feeds the decoder one endless in-process byte stream, so playback
+never reaches the end of the file and never seeks; that removes the pause at
+the loop point."""
 section = "video"
 priority = "optional"
 
-# THE POINT OF THE PACKAGE. "$auto" runs dpkg-shlibdeps over the built binary,
-# so Depends is DERIVED from the sonames it actually links -- libmpv2 and the
-# rest -- and cannot drift from reality the way a hand-written list would.
-# Never replace this with a literal list.
+# `$auto` derives Depends from the shared libraries the binary links, so a
+# libmpv version mismatch fails when the package is installed. Keep it; the
+# entries beside it state what no symbol expresses.
 #
-# The explicit libmpv2 floor is ADDED to it, not a substitute, because the two
-# state different things and only one of them is derivable:
+# libmpv2 (>= 0.40.0): dexd relies on mpv behaviour that dpkg-shlibdeps cannot
+# see — the option `--gpu-hwdec-interop=drmprime-overlay`, and the
+# `END_FILE(reason=stop)` event after a `loadfile replace`, which in-place
+# recovery expects after its own `loadfile replace`. Both hold in 0.40, the
+# version trixie ships; with 0.19 the package installs and the player then
+# fails at runtime. Raise this floor
+# whenever a fix is verified against a newer mpv.
 #
-#   $auto alone produced `libmpv2 (>= 0.19.0)`. That is dpkg-shlibdeps working
-#   correctly -- it reports the oldest version providing the SYMBOLS we call.
-#   But nothing we depend on is symbol-shaped: --gpu-hwdec-interop=drmprime-
-#   overlay is a runtime option, and the C1 recovery fix rests on mpv emitting
-#   END_FILE(reason=stop) for a `loadfile replace`. Both are BEHAVIOUR, both
-#   were verified against 0.40 (the version trixie ships and all three reviews
-#   probed), and a device with 0.19 would install cleanly and then misbehave --
-#   the silent-wrongness class this package was built to close.
-#
-# So: keep $auto for what can be derived, and state what cannot. Raise the
-# floor whenever a fix is verified against a newer mpv.
-# `adduser` is here because postinst calls it -- lintian catches maintainer
-# scripts that use a tool the package does not depend on, which on a minimal
-# image is a failing install rather than a missing convenience.
+# adduser: postinst calls it, and lintian fails a maintainer script that uses a
+# tool the package does not depend on.
 depends = "$auto, libmpv2 (>= 0.40.0), adduser"
 
 assets = [
-    # /usr/bin, not /usr/local/bin: Debian policy reserves /usr/local for the
-    # local administrator, and a package that writes there is a policy
-    # violation. The systemd unit was updated to match.
+    # /usr/bin: Debian policy reserves /usr/local for the local administrator,
+    # so a package may not install there.
     ["target/release/dexd", "usr/bin/", "755"],
-    # F6's privileged sibling. Shipped (unlike dex-sidecar below) because it
-    # runs ON THE DEVICE, as root, whenever an operator changes the exhibit --
-    # see src/bin/dex-exhibit-apply.rs and man dex-exhibit-apply.
+    # Applies a changed exhibit config on the device, as root, which is why it
+    # ships. See src/bin/dex-exhibit-apply.rs and man dex-exhibit-apply.
     ["target/release/dex-exhibit-apply", "usr/bin/", "755"],
     ["deploy/dex-wait-hdmi", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/dexd/", "644"],
@@ -126,34 +92,31 @@ assets = [
     ["deploy/lintian-overrides", "usr/share/lintian/overrides/dexd", "644"],
 ]
 
-# dex-sidecar is deliberately NOT shipped: it is an INGEST tool (it validates
-# a sidecar against an asset while building one), and ingest happens on a
-# workstation, never on the gallery device.
+# dex-sidecar stays off this list: it writes a sidecar and validates it against
+# the asset, and a video is prepared on a workstation, never on the device.
 
-# The package ships NO exhibit config and creates no /etc/dex. The exhibit
-# config lives beside the video in /opt/dex, which is the mount point of the
-# dex card's data partition, so an operator edits it from any computer that
-# reads the card. A missing config makes the player refuse to start and name
-# the file to create -- see src/exhibit.rs's resolve_display.
+# The package installs no exhibit config and creates no /etc/dex. The config
+# lives beside the video in /opt/dex, the mount point of the dex card's data
+# partition, so a technician edits it from any computer that reads the card. A missing
+# config makes dexd refuse to start and name the file to create — see
+# src/exhibit.rs.
 
 maintainer-scripts = "deploy/maintainer-scripts"
-# A non-native package without a Debian changelog is a lintian error, and
-# the changelog is where a device operator can see what shipped.
+# A non-native package without a Debian changelog is a lintian error, and the
+# changelog is where a technician sees what shipped.
 changelog = "deploy/changelog"
 
 [package.metadata.deb.systemd-units]
 unit-scripts = "deploy"
-# Enable at install so a device that is only ever power-cycled comes back
-# playing, but do not start during install: the unit takes DRM master, and an
-# operator installing over SSH from a console session should choose the moment.
+# Enable at install so a device that is only power-cycled comes back playing.
+# Leave it stopped at install: the unit takes DRM master, and a technician
+# installing over SSH from a console session chooses the moment.
 enable = true
 start = false
 
-# Match release: an unwind crossing the FFI boundary, or main unwinding while
-# mpv threads are live, is UB territory. rustc >= 1.81 aborts at the extern "C"
-# boundary, but main() unwinding out from under a registered callback is a
-# separate hazard, and a dev build should not have a weaker safety story than
-# the shipping one.
+# Abort on panic in both profiles: unwinding across the FFI boundary, or out of
+# main while mpv threads are live, is undefined behaviour. The dev profile
+# matches the release profile so a panic behaves the same way in testing.
 [profile.dev]
 panic = "abort"
 
