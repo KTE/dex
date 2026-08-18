@@ -434,9 +434,9 @@ Tier: developer
 
 ### data partition
 
-The third partition on a dex SD card, FAT-formatted so it mounts on macOS and Windows without drivers, holding media and config; the old image's main innovation. dexd does not use it yet; the roadmap carries it forward as where ingested videos land.
+A FAT-formatted partition on the dex card that any computer can open without extra software. It holds the video, its sidecar and the exhibit config, and dexd reads it at `/opt/dex`; a technician edits the config there with the card in a laptop. The dexOS image had the same idea.
 
-Also written: dexdata · /dexdata · FAT partition · media partition (2017 wording)
+Also written: dexdata · /dexdata · FAT partition · media partition
 
 Tier: developer
 
