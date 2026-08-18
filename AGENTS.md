@@ -30,6 +30,28 @@ Agents: read this file and `docs/glossary.md` before writing or editing any of t
 
 Numbers carry their unit and conditions ("29.1 fps at 3840×2160, 30 fps, Raspberry Pi 4"). Measured values say so briefly and link `docs/design/measurements.md` for the full conditions rather than repeating them.
 
+## Tone
+
+The reference points are a user manual written by the project owner (short paragraphs, one idea each; an unfamiliar notion explained in half a sentence; the reader addressed as "you"; steps as imperatives) and a component reference he considers well written (definition → basic usage → examples → `Important:` / `Note:` callouts → reference list; bullets for parallel behaviours; no history). Match them:
+
+- **A verb with a clear subject.** dexd, the player, the file, you. Not a nominalised event in the passive: `dexd logs the reason and exits`, not `a refusal is written`; `the exhibit config defines the video, the display mode and the connector`, not `it holds what the installation owns`.
+- **Describe the behaviour, never personify or dramatise it.** `If the mode is wrong, dexd does not report it and the display stays black`, not `getting the mode wrong is silent`. `The seek causes the pause`, not `the seek as the cause`. No `holds`, `owns`, `trusts`, `believes`, `honest`, `quietly`, `silently` as characterisation.
+- **One idea per paragraph, one to four sentences.** Three or more parallel items become a list; key–value material becomes a table. Sentences average under 25 words.
+- **Lead with what to do or what it is; keep the why to one sentence**, or one short `Why` subsection at the end of the page when the reader needs it to decide. Do not stack a reason on a reason.
+- **No history in shipped text.** Not what was tried on which day, not the shell loop that proved something, not who found what. A compact `Other options` list — one line per option, name and outcome — is allowed where it helps the reader choose. Longer history belongs in a project log, if one is created later.
+- **Length: as short as completeness allows.** A page is finished when every must-cover claim is present once; if it is longer than that, cut. Do not restate conditions or caveats sentence after sentence — state them once, where they matter.
+- **User guides say "you" and use imperatives** (`Copy the file`, `Run`, `Check`). Design documents use a neutral third person, still direct.
+
+Bad → good, from the first drafts:
+
+| Draft | Rewrite |
+|---|---|
+| the reason is measured | measured on a Raspberry Pi 4 (see the measurement record) |
+| a refusal is written | dexd logs the reason and exits |
+| Getting the mode wrong is silent | If the mode is wrong, dexd does not report it |
+| It holds what the installation owns: the mode, the force flag and the connector | It defines the display mode, the forced mode and the connector |
+| the seek as the cause | the seek causes the pause |
+
 ## Vocabulary
 
 `docs/glossary.md` is the only list of technical terms the documentation may use without explaining them. Its entries were approved one by one by the project owner. Rules for the file:
