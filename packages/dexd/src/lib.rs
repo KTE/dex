@@ -1,11 +1,9 @@
-//! dexd's pure core: every piece of logic that can exist without libmpv.
+//! dexd's pure core: everything the player decides without libmpv.
 //!
-//! The binary (src/main.rs) is deliberately a thin unsafe shell over this
-//! library: FFI structs, callbacks, and the event loop. Everything decidable —
-//! wrap arithmetic, hashing, sidecar binding, NAL validation, log formatting —
-//! lives here, testable on any machine with `cargo test --lib`, no libmpv and
-//! no display required. That split is T0 of the hardening plan: every serious
-//! bug so far lived where testing could not reach.
+//! The crate forbids unsafe code, so the FFI declarations and the mpv event
+//! loop stay in `src/main.rs`.
+//!
+//! See docs/design/architecture.md#crate-layout.
 
 #![forbid(unsafe_code)]
 

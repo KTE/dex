@@ -1,120 +1,60 @@
-//! F6 — the exhibit display config: parse, validate, and decide the binding.
+//! The exhibit config: its grammar, its parsers, and the decisions it feeds.
 //!
-//! Why: the display mode is a property of the INSTALLATION, not the asset.
-//! One artwork may run on several panels over its life, and a panel may show
-//! several artworks over a season — config whose lifetime differs from the
-//! asset next to it eventually gets edited in the wrong copy. The
-//! 2026-08-15 measurement is the concrete proof already on file: the same
-//! `cmdline.txt` line is correct for one sink (Cam Link 4K, which vc4
-//! refuses to build a 4K mode for unforced even though the sink's own EDID
-//! prefers it) and wrong for another (Dell U2719DC, which must NOT carry the
-//! force or it transmits a signal the panel cannot show). So the mode
-//! belongs to an `/opt/dex/exhibit.{yaml,json}` file — venue truth, not
-//! asset truth — parsed with the F3 sidecar's own hardened, fail-closed flat
-//! subset grammar.
+//! The config names the video this installation plays and the display it plays on. It sits
+//! next to the video in the assets directory, and dexd refuses to start without one. The file
+//! extension picks the parser: `exhibit.json` is strict JSON, `exhibit.yaml` (or `.yml`) is YAML.
 //!
-//! CORRECTION (2026-08-17): an earlier draft of this doc comment claimed "the
-//! M5 soak played a 2160p30 asset on a 1440p Dell" as field evidence that one
-//! asset runs on several panels. That run never happened — the M5 soak ran
-//! 4K30 on the Cam Link with the Dell disconnected. Removed rather than left
-//! to mislead a future reader; the Cam-Link-vs-Dell force disagreement above
-//! is real, bench-verified evidence and stands on its own.
+//! ```yaml
+//! asset: loop.265               # the video, beside this file
+//! display_mode: 3840x2160@30    # required; what mpv is asked for
+//! kms_force: 3840x2160@30       # what the kernel cmdline must carry; optional, default none
+//! connector: HDMI-A-1           # optional, and the default
+//! # display, venue and note are informational; nothing in the player reads them
+//! ```
 //!
-//! TWO FORMATS, AND THE EXTENSION DECIDES WHICH — see [`ConfigFormat`] for
-//! why that dispatch is a correctness rule and not a convenience. `.json` is
-//! strict JSON (machine-writable); `.yaml` is YAML
-//! (comments, no quoting ceremony — this file gets hand-edited in a venue,
-//! possibly on a phone over SSH). The two are the same schema: only the ~40
-//! lines that turn text into a flat key/value list differ, and
-//! [`ExhibitConfig::from_pairs`] validates both.
+//! [`ExhibitConfig::from_pairs`] defines the whole schema for both formats and refuses an
+//! unknown key. Everything but [`load_exhibit_config`] is pure: the grammars, config
+//! discovery, the [`resolve_display`] and [`resolve_asset`] tables, the cmdline check and
+//! rewrite and the sysfs pre-flight all test without libmpv or real hardware.
 //!
-//! Format:
-//!   {"display_mode":"3840x2160@30","kms_force":"3840x2160@30",
-//!    "connector":"HDMI-A-1","display":"...","venue":"...","note":"..."}
-//! or, identically:
-//!   display_mode: 3840x2160@30    # what mpv is asked for
-//!   kms_force: 3840x2160@30       # what the kernel cmdline must carry
-//!   connector: HDMI-A-1
-//! Required: `display_mode`. Optional: `kms_force` (default `"none"`),
-//! `connector` (default `"HDMI-A-1"`), and the informational `display`,
-//! `venue`, `note` strings, journal-logged at startup so the WHY that used to
-//! live in a `config.txt` comment block travels with the config that is
-//! actually enforced.
-//!
-//! UNKNOWN KEYS ARE REFUSED here — a deliberate divergence from the sidecar,
-//! which tolerates them because ingest tooling evolves independently of
-//! deployed players. This file has no such producer: it is hand-edited on the
-//! same device the same `.deb` version reads it. Tolerating unknowns would
-//! turn a typo (`"kms_forse"`) into a silently dropped force instead of a
-//! caught one — a black gallery wall. Fail-closed IS the F-series semantics.
-//!
-//! Three further pure pieces live here, because none of them may live in
-//! main.rs if they are to be testable without libmpv or real hardware
-//! (§4 of the design):
-//!
-//! * [`resolve_display`] — mirrors `sidecar::resolve_fps`'s decision table:
-//!   the config binds; an agreeing `--mode` cross-checks it; a disagreeing
-//!   one is refused, naming both; an absent config (outside the bench escape
-//!   hatch) is refused rather than guessed.
-//! * [`check_cmdline_matches`] / [`cmdline_video_token`] — the gate that
-//!   keeps the exhibit config and the KMS-layer `video=` token honest with
-//!   each other, so editing one without the other is caught at the next
-//!   start instead of black-screening a gallery for weeks.
-//! * [`sysfs_modes_contains`] / [`mode_resolution`] — the pre-flight that
-//!   catches "the configured resolution is not even in this connector's mode
-//!   list" (the wrong-panel case) before asset/sidecar/NAL gates run.
-//! * [`reconcile_cmdline`] — the pure rewrite `dex-exhibit-apply` (the
-//!   privileged sibling binary) uses to keep `cmdline.txt` in sync,
-//!   idempotently, preserving every other token untouched.
+//! See docs/design/exhibit-config.md#config-location and docs/design/architecture.md#crate-layout.
 
 use crate::sidecar::{parse_flat_json, Value};
 use yaml_rust2::{Event, Yaml, YamlLoader};
 
 /// The path the messages name when no exhibit config exists: the file an
 /// operator creates, in the assets directory, next to the video it names.
-/// The package installs no exhibit config, so nothing on disk holds this
-/// path until someone writes it.
+/// The package installs no exhibit config, so this path names nothing on
+/// disk until someone writes it.
 pub const DEFAULT_EXHIBIT_CONFIG_PATH: &str = "/opt/dex/exhibit.yaml";
 
 /// Where the player looks when `--exhibit-config` is not given, in order.
 ///
-/// Both names sit in the assets directory, so the dex card in a computer
-/// shows the video, its sidecar and the exhibit config together.
-///
-/// YAML first, so an operator who writes `exhibit.yaml` beside an older
-/// `exhibit.json` gets what they wrote — the alternative (JSON wins, YAML
-/// ignored) would let someone edit a file for an afternoon while the player
-/// reads a different one, which is the exact "config drift" failure F6 exists
-/// to end. `pick_default_config` refuses outright when both are present, so
-/// "first wins" never silently decides anything: the order only fixes which
-/// name the refusal calls the intended one.
+/// Both names sit in the assets directory, so the dex card in a computer shows
+/// the video, its sidecar and the exhibit config together. YAML is searched
+/// first, which only fixes which name a refusal calls the intended one:
+/// [`pick_default_config`] refuses outright when both files exist.
+/// See docs/design/exhibit-config.md#config-location.
 pub const DEFAULT_EXHIBIT_CONFIG_PATHS: [&str; 2] =
     ["/opt/dex/exhibit.yaml", "/opt/dex/exhibit.json"];
 
-/// Choose the default config among those that actually exist on disk.
+/// Choose the default config among those that exist on disk.
 ///
-/// `existing` is the subset of [`DEFAULT_EXHIBIT_CONFIG_PATHS`] that exists,
-/// in that array's order; main.rs does the `Path::exists` calls so this stays
-/// pure and testable without a filesystem.
-///
-/// * exactly one → that one
-/// * none → `None`, and the caller states the "no exhibit config" refusal
-///   (one message, one place — `resolve_display`'s)
-/// * both → **refuse**. Two configs for one player is the same class of fact
-///   as a `--mode` that contradicts the config: there is a real, answerable
-///   question about which the operator meant, and answering it by precedence
-///   would hide it. Deleting the loser is one command; debugging a venue
-///   running yesterday's mode is a day.
+/// `existing` is the subset of [`DEFAULT_EXHIBIT_CONFIG_PATHS`] that exists, in
+/// that array's order; main.rs makes the `Path::exists` calls, so this stays
+/// pure. One existing path is returned as the config. None returns `None`, and
+/// [`resolve_display`] states the "no exhibit config" refusal. Two or more are
+/// refused: nothing here can tell which file the operator meant, and choosing
+/// by precedence would hide the question.
+/// See docs/design/exhibit-config.md#config-location.
 pub fn pick_default_config<'a>(existing: &[&'a str]) -> Result<Option<&'a str>, String> {
     match existing {
         [] => Ok(None),
         [only] => Ok(Some(only)),
         several => {
-            // Name the LIKELY cause, not just the rule. The common way to
-            // reach this is switching to YAML: writing exhibit.yaml leaves the
-            // older exhibit.json sitting beside it, so the operator did one
-            // correct thing and got a refusal. A message that only restates
-            // the invariant would make that look like a bug in the player.
+            // Name the likely cause as well as the rule: switching to YAML
+            // leaves the older exhibit.json beside the new file, so the
+            // operator did one correct thing and still got a refusal.
             let json_copies: Vec<&str> = several
                 .iter()
                 .copied()
@@ -141,17 +81,15 @@ pub fn pick_default_config<'a>(existing: &[&'a str]) -> Result<Option<&'a str>, 
 pub const DEFAULT_CONNECTOR: &str = "HDMI-A-1";
 pub const DEFAULT_KMS_FORCE: &str = "none";
 
-/// Is `t` a non-empty run of ASCII digits with at least one nonzero digit —
-/// the same "positive integer" shape `sidecar::is_valid_fps` uses for its
-/// numerator/denominator, duplicated here (rather than exposed from
-/// `sidecar`) because it is a two-line primitive, not a shared contract.
+/// Is `t` a non-empty run of decimal digits with at least one nonzero digit —
+/// the "positive integer" shape the display mode and force grammars share.
 fn positive_int(t: &str) -> bool {
     !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) && t.bytes().any(|b| b != b'0')
 }
 
-/// Is `t` a non-empty run of ASCII digits (leading zeros and an all-zero
-/// value both allowed — connector numbering is not a rate, "0" is a
-/// legitimate enumeration index on some drivers).
+/// Is `t` a non-empty run of decimal digits? Leading zeros and an all-zero
+/// value are both allowed: connector numbering is not a rate, and `0` is a
+/// legitimate index on some drivers.
 fn digits_only(t: &str) -> bool {
     !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())
 }
@@ -164,29 +102,17 @@ fn split_mode(s: &str) -> Option<(&str, &str, &str)> {
     Some((w, h, r))
 }
 
-/// `display_mode` grammar: `"auto"`, or `"WxH@R"` with W, H, R positive
-/// INTEGERS — the same refresh rule as `kms_force`, and deliberately NOT the
-/// `--fps` grammar an earlier revision borrowed. That revision reasoned
-/// "mpv's `--drm-mode` accepts a fractional refresh, so `@29.97` and
-/// `@30000/1001` are representable"; bench-driving both through the real
-/// deploy path (dexpi4, mpv 0.40, 2026-08-17) disproved it twice over:
+/// `display_mode` grammar: `"auto"`, or `"WxH@R"` with W, H and R positive
+/// integers.
 ///
-/// * `@30000/1001` fails mpv's OPTION PARSER outright (`set
-///   drm-mode=3840x2160@30000/1001: error setting option (-7)`) — a config
-///   value this grammar accepted could NEVER play, only produce a 2 s-cadence
-///   restart loop. Fail-closed belongs at config parse, not at VO init.
-/// * `@29.97` parses and PLAYS — because mpv matches DRM modes by integer
-///   `vrefresh` rounding, i.e. it silently drove the same 30 Hz mode that
-///   `@30` names honestly. A decimal buys nothing over its rounded integer
-///   (the kernel mode's timing is what it is) while implying a precision
-///   that does not exist — the silent-wrongness class this crate refuses.
-///
-/// (An INTEGER refresh the connector does not offer is caught loudly at VO
-/// init — `Could not find mode matching 3840x2160@60`, same bench — since
-/// the sysfs pre-flight can only validate the resolution half; see
-/// `mode_resolution`.) The `@R` part is mandatory: `"3840x2160"` alone would
-/// let mpv pick among same-resolution timings by list order, which is again
-/// silent wrongness.
+/// The `@R` part is mandatory and must be an integer. A decimal such as
+/// `@29.97` plays the rounded integer mode without saying so; a rational such
+/// as `@30000/1001` fails mpv's option parser at startup; and `"3840x2160"` on
+/// its own lets mpv pick among same-resolution timings by list order. An
+/// integer refresh the connector does not offer fails later, at video-output
+/// init, since the pre-flight can check only the resolution half (see
+/// [`mode_resolution`]).
+/// See docs/design/exhibit-config.md#display-mode.
 pub fn is_valid_display_mode(s: &str) -> bool {
     if s == "auto" {
         return true;
@@ -197,12 +123,12 @@ pub fn is_valid_display_mode(s: &str) -> bool {
     }
 }
 
-/// `kms_force` grammar: `"none"`, or `"WxH@R"`/`"WxH@RD"` with W, H, R
-/// positive integers — R is an integer here, unlike `display_mode`, because
-/// the kernel's `video=` cmdline grammar has no fractional refresh. The
-/// trailing `D` forces the connector to read `connected` even when nothing is
-/// attached yet (the boot-order insurance F6 replaces the old comment block
-/// with); it is a suffix on the whole token, not part of the refresh number.
+/// `kms_force` grammar: `"none"`, or `"WxH@R"`/`"WxH@RD"` with W, H and R
+/// positive integers. R is an integer here because the kernel's `video=`
+/// cmdline grammar has no fractional refresh. The trailing `D` makes the
+/// connector read as `connected` even when nothing is attached yet; it is a
+/// suffix on the whole token, not part of the refresh number.
+/// See docs/design/exhibit-config.md#display-mode.
 pub fn is_valid_kms_force(s: &str) -> bool {
     if s == "none" {
         return true;
@@ -215,23 +141,17 @@ pub fn is_valid_kms_force(s: &str) -> bool {
 }
 
 /// `asset` grammar: a path to a file, absolute or relative, with no trailing
-/// slash and no ASCII control characters.
+/// slash and no control characters.
 ///
 /// A relative path is resolved against the directory the config file is in
-/// (see [`asset_in_config_dir`]), so `asset: loop.265` next to
-/// `/opt/dex/exhibit.yaml` names `/opt/dex/loop.265`. The service's working
-/// directory never enters into it, which is why a relative path is safe here
-/// even though the unit runs with `/` as its working directory.
+/// (see [`asset_in_config_dir`]), so `asset: loop.265` beside
+/// `/opt/dex/exhibit.yaml` names `/opt/dex/loop.265`; the service's working
+/// directory never enters into it. Control characters are refused because this
+/// string is printed into the system log at every start, where a newline would
+/// forge a second log line.
 ///
-/// Control characters are refused because this string is printed into the
-/// system log at every start, and the system log is the only diagnostic
-/// channel a gallery device has; a newline inside it would forge a second log
-/// line.
-///
-/// Deliberately NOT checked here: whether the file exists, or what extension
-/// it has. Existence is main.rs's job (it produces the read error, which is
-/// more informative than a grammar refusal), and this crate has no business
-/// deciding that an artwork must be called `.265`.
+/// Existence and file extension are not checked here: main.rs opens the file
+/// and produces the read error, which says more than a grammar refusal would.
 pub fn is_valid_asset(s: &str) -> bool {
     !s.is_empty() && !s.ends_with('/') && !s.chars().any(|c| c.is_ascii_control())
 }
@@ -251,8 +171,8 @@ pub fn config_dir(config_path: &str) -> &str {
 /// An absolute `asset` is returned unchanged. A relative one is joined to
 /// `dir`, including a `../` prefix, which the kernel resolves at open time:
 /// `../x` beside `/opt/dex/exhibit.yaml` opens `/opt/dex/../x`. The join is
-/// textual on purpose — the path is printed into the system log, and an
-/// operator reading it should see the two halves they wrote.
+/// textual, so the path printed in the system log shows the two halves the
+/// operator wrote.
 pub fn asset_in_config_dir(dir: &str, asset: &str) -> String {
     if asset.starts_with('/') {
         asset.to_string()
@@ -263,10 +183,10 @@ pub fn asset_in_config_dir(dir: &str, asset: &str) -> String {
     }
 }
 
-/// `connector` grammar: `"HDMI-A-<n>"`, n a plain digit run. Also governs the
-/// `video=<connector>:...` token dex-exhibit-apply writes and the
-/// `/sys/class/drm/card*-<connector>` glob the sysfs pre-flight reads, so
-/// accepting garbage here would surface far from where it was typed.
+/// `connector` grammar: `"HDMI-A-<n>"`, n a run of digits. The same value
+/// spells the `video=<connector>:...` token dex-exhibit-apply writes and the
+/// `/sys/class/drm/card*-<connector>` glob the pre-flight reads, so a wrong
+/// value accepted here would fail far from where it was typed.
 pub fn is_valid_connector(s: &str) -> bool {
     match s.strip_prefix("HDMI-A-") {
         Some(n) => digits_only(n),
@@ -274,47 +194,20 @@ pub fn is_valid_connector(s: &str) -> bool {
     }
 }
 
-/// Which parser reads an exhibit config — decided by the FILE EXTENSION, never
-/// by sniffing the bytes.
+/// Which parser reads an exhibit config, decided by the file extension.
 ///
-/// YAML is a superset of JSON, so "parse everything as YAML" would pass every
-/// test this file could write and still be wrong: it would accept comments,
-/// anchors and unquoted keys inside a file named `.json`, and that file would
-/// then break `jq`, `python -m json.tool`, and any other consumer that trusts
-/// the name. **An extension is a promise to the rest of the world about what
-/// the bytes are.** Honouring it is the entire reason for offering two formats
-/// instead of one, so the dispatch is here, at the outermost layer, where it
-/// cannot be bypassed by a convenience helper.
+/// YAML is a superset of JSON, so parsing everything as YAML would accept
+/// comments, anchors and unquoted keys inside a file named `.json`, and that
+/// file would then break `jq` and every other tool that selects its parser
+/// by the extension.
+/// The dispatch therefore sits at the outermost layer, where no convenience
+/// helper can bypass it, and the `.json` path runs on a real JSON parser.
 ///
-/// **Why not YAML's own JSON schema, which exists for exactly this?** Because
-/// it solves a different problem than the one here. YAML 1.2 defines three
-/// schemas (failsafe, JSON, core), and all three govern only how an *untagged
-/// scalar* resolves to a type — they say nothing about SYNTAX. A YAML parser
-/// set to the JSON schema still accepts `#` comments, block style, unquoted
-/// keys, anchors and `---` document markers; it would simply resolve
-/// `3840x2160` differently. So "parse `.json` with a YAML parser in JSON-schema
-/// mode" would NOT deliver the promise a `.json` name makes, which is precisely
-/// the promise this type exists to keep. That is why the JSON path runs on
-/// `serde_json`, a real JSON parser, rather than on a configured YAML one.
-///
-/// It would also be the wrong choice for the `.yaml` path, in the opposite
-/// direction: under the JSON schema a plain scalar matching none of
-/// null/bool/int/float is an ERROR, so `display_mode: 3840x2160@30` — an
-/// unquoted string, and the entire ergonomic point of offering YAML — would
-/// fail to resolve. (Moot in practice: `yaml-rust2` hardwires core-ish
-/// resolution and exposes no schema selection at all. See
-/// [`parse_flat_yaml`], which documents the one place it departs from 1.2
-/// core.)
-///
-/// Everything after tree-building is shared: both parsers produce the same
-/// `Vec<(String, Value)>` flat map that [`crate::sidecar::parse_flat_json`]
-/// already produces, and [`ExhibitConfig::from_pairs`] does 100% of the
-/// mapping and validation for both. Only the ~40 lines that turn text into
-/// pairs differ. The subset that flat map enforces — strings and non-negative
-/// integers, one level deep — is stricter in node types than any of YAML's
-/// three schemas, but it applies AFTER resolution, so resolution decisions
-/// remain observable: `venue: 2026` resolves to an integer and is then refused
-/// as "must be a string", exactly as `"venue": 2026` is on the JSON side.
+/// Everything after tree-building is shared: both parsers produce the
+/// `Vec<(String, Value)>` flat map [`crate::sidecar::parse_flat_json`]
+/// produces, and [`ExhibitConfig::from_pairs`] does all the mapping and
+/// validation for both.
+/// See docs/design/exhibit-config.md#file-format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
     Json,
@@ -322,21 +215,14 @@ pub enum ConfigFormat {
 }
 
 impl ConfigFormat {
-    /// Decide the format from a path's extension, case-insensitively (an
-    /// operator's editor may have written `EXHIBIT.YAML`, and refusing that
-    /// would be pedantry rather than safety — the promise the extension makes
-    /// is the same either way).
+    /// Decide the format from a path's extension, case-insensitively: an
+    /// editor may have written `EXHIBIT.YAML`, and the promise the extension
+    /// makes is the same either way.
     ///
-    /// An unrecognised or absent extension REFUSES rather than defaulting to
-    /// either parser. Defaulting is how a `.txt` full of YAML ends up being
-    /// read as JSON, or worse, the reverse: silently accepting YAML in a file
-    /// the rest of the toolchain will read as JSON is precisely the failure
-    /// this type exists to make impossible.
-    ///
-    /// Uses `Path::extension` rather than splitting on the last `.`, so a
-    /// DOTFILE named `.json` has no extension and refuses — which is what the
-    /// rest of the world thinks too, and the point of this function is to
-    /// agree with the rest of the world about what a file name means.
+    /// An unrecognised or absent extension is refused instead of defaulting to
+    /// one of the parsers. `Path::extension` decides, so a dotfile named
+    /// `.json` has no extension and is refused — the same reading of a file
+    /// name every other tool applies.
     pub fn from_path(path: &str) -> Result<ConfigFormat, String> {
         let ext = std::path::Path::new(path)
             .extension()
@@ -353,83 +239,49 @@ impl ConfigFormat {
     }
 }
 
-/// Parse `text` as a single flat YAML mapping under the SAME subset grammar
+/// Parse `text` as a single flat YAML mapping under the same subset
 /// [`crate::sidecar::parse_flat_json`] enforces for JSON — strings and
 /// non-negative integers only, one level deep, no duplicate keys — returning
 /// its key/value pairs in source order.
 ///
-/// The subset is not a limitation grudgingly inherited from the JSON side; it
-/// is what keeps the two formats interchangeable. A YAML feature this refuses
-/// (a nested mapping, a list, an anchor) is one that could not be written in
-/// the `.json` form of the same config, and a config whose meaning depends on
-/// which extension it was saved under would defeat the point of supporting
-/// both. Anchors and aliases are refused BEFORE the load, by
-/// [`refuse_anchors_and_aliases`] — see there for why the node-type check
-/// below cannot do it.
+/// Anchors and aliases are refused before the load, by
+/// [`refuse_anchors_and_aliases`].
 ///
-/// Three YAML-specific hazards, all refused rather than coerced:
+/// The subset keeps the two formats interchangeable: a YAML feature refused
+/// here is one that could not be written in the `.json` form of the same
+/// config. So a bare `true`/`false` (a boolean, not the text — the message
+/// names the quoting fix), a decimal such as `29.97`, and a `---`-separated
+/// stream of several documents are refused rather than coerced; `yaml-rust2`
+/// itself errors on a duplicate key.
 ///
-/// * **Booleans.** `display_mode: true` is a boolean, not the string
-///   `"true"`, and refuses with a message naming the quoting fix.
-///
-///   MEASURED, not assumed, because the received wisdom here is wrong for
-///   this library: `yaml-rust2` 0.11 resolves scalars close to the **YAML 1.2
-///   core schema**, where ONLY `true`/`false` (any of three casings) are
-///   booleans. The famous "Norway problem" — `no` silently becoming `false` —
-///   is a YAML **1.1** behaviour and does not occur here, so `kms_force: no`
-///   arrives as the string `"no"` and is refused a step later by
-///   [`is_valid_kms_force`]'s grammar, naming the valid values. Both paths
-///   refuse; only the message differs. Pinned by test in both directions, so
-///   a version bump that adopted 1.1 resolution could not slip through.
-///
-///   "Close to", not "is": its null resolution (`yaml.rs`'s `from_str`) is
-///   `"" | "~" | "null"`, where the 1.2 core schema also lists `Null` and
-///   `NULL`. Driven against the real binary — `note: Null` and `note: NULL`
-///   are accepted as STRINGS, while `null`, `~` and an empty value resolve to
-///   null and are refused. Harmless for this schema (only the informational
-///   keys could receive such a value, and taking it literally is the friendlier
-///   of the two readings) but stated exactly, because "it implements the core
-///   schema" is the kind of nearly-true sentence a future reader would rely on.
-///
-///   **There is no schema knob to reach for**: `yaml-rust2` hardwires this
-///   resolution and exposes no way to select the failsafe or JSON schema. See
-///   [`ConfigFormat`] for why the JSON schema would not have been the right
-///   tool for the `.json` path anyway.
-/// * **Floats.** `29.97` is `Yaml::Real`. The JSON side already refuses
-///   non-integers, and the bench evidence in [`is_valid_display_mode`] is why:
-///   a decimal refresh silently means its rounded integer.
-/// * **Multiple documents.** A `---`-separated stream has no single answer to
-///   "what is the config", so it refuses instead of taking the first.
-///
-/// Duplicate keys are rejected by `yaml-rust2` itself (its loader errors on
-/// insert rather than last-wins, unlike most YAML libraries) — the one rule
-/// the JSON side had to hand-roll a serde visitor for. Pinned by test, not
-/// assumed: see `yaml_duplicate_key_refused`.
+/// `yaml-rust2` 0.11 resolves scalars close to the YAML 1.2 core schema and
+/// offers no way to select another. Its treatment of `no`, `null` and `Null`
+/// is locked in by tests, since a version bump that changed it would change
+/// what a deployed config means.
+/// See docs/design/exhibit-config.md#file-format.
 pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
     refuse_anchors_and_aliases(text)?;
     let docs = YamlLoader::load_from_str(text).map_err(|e| format!("exhibit config YAML: {e}"))?;
-    let doc = match docs.len() {
-        // load_from_str returns zero documents for empty or comment-only
-        // input. Treated as a parse failure, not an empty config: a config
-        // that parses to "no keys at all" would then fail on the missing
-        // required key with a message about `display_mode`, burying the real
-        // problem (the file is blank -- truncated write, wrong path, editor
-        // that saved nothing).
-        0 => {
-            return Err(
+    let doc =
+        match docs.len() {
+            // load_from_str returns zero documents for empty or comment-only
+            // input. Treated as a parse failure rather than an empty config:
+            // an empty config would fail on the missing `display_mode` key and
+            // report that instead of the real problem, which is that the file
+            // has no content.
+            0 => return Err(
                 "exhibit config YAML: no document — the file is empty or contains only comments"
                     .into(),
-            )
-        }
-        1 => &docs[0],
-        n => {
-            return Err(format!(
+            ),
+            1 => &docs[0],
+            n => {
+                return Err(format!(
                 "exhibit config YAML: {n} documents in one file (`---` separators) — an exhibit \
                  config must be exactly one mapping, since nothing here could say which document \
                  is the authoritative one"
             ))
-        }
-    };
+            }
+        };
     let map = match doc {
         Yaml::Hash(h) => h,
         other => {
@@ -452,10 +304,10 @@ pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
         };
         let value = match v {
             Yaml::String(s) => Value::Str(s.clone()),
-            // Non-negative only, matching the JSON subset's u64. A negative
-            // number is not merely out of range for these keys, it is out of
-            // range for the FORMAT -- so it refuses here, in the same voice a
-            // `.json` file's `-1` would.
+            // Non-negative only, matching the JSON subset's u64: a negative
+            // number is out of range for the format, not just for these keys,
+            // so it is refused here in the same words a `.json` file's `-1`
+            // gets.
             Yaml::Integer(i) if *i >= 0 => Value::Num(*i as u64),
             Yaml::Integer(i) => {
                 return Err(format!(
@@ -465,7 +317,7 @@ pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
             }
             Yaml::Boolean(_) => {
                 return Err(format!(
-                    "exhibit config YAML: key {key:?} resolved to a BOOLEAN — YAML reads bare \
+                    "exhibit config YAML: key {key:?} resolved to a boolean — YAML reads bare \
                      true/false as booleans, not as the text \"true\"/\"false\". Quote the value \
                      if you meant a string"
                 ))
@@ -484,59 +336,42 @@ pub fn parse_flat_yaml(text: &str) -> Result<Vec<(String, Value)>, String> {
 }
 
 /// Refuse a document that declares an anchor (`&name`) or uses an alias
-/// (`*name`), BEFORE it is loaded.
+/// (`*name`), before it is loaded.
 ///
-/// Must happen at the event level, because by the time `YamlLoader` hands back
-/// a tree the aliases are gone: it resolves `*name` to a *copy* of the anchored
-/// node, so a config using them arrives looking exactly like one that spelled
-/// the value out. [`Yaml::Alias`] therefore never appears in a loaded document,
-/// and the `Alias` arm in [`yaml_type_name`] was unreachable — this function is
-/// what makes that documented refusal real. (Found 2026-08-17 by driving the
-/// classic YAML footguns through the shipped parser rather than reasoning about
-/// them: `note: &a hello` / `venue: *a` was silently ACCEPTED, with `venue`
-/// carrying a value the file never assigns to it.)
+/// The check has to run at the event level: `YamlLoader` resolves `*name` into
+/// a copy of the anchored node, so by the time it returns a tree the alias is
+/// indistinguishable from a spelled-out value and [`Yaml::Alias`] never appears
+/// in a loaded document. An anchor with no alias is refused as well, so the
+/// refusal does not depend on how far the operator got.
 ///
-/// Refused for the reason the whole subset exists: **a config must not mean
-/// something different from what it appears to say, and must not mean something
-/// different depending on which extension it was saved under.** JSON has no
-/// anchors, so a `.yaml` file using them could not be expressed as the `.json`
-/// form of the same config — which is this module's stated test for whether a
-/// YAML feature belongs in the subset.
-///
-/// It also removes the one unbounded cost in this parser. Alias expansion is
-/// what makes "billion laughs" possible: nested aliases expand exponentially
-/// during LOADING, before any of this crate's node-type checks can run. The
-/// exposure here is small (a root-owned local file on a device) — but a player
-/// whose entire design is refusing to guess should not have a startup path that
-/// can be made to allocate without bound by a config typo.
+/// A config that means something other than what it says is the failure this
+/// subset exists to prevent, and alias expansion is also the one unbounded
+/// allocation on the startup path.
+/// See docs/design/exhibit-config.md#file-format.
 fn refuse_anchors_and_aliases(text: &str) -> Result<(), String> {
     let mut parser = yaml_rust2::parser::Parser::new_from_str(text);
     loop {
-        // A syntax error is not this function's business -- return Ok and let
-        // YamlLoader produce the real, marked parse error a line later, so the
-        // operator gets one good message instead of two half-ones.
+        // A syntax error belongs to YamlLoader: return Ok and let it produce
+        // the marked parse error a line later, so the operator gets one
+        // message rather than two partial ones.
         let Ok((event, _marker)) = parser.next_token() else {
             return Ok(());
         };
-        let anchor_id = match &event {
-            Event::Alias(_) => {
-                return Err(
+        let anchor_id =
+            match &event {
+                Event::Alias(_) => return Err(
                     "exhibit config YAML: uses an alias (`*name`), which this format refuses. An \
                      alias makes the file mean something it does not say -- the loader replaces \
                      it with a copy of the anchored value -- and it has no JSON equivalent, so \
                      the same config could not be written in the .json form. Write the value out."
                         .into(),
-                )
-            }
-            Event::Scalar(_, _, id, _) => *id,
-            Event::MappingStart(id, _) | Event::SequenceStart(id, _) => *id,
-            Event::StreamEnd => return Ok(()),
-            _ => 0,
-        };
-        // Anchor ids start at 1; 0 means "no anchor". An anchor with no alias
-        // is harmless in itself, but it is the half of the feature that makes
-        // the other half possible, and leaving it accepted would mean the
-        // refusal above depends on how far the operator got.
+                ),
+                Event::Scalar(_, _, id, _) => *id,
+                Event::MappingStart(id, _) | Event::SequenceStart(id, _) => *id,
+                Event::StreamEnd => return Ok(()),
+                _ => 0,
+            };
+        // Anchor ids start at 1; 0 means "no anchor".
         if anchor_id > 0 {
             return Err(
                 "exhibit config YAML: declares an anchor (`&name`), which this format refuses. \
@@ -548,13 +383,12 @@ fn refuse_anchors_and_aliases(text: &str) -> Result<(), String> {
     }
 }
 
-/// Name a `Yaml` node's kind for an error message, in the vocabulary an
-/// operator editing YAML would recognise — not the Rust variant name.
+/// Name a `Yaml` node's kind for an error message, in the words an operator
+/// editing YAML would recognise.
 ///
-/// Returns the noun WITHOUT an article, so call sites choose their own
-/// ("top level is a list" vs "has a list value"). An earlier revision baked
-/// "a " into these and produced "has a a nested mapping value" at one of the
-/// three call sites.
+/// Returns the noun without an article, so each call site supplies its own
+/// ("top level is a list", "has a nested mapping value"). Adding an article
+/// here would double it at the call sites that already write one.
 fn yaml_type_name(y: &Yaml) -> &'static str {
     match y {
         Yaml::Real(_) => "decimal number (this format takes integers only)",
@@ -563,10 +397,9 @@ fn yaml_type_name(y: &Yaml) -> &'static str {
         Yaml::Boolean(_) => "boolean",
         Yaml::Array(_) => "list",
         Yaml::Hash(_) => "nested mapping",
-        // Unreachable in a loaded document -- see refuse_anchors_and_aliases,
-        // which rejects both halves of the feature before the load. Kept so
-        // the match stays exhaustive without a catch-all that would silently
-        // absorb a future variant.
+        // Unreachable in a loaded document: refuse_anchors_and_aliases rejects
+        // both halves of the feature before the load. Kept so the match stays
+        // exhaustive without a catch-all that would absorb a future variant.
         Yaml::Alias(_) => "alias (`*anchor`)",
         Yaml::Null => "null (an empty value)",
         Yaml::BadValue => "unreadable value",
@@ -575,11 +408,10 @@ fn yaml_type_name(y: &Yaml) -> &'static str {
 
 /// Does `p` exist, distinguishing "not there" from "cannot tell"?
 ///
-/// `Path::exists()` would be one line, but it maps EVERY error to `false` —
-/// including EACCES on a parent directory. That is the same misreport the F6
-/// review already caught once on the read path (an unreadable config
-/// producing "create this file" for a file the operator can see exists), and
-/// the convenient call would quietly reintroduce it.
+/// `Path::exists()` would be one line, but it maps every error to `false`,
+/// including a permission error on a parent directory. That reports an
+/// unreadable config as a missing one and tells the operator to create a file
+/// they can see. See docs/design/startup-checks.md#message-rules.
 fn config_exists(p: &str) -> Result<bool, String> {
     match std::fs::metadata(p) {
         Ok(_) => Ok(true),
@@ -593,33 +425,28 @@ fn config_exists(p: &str) -> Result<bool, String> {
 }
 
 /// Locate, read and parse the exhibit config, returning it with the path it
-/// actually came from. `Ok(None)` means no config exists.
+/// came from. `Ok(None)` means no config exists.
 ///
-/// **The one function in this module that touches the filesystem**, and it
-/// earns the exception: WHICH FILE IS THE CONFIG is a policy, and both
-/// binaries that answer it — `dexd`, which enforces the config, and
-/// `dex-exhibit-apply`, which reconciles the boot cmdline *to* the config —
-/// must answer it identically. Two copies of this logic would drift, and the
-/// specific way they would drift is that the apply tool writes a cmdline for
-/// one file while the player reads another: F6's own failure mode, produced by
-/// F6's own implementation. (The module's testability rule is about libmpv and
-/// real DRM, not about `stat` — `defaults` is injectable precisely so this is
-/// testable against a temp directory.)
+/// The one function in this module that touches the filesystem, because which
+/// file is the config is a policy that dexd and `dex-exhibit-apply` must answer
+/// identically: two copies of it would drift, and the apply tool would then
+/// reconcile the kernel cmdline against a file the player does not read.
+/// `defaults` is injectable, so the policy stays testable against a temp
+/// directory.
 ///
-/// `Ok(None)` is deliberately NOT an error: [`resolve_display`] is the single
-/// place that states the "no exhibit config" refusal, mirroring how
-/// `sidecar::resolve_fps` states the analogous "no sidecar" one. Every OTHER
-/// failure is stated here, because each is a distinct operational fact with a
-/// distinct repair.
+/// `Ok(None)` is not an error: [`resolve_display`] states the "no exhibit
+/// config" refusal, in one place. Every other failure is stated here, because
+/// each is a distinct operational fact with a distinct repair.
+/// See docs/design/exhibit-config.md#config-location.
 pub fn load_exhibit_config(
     override_path: Option<&str>,
     defaults: &[&str],
 ) -> Result<Option<(ExhibitConfig, String)>, String> {
     let path = match override_path {
-        // An EXPLICITLY NAMED file that is not there is not the same fact as
-        // "no config was ever created", and must not borrow the latter's
-        // message: "create /opt/dex/exhibit.yaml" is actively wrong advice for
-        // an operator who just told us to read something else.
+        // A named file that is not there is a different fact from "no config
+        // was ever created", and must not borrow that message: "create
+        // /opt/dex/exhibit.yaml" is wrong advice for an operator who named a
+        // different path.
         Some(p) => {
             if !config_exists(p)? {
                 return Err(format!(
@@ -658,8 +485,8 @@ pub fn load_exhibit_config(
 /// A parsed, validated exhibit config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExhibitConfig {
-    /// WHICH artwork this exhibit plays. Optional in the file, but something
-    /// must supply it -- see [`resolve_asset`].
+    /// The video this exhibit plays. Optional in the file, but something must
+    /// name it — see [`resolve_asset`].
     pub asset: Option<String>,
     pub display_mode: String,
     pub kms_force: String,
@@ -671,13 +498,11 @@ pub struct ExhibitConfig {
 
 impl ExhibitConfig {
     /// Parse and validate an exhibit config, with `format` deciding the
-    /// parser. Fail-closed, same theory as the F3 sidecar: an unparseable
-    /// exhibit config and a missing one are the same operational fact — both
-    /// refuse rather than run on a display nobody stated.
+    /// parser. An unparseable config and a missing one lead to the same place:
+    /// dexd refuses to start rather than run on a display nobody stated.
     ///
     /// Callers get `format` from [`ConfigFormat::from_path`], never from the
-    /// bytes: see that type's docs for why sniffing would be wrong even though
-    /// it would always work.
+    /// bytes — see that type for why.
     pub fn parse(text: &str, format: ConfigFormat) -> Result<ExhibitConfig, String> {
         match format {
             ConfigFormat::Json => Self::from_json(text),
@@ -685,27 +510,24 @@ impl ExhibitConfig {
         }
     }
 
-    /// Parse and validate an exhibit config's **strict JSON** text.
+    /// Parse and validate an exhibit config's strict JSON text.
     pub fn from_json(text: &str) -> Result<ExhibitConfig, String> {
         Self::from_pairs(parse_flat_json(text).map_err(|e| format!("exhibit config JSON: {e}"))?)
     }
 
-    /// Parse and validate an exhibit config's **YAML** text.
+    /// Parse and validate an exhibit config's YAML text.
     pub fn from_yaml(text: &str) -> Result<ExhibitConfig, String> {
         Self::from_pairs(parse_flat_yaml(text)?)
     }
 
-    /// Map a parsed flat key/value tree onto the struct, and validate it.
+    /// Map a parsed flat key/value list onto the struct, and validate it.
     ///
-    /// **This is the whole schema, and both formats reach it unchanged.** The
-    /// two parsers above differ only in how text becomes `kv`; every key name,
-    /// default, grammar check and error message lives here exactly once, so a
-    /// `.json` and a `.yaml` file expressing the same config cannot diverge in
-    /// meaning or in what they refuse.
-    ///
-    /// UNLIKE the sidecar, unknown keys are refused (module docs above) —
-    /// this is the one place this parser's contract deliberately differs
-    /// from `Sidecar::from_json`'s.
+    /// This is the whole schema, and both formats reach it unchanged: every key
+    /// name, default, grammar check and message lives here once, so a `.json`
+    /// and a `.yaml` file expressing the same config cannot differ in meaning
+    /// or in what they refuse. Unknown keys are refused here, which is where
+    /// this parser's contract departs from `Sidecar::from_json`'s.
+    /// See docs/design/exhibit-config.md#config-keys.
     fn from_pairs(kv: Vec<(String, Value)>) -> Result<ExhibitConfig, String> {
         let mut asset = None;
         let mut display_mode = None;
@@ -746,9 +568,10 @@ impl ExhibitConfig {
                 }
                 (other, _) => {
                     return Err(format!(
-                        "exhibit config: unknown key {other:?} (strict schema, unlike the \
-                         sidecar — known keys: asset, display_mode, kms_force, connector, \
-                         display, venue, note; a typo here must not silently drop a force)"
+                        "exhibit config: unknown key {other:?} -- known keys: asset, \
+                         display_mode, kms_force, connector, display, venue, note. A \
+                         misspelled key would otherwise be ignored, dropping the setting it \
+                         was meant to make"
                     ))
                 }
             }
@@ -795,11 +618,14 @@ impl ExhibitConfig {
     }
 }
 
-/// Where a bound display config came from: the exhibit config, or the bench
-/// escape hatch (`--test-rig-no-sidecar` [`--mode <M>`]).
+/// Where a bound display config came from: the exhibit config, or the test-rig
+/// flags (`--test-rig-no-sidecar` with an optional `--mode <M>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplaySource {
+    /// The exhibit config — how a deployed player states its display.
     Config,
+    /// The test-rig flags (`--test-rig-no-sidecar` with an optional
+    /// `--mode <M>`). Never how a show runs.
     Bench,
 }
 
@@ -815,19 +641,19 @@ pub struct ResolvedDisplay {
 
 /// Decide the display binding, mirroring `sidecar::resolve_fps`'s table.
 ///
-/// | config | `--mode` | bench | result |
+/// | config | `--mode` | test rig | result |
 /// |---|---|---|---|
 /// | present | absent | no | config binds |
 /// | present | == config | no | config binds (cross-check) |
 /// | present | != config | no | refuse, naming both |
 /// | absent | any | no | refuse: no exhibit config |
-/// | any | any | yes | CLI wins (`--mode` or `"auto"`); config ignored |
+/// | any | any | yes | the command line binds (`--mode`, or `"auto"`) |
 ///
-/// Under the bench flag the cmdline gate is ALSO skipped (main.rs), since a
-/// `~/bench` build runs on hand-managed boot state by definition — that is
-/// why this function reports `kms_force: "none"` and the default connector
-/// for the bench branch rather than anything derived from a config that is,
-/// by definition, not consulted.
+/// `--test-rig-no-sidecar` (test rig only) also skips the cmdline check in
+/// main.rs, since a test rig runs on hand-managed boot state. That is why this
+/// function reports `kms_force: "none"` and the default connector on that
+/// branch instead of anything taken from a config it does not consult.
+/// See docs/design/exhibit-config.md#display-mode.
 pub fn resolve_display(
     config: Option<&ExhibitConfig>,
     cli_mode: Option<&str>,
@@ -885,11 +711,11 @@ pub fn resolve_display(
 /// Where the asset path came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetSource {
-    /// The exhibit config's `asset` key — the deployment path.
+    /// The exhibit config's `asset` key — how a deployed player names its
+    /// video.
     Config,
-    /// A path given on the command line. Legitimate on a bench, and as a
-    /// one-off on a device without editing the exhibit config; never how a
-    /// show runs.
+    /// A path given on the command line: a test rig, or a one-off on a device
+    /// without editing the exhibit config. Never how a show runs.
     Cli,
 }
 
@@ -900,41 +726,26 @@ pub struct ResolvedAsset {
     pub source: AssetSource,
 }
 
-/// Decide WHICH ASSET to play — the capability the exhibit file exists for.
+/// Decide which video to play. The table mirrors [`resolve_display`] and
+/// `sidecar::resolve_fps`:
 ///
-/// Before this, `dexd.service`'s `ExecStart` hardcoded
-/// `/opt/dex/loop.265`, so changing the artwork meant overwriting that one
-/// path or editing a systemd unit the package owns. Several assets could not
-/// sit in storage with the exhibit choosing one, which was Max's stated reason
-/// for wanting an exhibit file at all: an exhibit is a pairing of a venue with
-/// an artwork, and it could previously express only the venue half.
-///
-/// The table mirrors [`resolve_display`] and `sidecar::resolve_fps` exactly,
-/// because a third decision surface with its own idiom is how invariants get
-/// forgotten:
-///
-/// | config `asset` | CLI path | bench | result |
+/// | config `asset` | command-line path | test rig | result |
 /// |---|---|---|---|
 /// | present | absent | no | config binds |
 /// | present | == config | no | config binds (cross-check) |
 /// | present | != config | no | refuse, naming both |
-/// | absent | present | no | CLI binds (one-off, logged as such) |
-/// | absent | absent | no | refuse: nothing names an asset |
-/// | any | present | yes | CLI binds; config ignored |
-/// | any | absent | yes | refuse: bench must be explicit |
+/// | absent | present | no | the command line binds, logged as such |
+/// | absent | absent | no | refuse: nothing names a video |
+/// | any | present | yes | the command line binds; config ignored |
+/// | any | absent | yes | refuse: the test rig must be explicit |
 ///
-/// The row that could have gone the other way is the fifth. Defaulting to
-/// `/opt/dex/loop.265` would carry every existing deployment through untouched
-/// — and would be the worst guess in the program: it would silently play LAST
-/// season's artwork for an operator who edited the config but mistyped the
-/// key, with every metric green. Every other guess this crate refuses (frame
-/// rate, display mode) is refused for a weaker version of that reason. So:
-/// refuse, and name the exact line to add.
-///
-/// The config's `asset` is resolved against the directory the config file is
-/// in before any of this, so a bare `loop.265` beside `/opt/dex/exhibit.yaml`
-/// and `/opt/dex/loop.265` on the command line are the same file to the
-/// cross-check.
+/// Nothing defaults to `/opt/dex/loop.265`: a mistyped `asset` key would
+/// otherwise play last season's video with every metric healthy, so the row
+/// where nothing names a video refuses and prints the line to add. The
+/// config's `asset` is resolved against the config file's directory first, so
+/// a bare `loop.265` beside `/opt/dex/exhibit.yaml` and `/opt/dex/loop.265` on
+/// the command line are one file to the cross-check.
+/// See docs/design/exhibit-config.md#asset-resolution.
 pub fn resolve_asset(
     config: Option<&ExhibitConfig>,
     config_dir: &str,
@@ -954,9 +765,9 @@ pub fn resolve_asset(
             ),
         };
     }
-    // The config's asset is resolved BEFORE the cross-check, so a relative
+    // The config's asset is resolved before the cross-check, so a relative
     // `asset:` and the absolute path a technician types on the command line
-    // are compared as the same file rather than as two different strings.
+    // are compared as one file rather than as two strings.
     let config_asset = config
         .and_then(|c| c.asset.as_deref())
         .map(|a| asset_in_config_dir(config_dir, a));
@@ -987,7 +798,7 @@ pub fn resolve_asset(
     }
 }
 
-/// Find the `video=<connector>:<mode>` token for exactly `connector` inside a
+/// Find the `video=<connector>:<mode>` token that names `connector`, inside a
 /// kernel cmdline string (space-separated tokens, as `/proc/cmdline` and
 /// `cmdline.txt` both are). Other connectors' `video=` tokens, and every
 /// other kind of token, are ignored. Returns the `<mode>` half only.
@@ -999,15 +810,13 @@ pub fn cmdline_video_token(cmdline: &str, connector: &str) -> Option<String> {
     })
 }
 
-/// Find a CONNECTORLESS `video=` token (`video=WxH@R`, no `conn:` prefix) —
-/// the kernel's grammar also accepts this shape, and it forces ALL
-/// connectors. Neither this module's gate nor its reconciler can reason
-/// about one (which connector does it bind? how does the kernel arbitrate it
-/// against a per-connector token?), so callers REFUSE when one is present
-/// rather than reporting "no token" (the gate) or appending a second,
-/// overlapping force (the reconciler) — refusing beats guessing at kernel
-/// arbitration order for a token shape no dex install is supposed to carry.
-/// Returns the whole token, for the refusal message to name verbatim.
+/// Find a connectorless `video=` token (`video=WxH@R`, with no `conn:` prefix).
+///
+/// The kernel's grammar accepts this shape too, and it forces every connector.
+/// Neither [`check_cmdline_matches`] nor [`reconcile_cmdline`] can reason about
+/// one — which connector does it bind, and how would the kernel arbitrate it
+/// against a per-connector token? — so both refuse when one is present.
+/// Returns the whole token, for the refusal message to name.
 pub fn connectorless_video_token(cmdline: &str) -> Option<String> {
     cmdline.split_whitespace().find_map(|tok| {
         let rest = tok.strip_prefix("video=")?;
@@ -1015,26 +824,29 @@ pub fn connectorless_video_token(cmdline: &str) -> Option<String> {
     })
 }
 
-/// The gate that keeps the exhibit config and the KMS-layer `video=` token
-/// honest with each other (§3.3 of the design): an operator who edits one and
-/// forgets the other must be refused, loudly, naming what to run — not
-/// black-screen the gallery on whichever value the kernel happens to have
-/// booted with. `kms_force == "none"` means "expect NO token for this
-/// connector"; anything else means "expect this EXACT token".
-/// Every refusal names BOTH possible repairs, because this gate cannot know
-/// which side is stale: the config may be right and the cmdline leftover —
-/// but equally the cmdline may carry a force this venue deliberately needs
-/// (the Cam Link builds no 4K mode unforced) that a freshly installed
-/// default config simply does not know about yet. A message prescribing only
-/// `dex-exhibit-apply` in that second case would instruct the operator to
-/// DELETE the needed force, after which `display_mode=auto` silently plays
-/// at whatever the connector negotiates — the exact wrongness class this
-/// gate exists to close, reached by following its own instructions.
-pub fn check_cmdline_matches(cmdline: &str, connector: &str, kms_force: &str) -> Result<(), String> {
+/// Check that the exhibit config and the kernel cmdline's `video=` token agree.
+///
+/// `kms_force == "none"` means no token is expected for this connector;
+/// anything else means this exact token is expected. An operator who edits one
+/// and forgets the other is refused at the next start, instead of the display
+/// running on whatever mode the kernel booted with.
+///
+/// Every refusal names both repairs, because this check cannot tell which side
+/// is stale: the cmdline may be a leftover, or it may carry a force the venue
+/// needs that a freshly written config does not know about yet. Naming only
+/// `dex-exhibit-apply` in the second case would tell the operator to remove a
+/// force the display needs, after which `display_mode=auto` plays at whatever
+/// the connector negotiates.
+/// See docs/design/exhibit-config.md#kernel-cmdline.
+pub fn check_cmdline_matches(
+    cmdline: &str,
+    connector: &str,
+    kms_force: &str,
+) -> Result<(), String> {
     if let Some(tok) = connectorless_video_token(cmdline) {
         return Err(format!(
-            "the kernel cmdline carries a connectorless token {tok:?}, which forces ALL \
-             connectors -- this gate cannot reconcile it with the exhibit config's \
+            "the kernel cmdline carries a connectorless token {tok:?}, which forces all \
+             connectors -- this check cannot reconcile it with the exhibit config's \
              per-connector kms_force. Qualify it with a connector \
              (video={connector}:<mode>) or remove it from /boot/firmware/cmdline.txt, \
              then reboot"
@@ -1045,23 +857,23 @@ pub fn check_cmdline_matches(cmdline: &str, connector: &str, kms_force: &str) ->
         (DEFAULT_KMS_FORCE, None) => Ok(()),
         (DEFAULT_KMS_FORCE, Some(found)) => Err(format!(
             "exhibit config says kms_force=none for {connector}, but the kernel cmdline \
-             carries video={connector}:{found} -- EITHER the config is stale (a force this \
-             venue deliberately needs, e.g. a display that builds no 4K mode unforced: set \
+             carries video={connector}:{found} -- either the config is stale (a force this \
+             venue needs, e.g. a display that builds no 4K mode unforced: set \
              kms_force={found:?} and a matching display_mode in the exhibit config to \
-             keep it) OR the cmdline is (run 'sudo dex-exhibit-apply' and reboot to remove \
+             keep it) or the cmdline is (run 'sudo dex-exhibit-apply' and reboot to remove \
              the force)"
         )),
         (want, Some(found)) if want == found => Ok(()),
         (want, Some(found)) => Err(format!(
             "exhibit config says kms_force={want}, but the kernel cmdline carries \
-             video={connector}:{found} -- EITHER the config is stale (fix kms_force in \
-             the exhibit config to match the venue) OR the cmdline is (run 'sudo \
+             video={connector}:{found} -- either the config is stale (fix kms_force in \
+             the exhibit config to match the venue) or the cmdline is (run 'sudo \
              dex-exhibit-apply' and reboot)"
         )),
         (want, None) => Err(format!(
             "exhibit config says kms_force={want}, but the kernel cmdline carries no video= \
-             token for {connector} -- EITHER the config is stale (set kms_force=none in \
-             the exhibit config if this venue needs no force) OR the cmdline is (run \
+             token for {connector} -- either the config is stale (set kms_force=none in \
+             the exhibit config if this venue needs no force) or the cmdline is (run \
              'sudo dex-exhibit-apply' and reboot to add the token)"
         )),
     }
@@ -1076,35 +888,40 @@ pub fn mode_resolution(display_mode: &str) -> Option<&str> {
     display_mode.split_once('@').map(|(wh, _)| wh)
 }
 
-/// Does `modes_text` (the verbatim contents of
-/// `/sys/class/drm/card*-<connector>/modes` — one `WxH` per line, no refresh
-/// column) list `want_wh`? Pure over fixture text so the wrong-panel case
-/// (Dell asked for 2160) is testable without real DRM.
+/// Does `modes_text` — the verbatim contents of
+/// `/sys/class/drm/card*-<connector>/modes`, one `WxH` per line with no refresh
+/// column — list `want_wh`? Pure over fixture text, so a resolution the
+/// connected display cannot show is testable without real DRM.
 pub fn sysfs_modes_contains(modes_text: &str, want_wh: &str) -> bool {
     modes_text.lines().map(str::trim).any(|l| l == want_wh)
 }
 
-/// Rewrite a single-line `cmdline.txt`'s `video=<connector>:...` token to
-/// match `kms_force`, preserving every other token, its position, and every
-/// OTHER connector's `video=` token untouched. `kms_force == "none"` means
-/// "remove the token for this connector, if present". Idempotent: running
-/// this twice on its own output is a no-op, because a token that already
-/// exists is replaced in place rather than moved to the end — the second run
-/// finds the same token already correct and changes nothing.
-pub fn reconcile_cmdline(cmdline_text: &str, connector: &str, kms_force: &str) -> Result<String, String> {
+/// Rewrite a single-line `cmdline.txt` so its `video=<connector>:...` token
+/// matches `kms_force`, leaving every other token, its position and every other
+/// connector's `video=` token untouched. `kms_force == "none"` removes the
+/// token for this connector. Idempotent: an existing token is replaced in
+/// place, so a second run finds it already correct and changes nothing.
+/// See docs/design/exhibit-config.md#kernel-cmdline.
+pub fn reconcile_cmdline(
+    cmdline_text: &str,
+    connector: &str,
+    kms_force: &str,
+) -> Result<String, String> {
     let trimmed = cmdline_text.trim_end_matches(['\n', '\r']);
     if trimmed.contains('\n') || trimmed.contains('\r') {
         return Err("cmdline.txt must be a single line".into());
     }
     if !is_valid_kms_force(kms_force) {
-        return Err(format!("reconcile_cmdline: invalid kms_force {kms_force:?}"));
+        return Err(format!(
+            "reconcile_cmdline: invalid kms_force {kms_force:?}"
+        ));
     }
-    // A connectorless `video=` token forces ALL connectors; rewriting around
-    // it would leave two overlapping forces for the kernel to arbitrate --
-    // see connectorless_video_token's doc for why refusing beats guessing.
+    // A connectorless `video=` token forces every connector; rewriting around
+    // it would leave two overlapping forces for the kernel to arbitrate. See
+    // connectorless_video_token.
     if let Some(tok) = connectorless_video_token(trimmed) {
         return Err(format!(
-            "cmdline.txt carries a connectorless token {tok:?}, which forces ALL connectors \
+            "cmdline.txt carries a connectorless token {tok:?}, which forces all connectors \
              -- refusing to reconcile per-connector video={connector}:... tokens around it \
              (the kernel would arbitrate two overlapping forces). Qualify or remove {tok:?} \
              by hand first"
@@ -1161,10 +978,9 @@ mod tests {
             "auto",
             "3840x2160@30",
             "1x1@1",
-            // Leading zeros are accepted -- positive_int only requires "all
-            // digits, at least one nonzero", the same rule sidecar::is_valid_fps
-            // applies to its numerator/denominator. Documented here rather than
-            // left to be discovered by a future reader of the bad list below.
+            // Leading zeros are accepted: positive_int asks only for digits
+            // with at least one nonzero, the same rule sidecar::is_valid_fps
+            // applies to its numerator and denominator.
             "03840x2160@30",
         ] {
             assert!(is_valid_display_mode(ok), "{ok} should be valid");
@@ -1181,10 +997,9 @@ mod tests {
             "3840x2160@-30", // negative R
             "3840x2160@30D", // D suffix is a kms_force thing, not display_mode
             "auto@30",
-            // Bench-disproven forms an earlier revision accepted (dexpi4,
-            // mpv 0.40, 2026-08-17 -- see is_valid_display_mode's docs):
-            // rational fails mpv's option parser (-7, guaranteed restart
-            // loop), decimal silently rounds to the integer vrefresh.
+            // A rational refresh fails mpv's option parser, which leaves the
+            // service restarting; a decimal one plays the rounded integer
+            // mode. See is_valid_display_mode.
             "3840x2160@30000/1001",
             "2560x1440@59.95",
         ] {
@@ -1200,11 +1015,11 @@ mod tests {
         for bad in [
             "",
             "None",
-            "auto",           // auto is a display_mode concept, not kms_force
+            "auto",            // auto is a display_mode concept, not kms_force
             "3840x2160@29.97", // fractional refresh: kernel video= grammar has none
             "3840x2160",
             "3840x2160@",
-            "3840x2160@30d",  // lowercase d is not the force suffix
+            "3840x2160@30d", // lowercase d is not the force suffix
             "3840x2160@30DD",
             "3840x2160@0",
             "3840x2160@0D",
@@ -1228,15 +1043,15 @@ mod tests {
     #[test]
     fn parses_the_canonical_config() {
         let text = r#"{"display_mode":"3840x2160@30","kms_force":"3840x2160@30",
-                        "connector":"HDMI-A-1","display":"Cam Link 4K",
-                        "venue":"bench","note":"see PLAN.md F6"}"#;
+                        "connector":"HDMI-A-1","display":"gallery panel",
+                        "venue":"east wall","note":"forced mode, see the config"}"#;
         let c = ExhibitConfig::from_json(text).unwrap();
         assert_eq!(c.display_mode, "3840x2160@30");
         assert_eq!(c.kms_force, "3840x2160@30");
         assert_eq!(c.connector, "HDMI-A-1");
-        assert_eq!(c.display.as_deref(), Some("Cam Link 4K"));
-        assert_eq!(c.venue.as_deref(), Some("bench"));
-        assert_eq!(c.note.as_deref(), Some("see PLAN.md F6"));
+        assert_eq!(c.display.as_deref(), Some("gallery panel"));
+        assert_eq!(c.venue.as_deref(), Some("east wall"));
+        assert_eq!(c.note.as_deref(), Some("forced mode, see the config"));
     }
 
     #[test]
@@ -1249,17 +1064,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_keys_are_refused_unlike_the_sidecar() {
-        let e = ExhibitConfig::from_json(r#"{"display_mode":"auto","future_key":"x"}"#)
-            .unwrap_err();
+    fn unknown_keys_are_refused() {
+        let e =
+            ExhibitConfig::from_json(r#"{"display_mode":"auto","future_key":"x"}"#).unwrap_err();
         assert!(e.contains("unknown key") && e.contains("future_key"), "{e}");
     }
 
     #[test]
-    fn typo_in_kms_force_is_caught_not_silently_dropped() {
-        // The exact field scenario the strict-schema decision defends against:
-        // "kms_forse" (typo) must be a parse error, not an ignored key that
-        // leaves the intended force unset.
+    fn a_typo_in_kms_force_is_refused_as_an_unknown_key() {
+        // The reason unknown keys are refused: "kms_forse" must be a parse
+        // error, not an ignored key that leaves the force unset.
         let e = ExhibitConfig::from_json(
             r#"{"display_mode":"3840x2160@30","kms_forse":"3840x2160@30"}"#,
         )
@@ -1276,14 +1090,8 @@ mod tests {
     #[test]
     fn invalid_display_mode_and_kms_force_and_connector_are_refused() {
         assert!(ExhibitConfig::from_json(r#"{"display_mode":"nope"}"#).is_err());
-        assert!(ExhibitConfig::from_json(
-            r#"{"display_mode":"auto","kms_force":"nope"}"#
-        )
-        .is_err());
-        assert!(ExhibitConfig::from_json(
-            r#"{"display_mode":"auto","connector":"DP-1"}"#
-        )
-        .is_err());
+        assert!(ExhibitConfig::from_json(r#"{"display_mode":"auto","kms_force":"nope"}"#).is_err());
+        assert!(ExhibitConfig::from_json(r#"{"display_mode":"auto","connector":"DP-1"}"#).is_err());
     }
 
     #[test]
@@ -1294,10 +1102,9 @@ mod tests {
 
     #[test]
     fn duplicate_keys_are_refused_inherited_from_the_sidecar_grammar() {
-        let e = ExhibitConfig::from_json(
-            r#"{"display_mode":"auto","display_mode":"3840x2160@30"}"#,
-        )
-        .unwrap_err();
+        let e =
+            ExhibitConfig::from_json(r#"{"display_mode":"auto","display_mode":"3840x2160@30"}"#)
+                .unwrap_err();
         assert!(e.contains("duplicate"), "{e}");
     }
 
@@ -1324,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn deploy_path_takes_display_from_config() {
+    fn display_comes_from_the_exhibit_config() {
         let c = cfg("3840x2160@30", "3840x2160@30");
         let r = resolve_display(Some(&c), None, false).unwrap();
         assert_eq!(r.display_mode, "3840x2160@30");
@@ -1333,17 +1140,20 @@ mod tests {
     }
 
     #[test]
-    fn agreeing_cli_mode_allowed_disagreeing_refused_naming_both() {
+    fn an_agreeing_mode_is_allowed_and_a_disagreeing_one_is_refused() {
         let c = cfg("3840x2160@30", "none");
         assert!(resolve_display(Some(&c), Some("3840x2160@30"), false).is_ok());
         let e = resolve_display(Some(&c), Some("2560x1440@60"), false).unwrap_err();
-        assert!(e.contains("3840x2160@30") && e.contains("2560x1440@60"), "{e}");
+        assert!(
+            e.contains("3840x2160@30") && e.contains("2560x1440@60"),
+            "{e}"
+        );
     }
 
     /// The refusal names the file to create -- in the assets directory,
     /// beside the video -- and shows the two lines that file needs.
     #[test]
-    fn missing_config_is_refused_without_the_bench_flag() {
+    fn a_missing_exhibit_config_is_refused() {
         let e = resolve_display(None, Some("3840x2160@30"), false).unwrap_err();
         assert!(e.contains("exhibit config"), "{e}");
         assert!(
@@ -1358,9 +1168,9 @@ mod tests {
     }
 
     #[test]
-    fn bench_escape_hatch_ignores_config_entirely() {
+    fn the_test_rig_flag_ignores_the_exhibit_config() {
         let c = cfg("2560x1440@60", "2560x1440@60");
-        // CLI --mode wins even though it contradicts the config.
+        // --mode on the command line wins even against the config.
         let r = resolve_display(Some(&c), Some("3840x2160@30"), true).unwrap();
         assert_eq!(r.display_mode, "3840x2160@30");
         assert_eq!(r.source, DisplaySource::Bench);
@@ -1368,17 +1178,16 @@ mod tests {
     }
 
     #[test]
-    fn bench_with_no_mode_defaults_to_auto_unlike_fps() {
-        // Unlike resolve_fps, which REQUIRES --fps under the bench flag,
-        // resolve_display treats a missing --mode as "auto" -- see the design
-        // table: "no --mode means auto".
+    fn on_a_test_rig_a_missing_mode_means_auto() {
+        // resolve_fps requires --fps under the same flag; resolve_display
+        // takes a missing --mode as "auto". See its table.
         let r = resolve_display(None, None, true).unwrap();
         assert_eq!(r.display_mode, "auto");
         assert_eq!(r.source, DisplaySource::Bench);
     }
 
     #[test]
-    fn bench_with_invalid_mode_is_refused() {
+    fn an_invalid_mode_on_a_test_rig_is_refused() {
         let e = resolve_display(None, Some("banana"), true).unwrap_err();
         assert!(e.contains("banana"), "{e}");
     }
@@ -1400,66 +1209,65 @@ mod tests {
     }
 
     #[test]
-    fn cmdline_gate_none_expected_none_present_matches() {
+    fn cmdline_check_passes_when_no_token_is_expected_and_none_is_present() {
         assert!(check_cmdline_matches("console=ttyS0 quiet", "HDMI-A-1", "none").is_ok());
     }
 
     #[test]
-    fn cmdline_gate_none_expected_but_present_refuses_naming_the_fix() {
-        let e = check_cmdline_matches(
-            "video=HDMI-A-1:3840x2160@30",
-            "HDMI-A-1",
-            "none",
-        )
-        .unwrap_err();
-        assert!(e.contains("dex-exhibit-apply") && e.contains("3840x2160@30"), "{e}");
+    fn cmdline_check_refuses_an_unexpected_token_and_names_the_fix() {
+        let e =
+            check_cmdline_matches("video=HDMI-A-1:3840x2160@30", "HDMI-A-1", "none").unwrap_err();
+        assert!(
+            e.contains("dex-exhibit-apply") && e.contains("3840x2160@30"),
+            "{e}"
+        );
     }
 
     #[test]
-    fn cmdline_gate_wrong_mode_refuses_naming_both() {
-        let e = check_cmdline_matches(
-            "video=HDMI-A-1:3840x2160@30",
-            "HDMI-A-1",
-            "2560x1440@60",
-        )
-        .unwrap_err();
-        assert!(e.contains("2560x1440@60") && e.contains("3840x2160@30"), "{e}");
+    fn cmdline_check_refuses_a_wrong_mode_naming_both() {
+        let e = check_cmdline_matches("video=HDMI-A-1:3840x2160@30", "HDMI-A-1", "2560x1440@60")
+            .unwrap_err();
+        assert!(
+            e.contains("2560x1440@60") && e.contains("3840x2160@30"),
+            "{e}"
+        );
     }
 
     #[test]
-    fn cmdline_gate_wrong_connector_is_treated_as_absent() {
-        // The configured connector's token is missing even though a DIFFERENT
-        // connector's token is present -- must refuse "no token", not match.
-        let e = check_cmdline_matches(
-            "video=HDMI-A-2:1920x1080@60",
-            "HDMI-A-1",
-            "3840x2160@30",
-        )
-        .unwrap_err();
+    fn cmdline_check_treats_another_connectors_token_as_absent() {
+        // The configured connector has no token, though another connector
+        // does: the check must refuse, naming the missing token.
+        let e = check_cmdline_matches("video=HDMI-A-2:1920x1080@60", "HDMI-A-1", "3840x2160@30")
+            .unwrap_err();
         assert!(e.contains("no video=") || e.contains("carries no"), "{e}");
     }
 
     #[test]
-    fn cmdline_gate_refuses_a_connectorless_video_token() {
-        // Kernel grammar also accepts `video=WxH@R` with no connector, which
-        // forces ALL connectors. Previously invisible to the gate (reported
-        // as "no video= token") -- it must refuse, naming the token.
+    fn cmdline_check_refuses_a_connectorless_video_token() {
+        // The kernel grammar also accepts `video=WxH@R` with no connector,
+        // which forces every connector; the check refuses and names it.
         let e = check_cmdline_matches(
             "console=ttyS0 video=1920x1080@60 quiet",
             "HDMI-A-1",
             "3840x2160@30",
         )
         .unwrap_err();
-        assert!(e.contains("video=1920x1080@60") && e.contains("ALL connectors"), "{e}");
-        // Even when the per-connector expectation is "none": the global
-        // force still binds our connector, so "matches" would be a lie.
+        assert!(
+            e.contains("video=1920x1080@60") && e.contains("all connectors"),
+            "{e}"
+        );
+        // Also when the per-connector expectation is "none": the global
+        // force still binds this connector, so a pass would be wrong.
         let e = check_cmdline_matches("video=1920x1080@60", "HDMI-A-1", "none").unwrap_err();
         assert!(e.contains("connectorless"), "{e}");
     }
 
     #[test]
     fn connectorless_video_token_ignores_per_connector_tokens() {
-        assert_eq!(connectorless_video_token("video=HDMI-A-1:3840x2160@30 quiet"), None);
+        assert_eq!(
+            connectorless_video_token("video=HDMI-A-1:3840x2160@30 quiet"),
+            None
+        );
         assert_eq!(
             connectorless_video_token("quiet video=1024x768"),
             Some("video=1024x768".to_string())
@@ -1468,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn cmdline_gate_expected_present_matches() {
+    fn cmdline_check_passes_when_the_expected_token_is_present() {
         assert!(check_cmdline_matches(
             "root=/dev/mmcblk0p2 video=HDMI-A-1:3840x2160@30D rootwait",
             "HDMI-A-1",
@@ -1556,17 +1364,13 @@ mod tests {
 
     #[test]
     fn reconcile_is_idempotent() {
-        let once = reconcile_cmdline(
-            "console=ttyS0 rootwait",
-            "HDMI-A-1",
-            "3840x2160@30D",
-        )
-        .unwrap();
+        let once =
+            reconcile_cmdline("console=ttyS0 rootwait", "HDMI-A-1", "3840x2160@30D").unwrap();
         let twice = reconcile_cmdline(&once, "HDMI-A-1", "3840x2160@30D").unwrap();
         assert_eq!(once, twice);
 
-        // And the "no change" case: apply the SAME force that is already
-        // present -- dex-exhibit-apply's real first-run-on-dexpi4 scenario.
+        // And the "no change" case: apply the force that is already present,
+        // which is what dex-exhibit-apply does on a device already set up.
         let already = "console=ttyS0 video=HDMI-A-1:3840x2160@30 rootwait";
         let out = reconcile_cmdline(already, "HDMI-A-1", "3840x2160@30").unwrap();
         assert_eq!(out, already);
@@ -1574,11 +1378,15 @@ mod tests {
 
     #[test]
     fn reconcile_refuses_a_connectorless_video_token() {
-        // Previously the reconciler would leave the global force in place and
-        // append its own per-connector token -- two overlapping forces for
-        // the kernel to arbitrate. Refuse instead, naming the token.
-        let e = reconcile_cmdline("console=ttyS0 video=1024x768 rootwait", "HDMI-A-1", "3840x2160@30")
-            .unwrap_err();
+        // Appending a per-connector token around a global force would leave
+        // the kernel two overlapping forces to arbitrate. Refuse, and name
+        // the token.
+        let e = reconcile_cmdline(
+            "console=ttyS0 video=1024x768 rootwait",
+            "HDMI-A-1",
+            "3840x2160@30",
+        )
+        .unwrap_err();
         assert!(e.contains("video=1024x768") && e.contains("by hand"), "{e}");
         // Same refusal on the removal direction (kms_force=none).
         assert!(reconcile_cmdline("video=1024x768", "HDMI-A-1", "none").is_err());
@@ -1617,7 +1425,7 @@ mod tests {
     // ---- the format dispatch -------------------------------------------
     //
     // The rule under test is "the extension decides", so these check the
-    // DISPATCH, not the parsers. The parsers get their own sections below.
+    // dispatch. The parsers get their own sections below.
 
     #[test]
     fn extension_decides_the_parser() {
@@ -1650,9 +1458,9 @@ mod tests {
     #[test]
     fn unknown_or_absent_extension_refuses_rather_than_defaulting() {
         for p in [
-            "/opt/dex/exhibit",     // no extension at all
-            "/opt/dex/exhibit.txt", // an extension, but not one of ours
-            "/opt/dex/.json",       // a DOTFILE named .json -- no extension
+            "/opt/dex/exhibit",          // no extension at all
+            "/opt/dex/exhibit.txt",      // an extension, but not one dexd reads
+            "/opt/dex/.json",            // a dotfile named .json: no extension
             "/opt/dex/exhibit.json.bak", // the backup, not the config
         ] {
             let e = ConfigFormat::from_path(p).unwrap_err();
@@ -1660,10 +1468,10 @@ mod tests {
         }
     }
 
-    /// THE point of the whole dispatch: YAML syntax inside a file named
-    /// `.json` must be refused, even though a YAML parser would accept it
-    /// happily. A `.json` file that only `dexd` can read is a broken
-    /// promise to `jq` and everything else downstream.
+    /// What the dispatch is for: YAML syntax inside a file named `.json` is
+    /// refused, even though a YAML parser would accept it. A `.json` file that
+    /// only `dexd` can read cannot be read by `jq`, or by anything else that
+    /// picks its parser from the extension.
     #[test]
     fn yaml_syntax_in_a_json_file_is_refused() {
         let yaml_text = "display_mode: 3840x2160@30\nkms_force: none\n";
@@ -1673,9 +1481,9 @@ mod tests {
         assert!(ExhibitConfig::parse(yaml_text, ConfigFormat::Json).is_err());
     }
 
-    /// The converse, which must NOT be an error: JSON is a subset of YAML, so
-    /// a machine that writes strict JSON into a `.yaml` file still parses.
-    /// This is what lets an ingest tool emit one format for both names.
+    /// The converse parses: JSON is a subset of YAML, so strict JSON written
+    /// into a `.yaml` file is still read, which lets one tool emit one format
+    /// for both names.
     #[test]
     fn json_text_parses_under_the_yaml_parser_too() {
         let json_text = r#"{"display_mode":"3840x2160@30","kms_force":"none"}"#;
@@ -1684,15 +1492,14 @@ mod tests {
         assert_eq!(as_json, as_yaml);
     }
 
-    /// Equivalence: the same config in either format produces the same
-    /// struct, byte for byte. This is the test that would fail first if the
-    /// two paths ever stopped sharing `from_pairs`.
+    /// The same config in either format produces the same struct. This is the
+    /// test that fails first if the two paths stop sharing `from_pairs`.
     #[test]
     fn both_formats_agree_on_a_full_config() {
         let json = ExhibitConfig::from_json(
             r#"{"display_mode":"3840x2160@30","kms_force":"3840x2160@30D",
-                "connector":"HDMI-A-2","display":"Elgato Cam Link 4K",
-                "venue":"gallery east wall","note":"vc4 builds no 4K mode unforced"}"#,
+                "connector":"HDMI-A-2","display":"gallery panel",
+                "venue":"gallery east wall","note":"builds no 4K mode unforced"}"#,
         )
         .unwrap();
         let yaml = ExhibitConfig::from_yaml(
@@ -1700,17 +1507,16 @@ mod tests {
              display_mode: 3840x2160@30\n\
              kms_force: 3840x2160@30D    # trailing D: force `connected`\n\
              connector: HDMI-A-2\n\
-             display: Elgato Cam Link 4K\n\
+             display: gallery panel\n\
              venue: gallery east wall\n\
-             note: vc4 builds no 4K mode unforced\n",
+             note: builds no 4K mode unforced\n",
         )
         .unwrap();
         assert_eq!(json, yaml);
     }
 
-    /// Validation is shared, so a YAML file gets the JSON path's messages --
-    /// including the strict-schema unknown-key refusal that a typo'd
-    /// `kms_forse` must produce in either format.
+    /// Validation is shared, so a YAML file gets the JSON path's messages,
+    /// including the unknown-key refusal for a misspelled `kms_forse`.
     #[test]
     fn yaml_inherits_the_strict_schema_and_the_grammars() {
         let e = ExhibitConfig::from_yaml("display_mode: auto\nkms_forse: none\n").unwrap_err();
@@ -1725,81 +1531,72 @@ mod tests {
 
     // ---- the YAML subset ------------------------------------------------
 
-    /// yaml-rust2's loader errors on a duplicate key rather than last-wins.
-    /// That is the ONE rule the JSON side needed a hand-written serde visitor
-    /// for, so it is load-bearing that the YAML side gets it for free --
-    /// pinned by test, because it is a property of the dependency and would
-    /// otherwise silently regress on a version bump.
+    /// yaml-rust2's loader errors on a duplicate key instead of taking the
+    /// last one. The JSON side needs a hand-written serde visitor for the same
+    /// rule, so this is locked in by a test: it is a property of the
+    /// dependency and could change on a version bump.
     #[test]
     fn yaml_duplicate_key_refused() {
-        let e =
-            ExhibitConfig::from_yaml("display_mode: auto\ndisplay_mode: 3840x2160@30\n").unwrap_err();
+        let e = ExhibitConfig::from_yaml("display_mode: auto\ndisplay_mode: 3840x2160@30\n")
+            .unwrap_err();
         assert!(e.contains("duplicate"), "{e}");
     }
 
     /// A bare `true`/`false` is a boolean, refused with the quoting fix.
     #[test]
     fn yaml_bare_true_false_are_booleans_and_refused() {
-        for text in [
-            "display_mode: true\n",
-            "display_mode: auto\nnote: FALSE\n",
-        ] {
+        for text in ["display_mode: true\n", "display_mode: auto\nnote: FALSE\n"] {
             let e = ExhibitConfig::from_yaml(text).unwrap_err();
-            assert!(e.contains("BOOLEAN"), "{text:?}: {e}");
+            assert!(e.contains("resolved to a boolean"), "{text:?}: {e}");
             assert!(e.contains("Quote the value"), "{text:?}: {e}");
         }
     }
 
-    /// The OTHER half, and the one that is easy to get wrong from memory:
-    /// yaml-rust2 0.11 resolves close to the YAML **1.2 core schema**, so the
-    /// "Norway problem" does NOT apply -- `no` stays the string `"no"` and is
-    /// refused by the kms_force GRAMMAR, not by the boolean branch. Asserted
-    /// on the message so that a future version adopting 1.1 resolution (which
-    /// would make `kms_force: no` mean `false`) fails here rather than
-    /// changing what a deployed config means.
+    /// yaml-rust2 0.11 resolves close to the YAML 1.2 core schema, where only
+    /// true and false are booleans: `no` stays the string `"no"` and is refused
+    /// by the kms_force grammar. The assertion reads the message, so a version
+    /// that adopted YAML 1.1 resolution — under which `kms_force: no` would
+    /// mean false — fails here instead of changing what a deployed config
+    /// means.
     #[test]
     fn yaml_bare_no_stays_a_string_under_the_1_2_core_schema() {
         let e = ExhibitConfig::from_yaml("display_mode: auto\nkms_force: no\n").unwrap_err();
         assert!(
             e.contains("invalid kms_force \"no\""),
-            "expected the grammar refusal for the STRING \"no\", not a boolean one: {e}"
+            "expected the grammar refusal for the string \"no\", not a boolean one: {e}"
         );
-        assert!(!e.contains("BOOLEAN"), "{e}");
+        assert!(!e.contains("resolved to a boolean"), "{e}");
         // ...and stating it properly is the fix.
         let ok = ExhibitConfig::from_yaml("display_mode: auto\nkms_force: none\n").unwrap();
         assert_eq!(ok.kms_force, "none");
     }
 
-    /// Where yaml-rust2 DEPARTS from the 1.2 core schema, pinned so the docs
-    /// cannot quietly become wrong: core lists `null | Null | NULL | ~ | empty`
-    /// as null, but this library's `from_str` matches only `""`, `"~"` and
-    /// `"null"` — case-sensitively. So the capitalised spellings arrive as
-    /// ordinary strings.
-    ///
-    /// Harmless here (only the informational keys could carry such a value,
-    /// and reading it literally is the friendlier of the two options), but
-    /// "it implements the core schema" is a nearly-true sentence a future
-    /// reader would rely on, and this is the test that keeps it honest.
+    /// Where yaml-rust2 departs from the YAML 1.2 core schema: core lists
+    /// `null | Null | NULL | ~ | empty` as null, while this library's
+    /// `from_str` matches only `""`, `"~"` and `"null"`, case-sensitively, so
+    /// the capitalised spellings arrive as ordinary strings. That is harmless
+    /// for this schema — only the informational keys could carry such a value
+    /// — but it is the kind of near-miss a reader would otherwise rely on.
     #[test]
     fn yaml_null_resolution_is_case_sensitive_unlike_the_1_2_core_schema() {
         for null_spelling in ["null", "~", ""] {
-            let e = ExhibitConfig::from_yaml(&format!("display_mode: auto\nnote: {null_spelling}\n"))
-                .unwrap_err();
+            let e =
+                ExhibitConfig::from_yaml(&format!("display_mode: auto\nnote: {null_spelling}\n"))
+                    .unwrap_err();
             assert!(e.contains("null"), "{null_spelling:?}: {e}");
         }
         for string_spelling in ["Null", "NULL"] {
-            let c = ExhibitConfig::from_yaml(&format!(
-                "display_mode: auto\nnote: {string_spelling}\n"
-            ))
-            .expect("core would call this null; yaml-rust2 does not");
+            let c =
+                ExhibitConfig::from_yaml(&format!("display_mode: auto\nnote: {string_spelling}\n"))
+                    .expect("core would call this null; yaml-rust2 does not");
             assert_eq!(c.note.as_deref(), Some(string_spelling));
         }
     }
 
-    /// Scalar resolution happens BEFORE this crate's subset check, so it stays
-    /// observable — and both formats must land in the same place. A bare
-    /// number resolves to an integer and is then refused for a string-only
-    /// key, identically to the JSON spelling of the same thing.
+    /// Scalar resolution happens before the subset check, so it stays
+    /// observable, and both formats land in the same place: a bare number
+    /// resolves to an integer and is then refused for a string-only key,
+    /// as the JSON spelling of the same thing is.
     #[test]
     fn a_bare_number_is_refused_the_same_way_in_both_formats() {
         let y = ExhibitConfig::from_yaml("display_mode: auto\nvenue: 2026\n").unwrap_err();
@@ -1813,48 +1610,45 @@ mod tests {
         );
     }
 
-    /// Anchors and aliases are refused, and this test exists because the
-    /// original implementation only *documented* that it refused them.
+    /// Anchors and aliases are refused before the load.
     ///
     /// `YamlLoader` resolves `*name` into a copy of the anchored node, so
-    /// `Yaml::Alias` never reaches the node-type check and the config below was
-    /// silently ACCEPTED -- with `venue` carrying "hello", a value the file
-    /// never assigns to it. Exactly the "means something other than it says"
-    /// failure the subset exists to prevent, hidden by the fact that the
-    /// refusal had been written down.
+    /// `Yaml::Alias` never reaches the node-type check: without the pre-scan
+    /// the config below is accepted, with `venue` carrying a value the file
+    /// never assigns to it.
     #[test]
-    fn yaml_anchors_and_aliases_are_refused_not_silently_expanded() {
-        // The case that used to pass: venue is never assigned in the text.
-        let e =
-            ExhibitConfig::from_yaml("display_mode: auto\nnote: &a hello\nvenue: *a\n").unwrap_err();
+    fn yaml_anchors_and_aliases_are_refused_before_the_load() {
+        // venue is never assigned in the text.
+        let e = ExhibitConfig::from_yaml("display_mode: auto\nnote: &a hello\nvenue: *a\n")
+            .unwrap_err();
         assert!(e.contains("anchor") || e.contains("alias"), "{e}");
 
-        // An anchor with no alias is refused too -- it is the half that makes
-        // the other half possible, and accepting it would make the refusal
-        // depend on how far the operator got.
+        // An anchor with no alias is refused as well: accepting it would make
+        // the refusal depend on how far the operator got.
         let e = ExhibitConfig::from_yaml("display_mode: auto\nnote: &unused hello\n").unwrap_err();
         assert!(e.contains("anchor"), "{e}");
 
-        // ...while the spelled-out equivalent is fine, which is the point: the
-        // refusal costs the operator one retyped value, not a capability.
+        // The spelled-out equivalent is accepted, so the refusal costs one
+        // retyped value.
         let ok =
             ExhibitConfig::from_yaml("display_mode: auto\nnote: hello\nvenue: hello\n").unwrap();
         assert_eq!(ok.note.as_deref(), Some("hello"));
         assert_eq!(ok.venue.as_deref(), Some("hello"));
     }
 
-    /// A syntax error must still produce YamlLoader's own marked message, not
-    /// a vaguer one from the anchor pre-scan that now runs first.
+    /// A syntax error still produces YamlLoader's own marked message, rather
+    /// than a vaguer one from the anchor pre-scan that runs first.
     #[test]
     fn the_anchor_prescan_does_not_swallow_real_syntax_errors() {
         let e = ExhibitConfig::from_yaml("display_mode: auto\nnote:\n\tx: 1\n").unwrap_err();
-        assert!(e.contains("tab"), "expected the scanner's own diagnostic: {e}");
+        assert!(
+            e.contains("tab"),
+            "expected the scanner's own diagnostic: {e}"
+        );
     }
 
-    /// Error messages must read as English. `yaml_type_name` returns bare
-    /// nouns and each call site supplies its own article -- an earlier
-    /// revision baked "a " into the names and emitted "has a a nested mapping
-    /// value" at one of the three sites.
+    /// Error messages read as English: `yaml_type_name` returns bare nouns and
+    /// each call site supplies its own article, so no message doubles it.
     #[test]
     fn type_names_do_not_double_their_article() {
         for text in [
@@ -1881,10 +1675,8 @@ mod tests {
 
     #[test]
     fn yaml_multiple_documents_refused_rather_than_taking_the_first() {
-        let e = ExhibitConfig::from_yaml(
-            "display_mode: auto\n---\ndisplay_mode: 3840x2160@30\n",
-        )
-        .unwrap_err();
+        let e = ExhibitConfig::from_yaml("display_mode: auto\n---\ndisplay_mode: 3840x2160@30\n")
+            .unwrap_err();
         assert!(e.contains("2 documents"), "{e}");
     }
 
@@ -1904,9 +1696,9 @@ mod tests {
         assert!(e.contains("top level") && e.contains("a list"), "{e}");
     }
 
-    /// An integer VALUE parses (the shared mapper then refuses it for these
-    /// particular keys, in the same words the JSON path uses) -- but a
-    /// NEGATIVE one is out of range for the format itself.
+    /// An integer value parses, and the shared mapper then refuses it for
+    /// these keys in the same words the JSON path uses. A negative integer is
+    /// out of range for the format itself.
     #[test]
     fn yaml_integers_follow_the_json_subset() {
         let e = ExhibitConfig::from_yaml("display_mode: 30\n").unwrap_err();
@@ -1930,9 +1722,8 @@ mod tests {
         );
     }
 
-    /// Two configs at once refuses, naming both -- never "YAML wins".
-    /// Precedence here would let an operator edit one file all afternoon
-    /// while the player reads the other.
+    /// Two configs at once are refused, naming both. Precedence would let an
+    /// operator edit one file while the player reads the other.
     #[test]
     fn two_default_configs_refuse_naming_both() {
         let e = pick_default_config(&DEFAULT_EXHIBIT_CONFIG_PATHS).unwrap_err();
@@ -1941,18 +1732,17 @@ mod tests {
             "the refusal must name both files in the assets directory: {e}"
         );
         assert!(e.contains("--exhibit-config"), "{e}");
-        // The likely cause, named: writing exhibit.yaml leaves the older
-        // exhibit.json beside it, so the operator did one correct thing and
-        // still got refused. Without this the message reads like a bug.
+        // The message names the likely cause: writing exhibit.yaml leaves the
+        // older exhibit.json beside it, so the operator did one correct thing
+        // and still got refused.
         assert!(
             e.contains("sudo rm /opt/dex/exhibit.json"),
             "must name the file to delete as the fix: {e}"
         );
     }
 
-    /// ...and that hint is CONDITIONAL, not glued on: a collision between two
-    /// YAML files must not tell the operator to remove a JSON file that has
-    /// nothing to do with it.
+    /// The hint is conditional: two YAML files must not produce advice to
+    /// remove a JSON file that has nothing to do with the collision.
     #[test]
     fn the_delete_hint_only_appears_when_a_json_is_involved() {
         let e = pick_default_config(&["/srv/a.yaml", "/srv/b.yml"]).unwrap_err();
@@ -1962,7 +1752,7 @@ mod tests {
     // ---- resolve_asset: the whole decision table -------------------------
 
     #[test]
-    fn deploy_path_takes_the_asset_from_the_config() {
+    fn the_asset_comes_from_the_exhibit_config() {
         let c = cfg_with_asset("/opt/dex/spring.265");
         let r = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap();
         assert_eq!(r.path, "/opt/dex/spring.265");
@@ -1970,55 +1760,55 @@ mod tests {
     }
 
     #[test]
-    fn an_agreeing_cli_path_cross_checks_and_the_config_still_binds() {
+    fn an_agreeing_command_line_path_cross_checks_and_the_config_binds() {
         let c = cfg_with_asset("/opt/dex/spring.265");
         let r = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/spring.265"), false).unwrap();
         assert_eq!(r.source, AssetSource::Config);
     }
 
     #[test]
-    fn a_contradicting_cli_path_is_refused_naming_both() {
+    fn a_contradicting_command_line_path_is_refused_naming_both() {
         let c = cfg_with_asset("/opt/dex/spring.265");
-        let e = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/autumn.265"), false).unwrap_err();
+        let e =
+            resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/autumn.265"), false).unwrap_err();
         assert!(e.contains("spring.265") && e.contains("autumn.265"), "{e}");
     }
 
-    /// A config with no `asset` key still accepts a hand-given path -- the
-    /// one-off case (try another file on a deployed device without editing
-    /// the config), reported as CLI-sourced so the log cannot be misread.
+    /// A config with no `asset` key still accepts a path given by hand: the
+    /// one-off case of trying another file on a deployed device. The result
+    /// says the path came from the command line, so the log stays readable.
     #[test]
-    fn a_cli_path_works_when_the_config_names_no_asset() {
+    fn a_command_line_path_works_when_the_config_names_no_asset() {
         let c = cfg("auto", "none");
         let r = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/try.265"), false).unwrap();
         assert_eq!(r.source, AssetSource::Cli);
     }
 
-    /// THE fail-closed row: nothing names an asset, so nothing is guessed --
-    /// specifically NOT /opt/dex/loop.265, which would silently play last
-    /// season's artwork for someone who mistyped the key.
+    /// The row where nothing names a video: refuse, and print the line to
+    /// add.
     #[test]
-    fn no_asset_anywhere_refuses_rather_than_defaulting_to_loop_265() {
+    fn no_asset_named_anywhere_is_refused_without_a_default() {
         let c = cfg("auto", "none");
         let e = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap_err();
         assert!(e.contains("no asset"), "{e}");
         // ...and it names the exact line to add, in both formats.
         assert!(e.contains("asset: loop.265"), "{e}");
         assert!(e.contains(r#""asset": "loop.265""#), "{e}");
-        // Also with NO config at all (that case refuses earlier, at
-        // resolve_display -- but this function must not invent a path either).
+        // Also with no config at all: that case refuses earlier, in
+        // resolve_display, but this function invents no path either.
         assert!(resolve_asset(None, "/opt/dex", None, false).is_err());
     }
 
     #[test]
-    fn bench_takes_the_cli_path_and_ignores_the_config() {
+    fn a_test_rig_takes_the_command_line_path_and_ignores_the_config() {
         let c = cfg_with_asset("/opt/dex/spring.265");
-        let r = resolve_asset(Some(&c), "/opt/dex", Some("/tmp/bench.265"), true).unwrap();
-        assert_eq!(r.path, "/tmp/bench.265");
+        let r = resolve_asset(Some(&c), "/opt/dex", Some("/tmp/test-rig.265"), true).unwrap();
+        assert_eq!(r.path, "/tmp/test-rig.265");
         assert_eq!(r.source, AssetSource::Cli);
     }
 
     #[test]
-    fn bench_without_a_path_refuses_rather_than_falling_back_to_the_config() {
+    fn a_test_rig_without_a_path_is_refused() {
         let c = cfg_with_asset("/opt/dex/spring.265");
         let e = resolve_asset(Some(&c), "/opt/dex", None, true).unwrap_err();
         assert!(e.contains("command line"), "{e}");
@@ -2026,9 +1816,9 @@ mod tests {
 
     // ---- a relative asset resolves against the config's directory --------
 
-    /// A bare file name names the file NEXT TO the config -- the deployment
-    /// shape, where `/opt/dex` holds the video, its sidecar and
-    /// `exhibit.yaml` together.
+    /// A bare file name names the file beside the config — the deployment
+    /// shape, where the video, its sidecar and `exhibit.yaml` sit together in
+    /// `/opt/dex`.
     #[test]
     fn a_relative_asset_resolves_against_the_config_directory() {
         let c = cfg_with_asset("artwork.265");
@@ -2055,10 +1845,10 @@ mod tests {
         assert_eq!(r.path, "/srv/art/artwork.265");
     }
 
-    /// The cross-check compares the RESOLVED path, so a bare name in the
+    /// The cross-check compares the resolved path, so a bare name in the
     /// config and the full path on the command line agree.
     #[test]
-    fn the_cli_cross_check_compares_the_resolved_path() {
+    fn the_cross_check_compares_the_resolved_path() {
         let c = cfg_with_asset("artwork.265");
         let r = resolve_asset(Some(&c), "/opt/dex", Some("/opt/dex/artwork.265"), false).unwrap();
         assert_eq!(r.path, "/opt/dex/artwork.265");
@@ -2084,9 +1874,9 @@ mod tests {
         assert_eq!(asset_in_config_dir("/opt/dex", "/srv/a.265"), "/srv/a.265");
     }
 
-    /// The resolver against a REAL directory: write a config and its video
-    /// into one temp directory, load the config through the shared loader,
-    /// and check that the bare name resolved to the file beside it.
+    /// The resolver against a real directory: write a config and its video
+    /// into one temp directory, load the config through the shared loader, and
+    /// check that the bare name resolved to the file beside it.
     #[test]
     fn a_relative_asset_resolves_against_a_real_config_directory() {
         let cfg_path = tmp("relative-asset-exhibit.yaml");
@@ -2114,7 +1904,7 @@ mod tests {
     }
 
     /// The asset path is printed into the system log at every start, and the
-    /// system log is the only diagnostic channel a gallery device has -- a
+    /// system log is the only diagnostic channel a deployed player has -- a
     /// newline in it would forge a second log line.
     #[test]
     fn asset_with_a_control_character_is_refused() {
@@ -2124,27 +1914,26 @@ mod tests {
 
     #[test]
     fn asset_parses_from_both_formats_and_is_grammar_checked() {
-        let j = ExhibitConfig::from_json(
-            r#"{"asset":"/opt/dex/spring.265","display_mode":"auto"}"#,
-        )
-        .unwrap();
-        let y = ExhibitConfig::from_yaml("asset: /opt/dex/spring.265\ndisplay_mode: auto\n").unwrap();
+        let j =
+            ExhibitConfig::from_json(r#"{"asset":"/opt/dex/spring.265","display_mode":"auto"}"#)
+                .unwrap();
+        let y =
+            ExhibitConfig::from_yaml("asset: /opt/dex/spring.265\ndisplay_mode: auto\n").unwrap();
         assert_eq!(j, y);
         assert_eq!(j.asset.as_deref(), Some("/opt/dex/spring.265"));
 
         // A bare file name is valid -- it names the file beside the config.
         let rel = ExhibitConfig::from_yaml("asset: loop.265\ndisplay_mode: auto\n").unwrap();
         assert_eq!(rel.asset.as_deref(), Some("loop.265"));
-        let e =
-            ExhibitConfig::from_yaml("asset: /opt/dex/\ndisplay_mode: auto\n").unwrap_err();
+        let e = ExhibitConfig::from_yaml("asset: /opt/dex/\ndisplay_mode: auto\n").unwrap_err();
         assert!(e.contains("invalid asset"), "{e}");
     }
 
     // ---- load_exhibit_config, against a real temp directory --------------
     //
-    // `defaults` is injectable, so the discovery policy both binaries share is
-    // testable here rather than only through the CLI on a machine that happens
-    // to have /opt/dex.
+    // `defaults` is injectable, so the discovery policy both binaries share
+    // is testable here, and not only through the command line on a machine
+    // that happens to have /opt/dex.
 
     /// A unique temp path per call site, so tests never collide with each
     /// other or with a previous run's leftovers.
@@ -2168,17 +1957,15 @@ mod tests {
 
     #[test]
     fn load_returns_none_when_no_default_exists() {
-        let found = load_exhibit_config(
-            None,
-            &[&tmp("load-absent.yaml"), &tmp("load-absent.json")],
-        )
-        .unwrap();
+        let found =
+            load_exhibit_config(None, &[&tmp("load-absent.yaml"), &tmp("load-absent.json")])
+                .unwrap();
         assert!(found.is_none(), "{found:?}");
     }
 
-    /// The whole reason both binaries call this: with both names present it
-    /// refuses instead of picking, so `dex-exhibit-apply` can never reconcile
-    /// the cmdline against a file `dexd` will not read.
+    /// Why both binaries call this: with both names present it refuses
+    /// instead of picking, so `dex-exhibit-apply` cannot reconcile the cmdline
+    /// against a file `dexd` will not read.
     #[test]
     fn load_refuses_when_both_defaults_exist() {
         let (j, y) = (tmp("load-both.json"), tmp("load-both.yaml"));
@@ -2190,9 +1977,9 @@ mod tests {
         let _ = std::fs::remove_file(&y);
     }
 
-    /// An explicitly named missing file must NOT borrow the "no exhibit
-    /// config, create the default" message -- the operator named a different
-    /// path, and telling them to create /opt/dex/exhibit.yaml is wrong advice.
+    /// A named file that is missing does not borrow the "no exhibit config,
+    /// create the default" message: the operator named a different path, so
+    /// advice to create /opt/dex/exhibit.yaml would be wrong.
     #[test]
     fn load_names_the_explicit_path_when_it_is_missing() {
         let p = tmp("load-explicitly-absent.json");
@@ -2202,9 +1989,9 @@ mod tests {
         assert!(!e.contains("Create /opt/dex"), "{e}");
     }
 
-    /// A config whose name promises neither format refuses at the dispatch,
-    /// before any parse is attempted -- even though its CONTENTS would parse
-    /// perfectly well as either.
+    /// A config whose name promises neither format is refused at the
+    /// dispatch, before any parse is attempted, though its contents would
+    /// parse as either.
     #[test]
     fn load_refuses_an_unrecognised_extension_even_with_valid_contents() {
         let p = tmp("load-nameless.conf");

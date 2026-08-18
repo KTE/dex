@@ -1,48 +1,26 @@
-//! F3 — the asset+fps sidecar: parse, validate, and decide the binding.
+//! The sidecar: parse `<asset>.json`, validate it, and decide the frame rate.
 //!
-//! Why: the one failure that is undetectable BY CONSTRUCTION. A raw Annex-B
-//! stream has no timestamps, so `--fps 25` on a 30 fps asset plays 20% slow,
-//! forever, with zero errors and every metric nominal. The fix: the frame
-//! rate travels WITH the asset (a sidecar written at ingest), bound by a
-//! sha256 so a stale/wrong/truncated asset is refused at startup.
+//! A raw Annex-B stream has no frame rate in it, so the rate is stored beside
+//! the asset in a sidecar file and bound to it by a sha256 that startup
+//! re-checks. See docs/design/sidecar.md#asset-binding-the-sidecar-and-the-asset-check.
 //!
 //! Format — `<asset>.json` next to the asset (`loop.265` -> `loop.265.json`):
 //!   {"fps":"30","sha256":"<64 hex>","width":3840,"height":2160,
 //!    "source":"card.mp4","encoder_cmd":"ffmpeg ..."}
-//! `fps` is a STRING, not a JSON number: "30000/1001" must survive exactly,
-//! and 29.97 as a float invites drift. It is passed verbatim to mpv's
-//! container-fps-override after grammar validation. Required: fps, sha256.
-//! Optional, informational: width, height (integers), source, encoder_cmd
-//! (strings). Unknown keys are ignored so ingest can add metadata without
-//! breaking deployed players.
 //!
-//! The parser accepts a STRICT SUBSET of JSON — one flat object, string and
-//! unsigned-integer values only (this applies uniformly to every key, known
-//! or not: an ignored key's value must still be a string or unsigned
-//! integer, never an array/bool/null/nested object). Anything else is a
-//! parse error, and a parse error refuses startup. Fail-closed IS the F3
-//! semantics: an unparseable sidecar and a missing one are the same
-//! operational fact.
+//! Required: fps, sha256. Optional and informational: width, height
+//! (integers), source, encoder_cmd (strings). Unknown keys are ignored, so a
+//! preparation tool can add metadata without breaking deployed players. `fps`
+//! is a JSON string so a rational rate such as "30000/1001" survives
+//! unchanged; it reaches mpv's container-fps-override verbatim.
 //!
-//! The subset is enforced by a serde visitor over `serde_json` (SPEC §5c); it
-//! was hand-rolled while the crate had a zero-dependency rule. Exactly ONE
-//! rule survives as our own code, because it is the one a `Map` cannot state:
-//! **duplicate keys are rejected** rather than silently last-wins.
-//!
-//! String escapes (\" \\ \/ \n \r \t, and \uXXXX including UTF-16 surrogate
-//! pairs) are serde_json's problem now — but they are recorded here as a
-//! REQUIREMENT, because the tempting "simplification" is to ban non-ASCII and
-//! it would be wrong. \uXXXX is what every "safe by default" JSON serializer
-//! reaches for: Python's `json.dumps` (default `ensure_ascii=True`) turns ANY
-//! non-ASCII character into \uXXXX, and Go's `encoding/json` does the same for
-//! `<`, `>`, `&`. That includes informational keys like `source`/`encoder_cmd`
-//! which are never interpreted here — a `source` filename may legitimately be
-//! "Karte–Süd.mp4". Refusing escapes would refuse byte-perfect, correctly
-//! hashed assets over nothing but an ingest tool's serializer settings.
-//! (`fps` and `sha256` are ASCII by their own grammars, validated below.)
+//! The grammar is a subset of JSON: one flat object whose values are strings
+//! or unsigned integers, for every key, known or not. Values carry any text,
+//! escapes and raw UTF-8 alike; do not narrow them. Anything outside the
+//! subset is a parse error, and a parse error refuses startup.
 
-/// A parsed JSON value, restricted to the sidecar subset: strings and
-/// unsigned integers only.
+/// A parsed JSON value under the sidecar subset: a string or an unsigned
+/// integer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Str(String),
@@ -57,30 +35,27 @@ pub fn parse_flat_json(text: &str) -> Result<Vec<(String, Value)>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// A newtype whose `Deserialize` impl *is* the subset grammar.
+/// A newtype whose `Deserialize` impl is the subset grammar.
 ///
-/// Hand-written visitor rather than `#[derive]` or `serde_json::Map`, for one
-/// reason: **the grammar rejects duplicate keys and a Map cannot express
-/// that** — it silently keeps the last. `{"fps":"30","fps":"25"}` has to be an
-/// error rather than a coin flip decided by which parser reads it, because F3
-/// is a fail-closed gate: an ambiguous sidecar and a missing one are the same
-/// operational fact. Everything else the old hand-rolled parser did — lexing,
-/// escapes, surrogate pairs, trailing-data and structural errors — is
-/// serde_json's now.
+/// The map visitor is hand-written because `serde_json::Map` keeps the last of
+/// two same-named keys and reports no error, so it cannot state the
+/// duplicate-key rule. Lexing, escapes, surrogate pairs, trailing data and
+/// structural errors are serde_json's.
+/// See docs/design/sidecar.md#sidecar-grammar.
 struct FlatObject(Vec<(String, Value)>);
 
 impl<'de> serde::Deserialize<'de> for FlatObject {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        // deserialize_map, not deserialize_any: a top-level array or scalar is
-        // rejected by serde_json with a type error before we see it.
+        // deserialize_map, not deserialize_any: serde_json then rejects a
+        // top-level array or scalar with a type error before the visitor runs.
         d.deserialize_map(FlatObjectVisitor)
     }
 }
 
 struct FlatObjectVisitor;
 
-/// Name a rejected value's type for the error message. Kept exhaustive rather
-/// than `_ =>` so a future serde_json variant is a compile error here.
+/// Name a rejected value's type for the error message. The match is
+/// exhaustive, so a new serde_json variant becomes a compile error here.
 fn type_name(v: &serde_json::Value) -> &'static str {
     match v {
         serde_json::Value::Null => "null",
@@ -109,11 +84,9 @@ impl<'de> serde::de::Visitor<'de> for FlatObjectVisitor {
             if out.iter().any(|(k, _)| *k == key) {
                 return Err(A::Error::custom(format!("duplicate key {key:?}")));
             }
-            // The subset applies UNIFORMLY, to unknown keys too: an ignored
-            // key's value must still be a string or unsigned integer. Reading
-            // into serde_json::Value first is what lets us say so — and lets
-            // an informational key like `source` hold any text, escapes and
-            // all, which is the behaviour the format actually needs.
+            // Read into serde_json::Value first: that applies the subset to
+            // unknown keys as well, and lets an informational key such as
+            // `source` carry any text, escapes included.
             let value = match map.next_value::<serde_json::Value>()? {
                 serde_json::Value::String(s) => Value::Str(s),
                 serde_json::Value::Number(n) => Value::Num(n.as_u64().ok_or_else(|| {
@@ -137,9 +110,8 @@ impl<'de> serde::de::Visitor<'de> for FlatObjectVisitor {
     }
 }
 
-
-/// Is `s` a well-formed frame rate string: a positive integer ("30"), a
-/// positive decimal ("29.97"), or a positive rational ("30000/1001")?
+/// Whether `s` is a well-formed frame rate: a positive integer ("30"), a
+/// positive decimal ("29.97") or a positive rational ("30000/1001").
 pub fn is_valid_fps(s: &str) -> bool {
     fn positive_int(t: &str) -> bool {
         !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) && t.bytes().any(|b| b != b'0')
@@ -169,10 +141,11 @@ pub struct Sidecar {
 }
 
 impl Sidecar {
-    /// Parse and validate a sidecar's JSON text. Fail-closed: any grammar
-    /// violation, missing required key, invalid fps, or malformed sha256 is
-    /// an error, on the theory that an unparseable sidecar and a missing one
-    /// are the same operational fact.
+    /// Parse and validate a sidecar's JSON text. A grammar violation, a
+    /// missing required key, an invalid fps or a malformed sha256 is an
+    /// error, because an unparseable sidecar and a missing one are the same
+    /// operational fact.
+    /// See docs/design/sidecar.md#sidecar-grammar.
     pub fn from_json(text: &str) -> Result<Sidecar, String> {
         let kv = parse_flat_json(text).map_err(|e| format!("sidecar JSON: {e}"))?;
         let mut fps = None;
@@ -184,8 +157,8 @@ impl Sidecar {
                 ("fps", Value::Str(s)) => fps = Some(s),
                 ("fps", Value::Num(_)) => {
                     return Err(
-                        "sidecar: fps must be a JSON STRING (\"30\", \"30000/1001\") \
-                                so rational rates survive exactly"
+                        "sidecar: fps must be a JSON string (\"30\", \"30000/1001\") \
+                                so rational rates survive unchanged"
                             .into(),
                     )
                 }
@@ -196,8 +169,9 @@ impl Sidecar {
                 ("width", Value::Str(_)) | ("height", Value::Str(_)) => {
                     return Err("sidecar: width/height must be integers".into())
                 }
-                // Unknown keys and informational strings: ignored, so ingest
-                // can add metadata without breaking deployed players.
+                // Unknown keys and informational strings are ignored, so a
+                // preparation tool can add metadata without breaking deployed
+                // players.
                 _ => {}
             }
         }
@@ -223,21 +197,31 @@ impl Sidecar {
     }
 }
 
-/// Where a bound fps value came from: the asset's sidecar, or the bench
-/// escape hatch (`--test-rig-no-sidecar --fps <F>`).
+/// Where the frame rate came from: the asset's sidecar, or the test-rig-only
+/// override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FpsSource {
     Sidecar,
+    /// The `--test-rig-no-sidecar --fps <F>` override (test rig only).
     BenchOverride,
 }
 
-/// Decide the fps to bind to, and where it came from.
+/// Decide the frame rate to play at, and where it came from.
 ///
-/// Rules: with a sidecar present, its fps wins; an explicit `--fps` is
-/// allowed only if it agrees with the sidecar (a mismatch is refused, naming
-/// both values, since the sidecar is authoritative). With no sidecar, the
-/// deploy path refuses to guess — the bench escape hatch is a deliberate,
-/// two-flag act (`--test-rig-no-sidecar` AND `--fps`), never a silent fallback.
+/// | `--test-rig-no-sidecar` | sidecar fps | `--fps` | Result |
+/// |---|---|---|---|
+/// | no | present | absent | the sidecar's rate |
+/// | no | present | same value | the sidecar's rate |
+/// | no | present | different value | refused, naming both values |
+/// | no | absent | either | refused |
+/// | yes | either | a valid rate | the `--fps` value (test rig only) |
+/// | yes | either | absent or invalid | refused |
+///
+/// With a sidecar present the sidecar decides; with none, startup refuses to
+/// guess, and the two-flag test-rig override is the only way past. Comparison
+/// with `--fps` is string equality, so `30` and `30/1` count as a mismatch.
+/// See docs/design/sidecar.md#frame-rate-resolution and
+/// docs/design/startup-checks.md#fail-closed-startup.
 pub fn resolve_fps(
     sidecar_fps: Option<&str>,
     cli_fps: Option<&str>,
@@ -260,15 +244,15 @@ pub fn resolve_fps(
         (None, _) => Err(
             "no sidecar found; refusing to guess the frame rate. Prepare the video \
              again with dex-sidecar write to produce <asset>.json, or use \
-             --test-rig-no-sidecar --fps <F> on a bench"
+             --test-rig-no-sidecar --fps <F> (test rig only)"
                 .into(),
         ),
     }
 }
 
-/// Verify `payload`'s sha256 matches the sidecar's — the binding that refuses
-/// a stale, wrong, or truncated asset at startup instead of playing it wrong
-/// forever.
+/// Check `payload`'s sha256 against the sidecar's, so a stale, wrong or
+/// truncated asset is refused at startup instead of played.
+/// See docs/design/sidecar.md#checksum-verification.
 pub fn verify_payload(payload: &[u8], sidecar: &Sidecar) -> Result<(), String> {
     let actual = crate::sha256::sha256_hex(payload);
     if actual != sidecar.sha256 {
@@ -310,7 +294,7 @@ mod tests {
     fn fps_as_number_is_refused_with_guidance() {
         let text = format!(r#"{{"fps":30,"sha256":"{GOOD_SHA}"}}"#);
         let e = Sidecar::from_json(&text).unwrap_err();
-        assert!(e.contains("STRING"), "{e}");
+        assert!(e.contains("must be a JSON string"), "{e}");
     }
 
     #[test]
@@ -322,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn bad_sha256_is_refused_uppercase_is_normalized() {
+    fn a_malformed_sha256_is_refused_and_uppercase_is_stored_lowercase() {
         for sha in ["", "abc", &"g".repeat(64), &"a".repeat(63), &"a".repeat(65)] {
             let text = format!(r#"{{"fps":"30","sha256":"{sha}"}}"#);
             assert!(Sidecar::from_json(&text).is_err(), "sha {sha:?} accepted");
@@ -332,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn fps_grammar() {
+    fn the_fps_grammar_accepts_only_positive_integers_decimals_and_rationals() {
         for ok in ["30", "25", "29.97", "23.976", "30000/1001", "60"] {
             assert!(is_valid_fps(ok), "{ok} should be valid");
         }
@@ -347,19 +331,19 @@ mod tests {
     #[test]
     fn parser_rejects_everything_outside_the_subset() {
         for bad in [
-            "",                               // no object
-            "[1,2]",                          // array at top level
-            r#"{"a":{"b":1}}"#,               // nested object
-            r#"{"a":[1]}"#,                   // array value
-            r#"{"a":true}"#,                  // boolean
-            r#"{"a":null}"#,                  // null
-            r#"{"a":-1}"#,                    // negative number
-            r#"{"a":1.5}"#,                   // float
-            r#"{"a":1e3}"#,                   // exponent
-            r#"{"a":"x"}"trailing"#,          // trailing data
-            r#"{"a":"x""b":"y"}"#,            // missing comma
-            r#"{"a":"unterminated}"#,         // unterminated string
-            r#"{"a":"x","a":"y"}"#,           // duplicate key
+            "",                       // no object
+            "[1,2]",                  // array at top level
+            r#"{"a":{"b":1}}"#,       // nested object
+            r#"{"a":[1]}"#,           // array value
+            r#"{"a":true}"#,          // boolean
+            r#"{"a":null}"#,          // null
+            r#"{"a":-1}"#,            // negative number
+            r#"{"a":1.5}"#,           // float
+            r#"{"a":1e3}"#,           // exponent
+            r#"{"a":"x"}"trailing"#,  // trailing data
+            r#"{"a":"x""b":"y"}"#,    // missing comma
+            r#"{"a":"unterminated}"#, // unterminated string
+            r#"{"a":"x","a":"y"}"#,   // duplicate key
         ] {
             assert!(parse_flat_json(bad).is_err(), "accepted: {bad}");
         }
@@ -367,83 +351,69 @@ mod tests {
 
     #[test]
     fn unicode_escapes_are_decoded() {
-        // These are raw string literals: the JSON *source text* the parser
-        // receives contains the literal four characters `\`, `u`, and four
-        // hex digits -- the parser itself must turn that into a code point.
-        // The expected side uses Rust's OWN (unrelated) `\u{...}` syntax
-        // purely so this file's source stays plain ASCII.
+        // Each input is built with `format!`, so the JSON text the parser
+        // receives holds a literal `\u` followed by four hex digits. The
+        // expected values use Rust's own `\u{...}` syntax, which is unrelated
+        // to the escape under test.
 
-        // ASCII code point spelled via the escape A.
+        // An escape for a code point that needs none.
         let json = format!(r#"{{"a":"\{}0041"}}"#, 'u');
         let kv = parse_flat_json(&json).unwrap();
         assert_eq!(kv[0].1, Value::Str("A".to_string()));
 
-        // The actual field bug: json.dumps({"source": "Zürich.mp4"}) with
-        // Python's DEFAULT ensure_ascii=True produces the escape ü for
-        // "ü". Built with `format!` so this file's source stays plain ASCII;
-        // `\u{fc}` on the expected side is Rust's own (unrelated) escape.
+        // What a serializer with escaping on by default writes for a
+        // `source` filename that carries an accented character.
         let json = format!(r#"{{"a":"Z\{}00fcrich.mp4"}}"#, 'u');
         let kv = parse_flat_json(&json).unwrap();
         assert_eq!(kv[0].1, Value::Str("Z\u{fc}rich.mp4".to_string()));
 
-        // Outside the BMP: a UTF-16 surrogate pair, standard JSON (not a
-        // sidecar-specific extension) -- U+1F389 PARTY POPPER is
-        // 🎉.
+        // A code point too high for one escape, written as a UTF-16
+        // surrogate pair (standard JSON).
         let json = format!(r#"{{"a":"\{0}d83c\{0}df89"}}"#, 'u');
         let kv = parse_flat_json(&json).unwrap();
         assert_eq!(kv[0].1, Value::Str("\u{1F389}".to_string()));
 
-        // A \u escape next to a plain escape in the same string, to prove
-        // they compose: é (é) then a plain \n.
+        // A `\u` escape and a plain escape in one string.
         let json = format!(r#"{{"a":"caf\{}00e9\nmore"}}"#, 'u');
         let kv = parse_flat_json(&json).unwrap();
         assert_eq!(kv[0].1, Value::Str("caf\u{e9}\nmore".to_string()));
     }
 
-    // The other half of the escape requirement, and the half that is easier to
-    // lose: a serializer that does NOT escape (jq, Rust's own serde_json,
-    // Python with ensure_ascii=False) writes the character as raw UTF-8 bytes.
-    // Both spellings mean the same sidecar and both must parse.
-    //
-    // This exists because "no sidecar value can hold a non-ASCII byte, so
-    // reject non-ASCII at the door" was proposed during the SPEC §5c work and
-    // is WRONG: it is true of `fps` and `sha256`, and false of `source` --
-    // asset filenames are routinely not ASCII. Narrowing the contract there
-    // would have refused correctly-hashed assets over their filename.
+    // A serializer that leaves the character alone (jq, serde_json, Python
+    // with ensure_ascii=False) writes it as raw UTF-8 bytes. Both spellings
+    // mean the same sidecar and both parse, so keep both accepted.
+    // See docs/design/sidecar.md#sidecar-grammar.
     #[test]
     fn raw_utf8_in_an_informational_key_parses_like_its_escaped_form() {
-        // Built with char escapes so this file's source stays plain ASCII.
         let raw = "Z\u{fc}rich.mp4".to_string();
         let json = format!(r#"{{"source":"{raw}"}}"#);
         let kv = parse_flat_json(&json).unwrap();
         assert_eq!(kv[0].1, Value::Str(raw.clone()));
 
-        // ... and is indistinguishable from the \u-escaped spelling.
+        // The escaped spelling parses to the same value.
         let escaped = format!(r#"{{"source":"Z\{}00fcrich.mp4"}}"#, 'u');
         assert_eq!(parse_flat_json(&escaped).unwrap(), kv);
 
-        // A full sidecar with a non-ASCII source must still bind normally --
+        // A full sidecar with such a source must still bind normally:
         // `source` is informational and never interpreted.
-        let text = format!(
-            r#"{{"fps":"30","sha256":"{GOOD_SHA}","source":"{raw}"}}"#
-        );
+        let text = format!(r#"{{"fps":"30","sha256":"{GOOD_SHA}","source":"{raw}"}}"#);
         let s = Sidecar::from_json(&text).unwrap();
         assert_eq!(s.fps, "30");
     }
 
-    // Duplicate rejection is the ONE grammar rule still implemented by hand
-    // (SPEC §5c): serde_json's Map silently keeps the last value, so the
-    // visitor has to say so itself. Tested by name rather than only inside the
-    // reject-everything batch, because a refactor that dropped the visitor for
-    // a plain Map would still pass every other test in this file.
+    // Duplicate rejection is the one grammar rule dexd states itself, in the
+    // map visitor. Keep this test separate: a refactor that swapped the
+    // visitor for a plain `serde_json::Map` would still pass every other test
+    // in this file.
+    // See docs/design/sidecar.md#sidecar-grammar.
     #[test]
     fn duplicate_keys_are_refused_and_named() {
         let e = parse_flat_json(r#"{"fps":"30","fps":"25"}"#).unwrap_err();
         assert!(e.contains("duplicate"), "{e}");
         assert!(e.contains("fps"), "{e}");
 
-        // Including a duplicated key the sidecar does not interpret: the rule
-        // is about the document being unambiguous, not about which keys matter.
+        // The rule covers a duplicated key the sidecar never interprets: it
+        // is about the document being unambiguous, whatever a key means.
         let e = parse_flat_json(r#"{"source":"a","source":"b"}"#).unwrap_err();
         assert!(e.contains("duplicate"), "{e}");
     }
@@ -456,20 +426,18 @@ mod tests {
             r#"{"a":"\ud800"}"#,       // lone high surrogate, no pair follows
             r#"{"a":"\udc00"}"#,       // lone low surrogate
             r#"{"a":"\ud800A"}"#,      // high surrogate followed by a non-surrogate
-            r#"{"a":"\ud800\udbff"}"#, // high surrogate followed by ANOTHER high surrogate
+            r#"{"a":"\ud800\udbff"}"#, // high surrogate followed by a second high surrogate
         ] {
             assert!(parse_flat_json(bad).is_err(), "accepted: {bad}");
         }
     }
 
     #[test]
-    fn unicode_escape_in_an_ignored_sidecar_key_no_longer_breaks_startup() {
-        // The concrete field scenario: an ingest tool's default-safe JSON
-        // serializer \u-escapes a non-ASCII byte inside "source", a key this
-        // player does not even interpret -- and startup used to refuse
-        // anyway, on an otherwise byte-perfect, correctly-hashed asset. Built
-        // with `format!` so the JSON text itself contains the literal escape
-        // ü, not an already-decoded byte -- that is the actual bug.
+    fn unicode_escape_in_an_ignored_key_does_not_block_startup() {
+        // The whole path: a preparation tool's default-safe serializer
+        // escapes a character inside `source`, a key dexd never interprets,
+        // and the correctly hashed asset still binds. Built with `format!` so
+        // the JSON text carries a literal escape.
         let text = format!(
             r#"{{"fps":"30","sha256":"{GOOD_SHA}","source":"Z\{}00fcrich.mp4"}}"#,
             'u'
@@ -492,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn deploy_path_takes_fps_from_sidecar() {
+    fn normal_startup_takes_the_fps_from_the_sidecar() {
         assert_eq!(
             resolve_fps(Some("30"), None, false).unwrap(),
             ("30".to_string(), FpsSource::Sidecar)
@@ -500,27 +468,27 @@ mod tests {
     }
 
     #[test]
-    fn agreeing_cli_fps_allowed_disagreeing_refused_naming_both() {
+    fn an_fps_flag_must_agree_with_the_sidecar_and_a_mismatch_names_both_values() {
         assert!(resolve_fps(Some("30"), Some("30"), false).is_ok());
         let e = resolve_fps(Some("30"), Some("25"), false).unwrap_err();
         assert!(e.contains("30") && e.contains("25"), "{e}");
     }
 
     #[test]
-    fn missing_sidecar_is_refused_without_the_bench_flag() {
+    fn a_missing_sidecar_is_refused_without_the_test_rig_flag() {
         let e = resolve_fps(None, Some("30"), false).unwrap_err();
-        assert!(e.contains("bench"), "{e}");
+        assert!(e.contains("--test-rig-no-sidecar"), "{e}");
         assert!(resolve_fps(None, None, false).is_err());
     }
 
     #[test]
-    fn bench_escape_hatch_requires_both_flags_and_a_valid_rate() {
+    fn the_test_rig_override_requires_both_flags_and_a_valid_rate() {
         assert_eq!(
             resolve_fps(None, Some("30"), true).unwrap(),
             ("30".to_string(), FpsSource::BenchOverride)
         );
-        // bench flag with a sidecar present: the sidecar is IGNORED — that is
-        // what "bench" means — and the CLI value wins.
+        // With the override in force a present sidecar is ignored and the
+        // --fps value wins.
         assert_eq!(
             resolve_fps(Some("25"), Some("30"), true).unwrap(),
             ("30".to_string(), FpsSource::BenchOverride)
@@ -530,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_payload_binds_bytes_to_sidecar() {
+    fn an_asset_is_accepted_only_when_its_bytes_match_the_sidecar_checksum() {
         let payload = b"the asset bytes";
         let s = Sidecar {
             fps: "30".into(),

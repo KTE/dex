@@ -1,23 +1,12 @@
-//! F4 — the asset validation gate: refuse an asset whose leading NALs cannot
-//! support the gaplessness premise.
+//! The asset check: reads the leading NAL units of a raw Annex-B HEVC stream
+//! and refuses a video that cannot restart at byte 0 as an ordinary keyframe.
 //!
-//! The endless-stream design only wraps seamlessly because byte 0 begins a
-//! closed GOP: parameter sets (VPS/SPS/PPS) then an IDR, so re-entering at
-//! byte 0 mid-stream is an ordinary keyframe, not a seek. An asset that
-//! starts with anything else — an open-GOP CRA, a trailing slice, no
-//! parameter sets — would "play" and then glitch at EVERY wrap (~29k visible
-//! artefacts/day for a 3 s loop), silently. The hash (F3) proves the bytes
-//! are the ingested bytes; this gate proves the ingested bytes have the
-//! required SHAPE. Truncation is F3's job: a truncated copy has intact
-//! leading NALs and passes this gate by design.
-//!
-//! Why IDR only (19/20), not any IRAP (16-23): CRA (21) admits RASL leading
-//! pictures whose wrap-join correctness depends on the content; BLA (16-18)
-//! never comes from a sane ingest; 22/23 are reserved. The premise stated
-//! everywhere in this crate is "IDR at frame 0" — so that is what the gate
-//! enforces. Relax knowingly if an asset ever justifies it.
+//! The first slice must be an IDR (nal_unit_type 19 or 20). A CRA (21) starts
+//! an open GOP, so whether it loops cleanly depends on the content; it is
+//! refused by name, and every other non-IDR first slice is refused with its
+//! type number. See docs/design/sidecar.md#the-asset-check.
 
-/// HEVC nal_unit_type values (ITU-T H.265 Table 7-1) this gate names.
+/// HEVC nal_unit_type values (H.265 Table 7-1) this check names.
 pub const NAL_VPS: u8 = 32;
 pub const NAL_SPS: u8 = 33;
 pub const NAL_PPS: u8 = 34;
@@ -26,15 +15,12 @@ pub const NAL_IDR_N_LP: u8 = 20;
 
 /// Validate the leading NAL units of a raw Annex-B HEVC stream.
 ///
-/// Passes iff, before the first VCL NAL (type 0-31), all of VPS/SPS/PPS have
-/// appeared, and that first VCL NAL is an IDR (19 or 20). Everything after
-/// the first VCL NAL is out of scope — the F3 hash covers byte-level
-/// integrity of the whole asset.
+/// Passes if VPS, SPS and PPS have all appeared before the first VCL NAL
+/// (types 0-31) and that first VCL NAL is an IDR (19 or 20). Everything after
+/// the first VCL NAL is out of scope, so a truncated copy passes here; the
+/// sidecar checksum covers the bytes of the whole video.
 ///
-/// Scanning is a plain 00 00 01 search (3- and 4-byte start codes both
-/// resolve to it): encoders insert emulation-prevention bytes precisely so
-/// that pattern never occurs inside a NAL payload, so the search cannot
-/// false-positive on a well-formed stream.
+/// See docs/design/sidecar.md#the-asset-check.
 pub fn validate_leading_nals(data: &[u8]) -> Result<(), String> {
     let mut vps = false;
     let mut sps = false;
@@ -52,7 +38,7 @@ pub fn validate_leading_nals(data: &[u8]) -> Result<(), String> {
             NAL_SPS => sps = true,
             NAL_PPS => pps = true,
             0..=31 => {
-                // First VCL NAL: the gate's decision point.
+                // First VCL NAL: the check decides here.
                 let missing: Vec<&str> = [(!vps, "VPS"), (!sps, "SPS"), (!pps, "PPS")]
                     .iter()
                     .filter(|(m, _)| *m)
@@ -60,18 +46,17 @@ pub fn validate_leading_nals(data: &[u8]) -> Result<(), String> {
                     .collect();
                 if !missing.is_empty() {
                     return Err(format!(
-                        "first slice appears before parameter sets ({} missing); not a \
-                         valid loop asset — prepare the video again with a closed-GOP encode",
+                        "first slice appears before parameter sets ({} missing); prepare \
+                         the video again with a closed-GOP encode",
                         missing.join("/")
                     ));
                 }
                 return match nal_type {
                     NAL_IDR_W_RADL | NAL_IDR_N_LP => Ok(()),
                     21 => Err(
-                        "leading keyframe is CRA (open GOP), not IDR; the wrap would \
-                         splice mid-GOP — prepare the video again with a closed-GOP \
-                         encode (IDR at \
-                         frame 0)"
+                        "leading keyframe is CRA (open GOP), not IDR; the picture would \
+                         break at the loop point — prepare the video again with a \
+                         closed-GOP encode (IDR at frame 0)"
                             .into(),
                     ),
                     t => Err(format!(
@@ -81,7 +66,7 @@ pub fn validate_leading_nals(data: &[u8]) -> Result<(), String> {
                     )),
                 };
             }
-            _ => {} // other non-VCL (AUD, SEI, ...): fine before the IDR
+            _ => {} // other non-VCL units before the IDR are fine
         }
     }
     if !found_any {
@@ -94,8 +79,10 @@ pub fn validate_leading_nals(data: &[u8]) -> Result<(), String> {
     Err("parameter sets but no slice found in the asset".into())
 }
 
-/// Finds each 00 00 01 start code (the 4-byte form contains it) and yields
-/// the two NAL header bytes that follow.
+/// Yields the two NAL header bytes after each `00 00 01` start code; the
+/// four-byte start-code form contains that pattern, so one search finds both.
+///
+/// See docs/design/sidecar.md#the-asset-check.
 struct StartCodeIter<'a> {
     data: &'a [u8],
     i: usize,
@@ -112,7 +99,7 @@ impl StartCodeIter<'_> {
                 if h + 1 < d.len() {
                     return Some((d[h], d[h + 1]));
                 }
-                return None; // start code at EOF, no room for a header
+                return None; // start code at the end of the data, no room for a header
             }
             i += 1;
         }
@@ -141,12 +128,13 @@ mod tests {
     }
 
     #[test]
-    fn valid_closed_gop_asset_passes() {
-        assert!(validate_leading_nals(&stream(&[32, 33, 34, 19])).is_ok()); // IDR_W_RADL
-        assert!(validate_leading_nals(&stream(&[32, 33, 34, 20])).is_ok()); // IDR_N_LP
-                                                                            // non-VCL noise before/among parameter sets is fine (AUD=35, SEI=39)
+    fn parameter_sets_then_an_idr_pass() {
+        // IDR_W_RADL, then IDR_N_LP
+        assert!(validate_leading_nals(&stream(&[32, 33, 34, 19])).is_ok());
+        assert!(validate_leading_nals(&stream(&[32, 33, 34, 20])).is_ok());
+        // non-VCL units before and among the parameter sets are fine (types 35 and 39)
         assert!(validate_leading_nals(&stream(&[35, 32, 39, 33, 34, 19])).is_ok());
-        // trailing slices after the IDR are out of scope for the gate
+        // slices after the IDR are out of scope
         assert!(validate_leading_nals(&stream(&[32, 33, 34, 19, 1, 0, 1])).is_ok());
     }
 
@@ -169,15 +157,14 @@ mod tests {
     }
 
     #[test]
-    fn non_idr_first_slice_is_refused() {
-        // TRAIL_R (1) first: a copy that lost its head, or a cut mid-GOP.
-        // Would glitch at EVERY wrap.
+    fn a_first_slice_that_is_not_an_idr_is_refused() {
+        // TRAIL_R (type 1) as the first slice: not a keyframe.
         let e = validate_leading_nals(&stream(&[32, 33, 34, 1])).unwrap_err();
         assert!(e.contains("not an IDR"), "{e}");
     }
 
     #[test]
-    fn cra_open_gop_is_refused_by_name() {
+    fn a_cra_open_gop_is_refused_and_named() {
         let e = validate_leading_nals(&stream(&[32, 33, 34, 21])).unwrap_err();
         assert!(e.contains("CRA"), "{e}");
     }
@@ -189,11 +176,12 @@ mod tests {
     }
 
     #[test]
-    fn garbage_and_degenerate_inputs_are_refused() {
+    fn empty_and_malformed_input_is_refused() {
         assert!(validate_leading_nals(&[]).is_err());
+        // no Annex-B start code at all
         let e = validate_leading_nals(&[0x47; 4096]).unwrap_err();
-        assert!(e.contains("start code"), "{e}"); // no Annex-B start code at all
-                                                  // parameter sets only, no slice ever
+        assert!(e.contains("start code"), "{e}");
+        // parameter sets only, no slice ever
         assert!(validate_leading_nals(&stream(&[32, 33, 34])).is_err());
         // forbidden_zero_bit set on the first NAL header
         let mut v = vec![0, 0, 0, 1, 0x80 | (32 << 1), 0x01];

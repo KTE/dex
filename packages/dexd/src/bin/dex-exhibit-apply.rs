@@ -1,27 +1,21 @@
-//! F6's privileged sibling: reconciles `/boot/firmware/cmdline.txt`'s
-//! `video=<connector>:<mode>` token with `/opt/dex/exhibit.yaml`'s
-//! `kms_force`, idempotently.
+//! Reconciles the `video=<connector>:<mode>` option in
+//! `/boot/firmware/cmdline.txt` with the exhibit config's `kms_force`,
+//! idempotently. An operator runs it as root after editing the config, because
+//! dexd runs unprivileged under `ProtectSystem=strict` and never writes boot
+//! config. See docs/design/exhibit-config.md#dex-exhibit-apply.
 //!
-//! WHY A SEPARATE BINARY. `dexd` runs as the unprivileged `dex` user
-//! under `ProtectSystem=strict` and must never write boot config -- that
-//! sandbox is a design feature (see deploy/dexd.service), not an
-//! oversight to work around here. Deploys in this project are manual (see
-//! README.md), so an operator runs this by hand, as root, after editing
-//! `/opt/dex/exhibit.yaml` -- the same "remaining manual step" pattern the
-//! systemd unit's own comment already documents for `set-default
-//! multi-user.target`.
+//! The grammar and the rewrite are `reconcile_cmdline` in `dexd::exhibit`,
+//! which needs neither root nor a real `/boot`; this binary is the privileged
+//! wrapper around it.
 //!
-//! All the actual logic -- the grammar, and the rewrite itself
-//! (`reconcile_cmdline`) -- lives in `dexd::exhibit` and is Mac-testable
-//! with no root and no real `/boot`. This binary is a thin, privileged shell
-//! around it, exactly the split `src/main.rs` itself follows for the player.
+//! Usage: `sudo dex-exhibit-apply [--exhibit-config <path>] [--cmdline-path <path>]`
 //!
-//! Usage: sudo dex-exhibit-apply [--exhibit-config PATH] [--cmdline-path PATH]
-//!   exit 0  -- cmdline.txt reconciled, or already correct ("no change").
-//!              Prints REBOOT REQUIRED iff it actually changed.
-//!   exit 1  -- cannot read or write a file (I/O failure, not a bad config).
-//!   exit 2  -- refused: not running as root, an invalid exhibit config, or a
-//!              rewrite that would produce an empty/multi-line cmdline.txt.
+//! Exit codes:
+//! * 0 — cmdline.txt reconciled, or already correct ("no change").
+//!   `REBOOT REQUIRED` is printed only when the file changed.
+//! * 1 — a file could not be read or written.
+//! * 2 — refused: the process is not root, the exhibit config is invalid, or
+//!   the rewrite would produce an empty or multi-line cmdline.txt.
 
 use dexd::exhibit::{
     load_exhibit_config, reconcile_cmdline, DEFAULT_EXHIBIT_CONFIG_PATH,
@@ -37,29 +31,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CMDLINE_PATH: &str = "/boot/firmware/cmdline.txt";
 
-/// How many `cmdline.txt.bak-*` backups to keep. The boot partition is a
-/// small FAT32 volume; unbounded accumulation would eventually fill it, and
-/// a backup older than the last few applies has no recovery value anyway.
+/// How many `cmdline.txt.bak-*` backups to keep. The boot partition is a small
+/// FAT32 volume, so the count is capped.
 const BACKUPS_TO_KEEP: usize = 5;
 
 /// Write `contents` to `path` and fsync it before returning. A plain
-/// `fs::write` leaves the data in the page cache with no durability
-/// guarantee -- on the one file the Pi cannot boot without, for an
-/// installation whose documented off-switch is the mains, "written" must
-/// mean "on the card", not "scheduled".
+/// `fs::write` leaves the data in the page cache, and this is the one file the
+/// Raspberry Pi cannot boot without, on an installation whose power is cut
+/// without a shutdown.
+///
+/// See docs/design/exhibit-config.md#dex-exhibit-apply.
 fn write_synced(path: &str, contents: &[u8]) -> std::io::Result<()> {
     let mut f = File::create(path)?;
     f.write_all(contents)?;
     f.sync_all()
 }
 
-/// Best-effort fsync of `path`'s parent directory, so the rename that put
-/// the file there is itself committed. Errors are deliberately ignored:
-/// by this point the data blocks and the file are already synced, and some
-/// filesystems refuse directory fsync -- failing the whole apply over the
-/// least important of the three syncs would be worse than proceeding.
+/// Fsync `path`'s parent directory, so the rename that put the file there is
+/// committed too. Errors are ignored: the data blocks and the file are already
+/// synced by this point, and some filesystems refuse a directory fsync.
 fn sync_parent_dir(path: &str) {
-    let parent = Path::new(path).parent().filter(|p| !p.as_os_str().is_empty());
+    let parent = Path::new(path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty());
     if let Some(dir) = parent {
         if let Ok(d) = File::open(dir) {
             let _ = d.sync_all();
@@ -67,8 +61,8 @@ fn sync_parent_dir(path: &str) {
     }
 }
 
-/// Pick a backup path that does not already exist: two applies within the
-/// same second must not silently truncate each other's backup.
+/// Pick a backup path that does not already exist, so two applies within the
+/// same second cannot truncate each other's backup.
 fn fresh_backup_path(cmdline_path: &str, stamp: u64) -> String {
     let base = format!("{cmdline_path}.bak-{stamp}");
     let mut candidate = base.clone();
@@ -80,26 +74,25 @@ fn fresh_backup_path(cmdline_path: &str, stamp: u64) -> String {
     candidate
 }
 
-/// Delete all but the newest [`BACKUPS_TO_KEEP`] `<cmdline>.bak-*` files.
-/// Best-effort and loud about what it removes; a failure here never fails
-/// the apply (the reconcile already succeeded), it only means one extra
-/// backup survives until the next run.
+/// Delete all but the newest [`BACKUPS_TO_KEEP`] `<cmdline>.bak-*` files, and
+/// print what it removes. A failure here leaves one extra backup until the next
+/// run and never fails an apply that has already succeeded.
 ///
-/// Ordered by modification time, NOT by name, and `just_written` is never a
-/// prune candidate at all. Both matter for the same reason, caught live on
-/// the bench (dexpi4, 2026-08-17): once pruning frees an unsuffixed
-/// `bak-<stamp>` name, a later same-second apply reuses it — and that name
-/// sorts lexically BEFORE its older `.1`/`.2` siblings, so a name sort would
-/// classify the NEWEST backup as oldest and delete the one backup that
-/// still matches the file just replaced. FAT mtime granularity (2 s) can
-/// still tie same-second backups, which the explicit `just_written`
-/// exclusion makes harmless.
+/// Keep two properties when changing this: order the candidates by modification
+/// time, never by name, and leave `just_written` out of the candidate list.
+/// Dropping either one deletes the newest backup instead of the oldest.
+/// See docs/design/exhibit-config.md#dex-exhibit-apply.
 fn prune_old_backups(cmdline_path: &str, just_written: &str) {
     let path = Path::new(cmdline_path);
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return };
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
     let prefix = format!("{}.bak-", name.to_string_lossy());
-    let Ok(entries) = fs::read_dir(if dir.as_os_str().is_empty() { Path::new(".") } else { dir })
-    else {
+    let Ok(entries) = fs::read_dir(if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    }) else {
         return;
     };
     let mut backups: Vec<(std::time::SystemTime, String)> = entries
@@ -113,7 +106,10 @@ fn prune_old_backups(cmdline_path: &str, just_written: &str) {
             if p == just_written {
                 return None;
             }
-            let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
+            let mtime = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(UNIX_EPOCH);
             Some((mtime, p))
         })
         .collect();
@@ -134,30 +130,31 @@ fn prune_old_backups(cmdline_path: &str, just_written: &str) {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: dex-exhibit-apply [--exhibit-config PATH] [--cmdline-path PATH]
+        "usage: dex-exhibit-apply [--exhibit-config <path>] [--cmdline-path <path>]
 
-Reconciles the kernel cmdline's video=<connector>:<mode> token with the
-exhibit config's kms_force (F6), idempotently -- every other token, its
-order, and every OTHER connector's video= token are preserved untouched.
-Writes one timestamped backup before any change. Must run as root.
+Reconciles the kernel command line's video=<connector>:<mode> option with the
+exhibit config's kms_force, idempotently. Every other option, its position, and
+every other connector's video= option stay as they are. Writes one timestamped
+backup before any change. Must run as root.
 
-  --exhibit-config PATH   default: whichever of {DEFAULT_EXHIBIT_CONFIG_PATHS:?}
-                          exists (exactly one may; the extension decides the
-                          parser -- .json is strict JSON, .yaml is YAML)
-  --cmdline-path PATH     default: {DEFAULT_CMDLINE_PATH}   (test/bench override)
+  --exhibit-config <path>
+                          default: whichever of {DEFAULT_EXHIBIT_CONFIG_PATHS:?}
+                          exists (at most one may; the file extension selects
+                          the parser -- .json is strict JSON, .yaml is YAML)
+  --cmdline-path <path>   default: {DEFAULT_CMDLINE_PATH}   (test rig only)
 
-Run this after editing the exhibit config. It prints REBOOT REQUIRED iff
-cmdline.txt actually changed -- dexd binds the display from the RUNNING
-kernel's /proc/cmdline, not from this file on disk, so an unrebooted change
-has no effect yet and the next start's cmdline gate will say so."
+Run this after editing the exhibit config. It prints REBOOT REQUIRED only when
+cmdline.txt changed. dexd binds the display from the running kernel's
+/proc/cmdline, so an unrebooted change has no effect yet and the next start's
+cmdline check reports the mismatch."
     );
     std::process::exit(2)
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    // `None` means "discover it" -- not "use the JSON default" -- so this tool
-    // follows the same .json/.yaml discovery dexd does.
+    // `None` asks for discovery, so this tool searches the same .json/.yaml
+    // names in the same order dexd does.
     let mut exhibit_config_path: Option<String> = None;
     let mut cmdline_path = DEFAULT_CMDLINE_PATH.to_string();
 
@@ -180,39 +177,38 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    // Refused before touching any file: "run this as root" is a clean, whole
-    // failure, rather than a confusing partial write that dies on the second
-    // fs::write with a permission error.
+    // Checked before any file is touched, so a non-root run fails whole and
+    // early, instead of dying half-way through on a permission error.
     if !is_root() {
         eprintln!("error: dex-exhibit-apply must run as root (sudo dex-exhibit-apply)");
         return ExitCode::from(2);
     }
 
-    // Deliberately the SAME loader dexd uses (exhibit::load_exhibit_config),
-    // not a local read: this tool's entire job is to make the boot cmdline
-    // agree with the config the player will read, so reading a different file
-    // than the player does would make it a drift GENERATOR. That includes the
-    // .json/.yaml discovery and the both-exist refusal.
-    let (config, exhibit_config_path) =
-        match load_exhibit_config(exhibit_config_path.as_deref(), &DEFAULT_EXHIBIT_CONFIG_PATHS) {
-            Ok(Some(found)) => found,
-            // Unlike the player, this tool has nothing useful to do without a
-            // config, so "none installed" is a plain refusal here rather than
-            // something deferred to a resolver.
-            Ok(None) => {
-                eprintln!(
-                    "error: no exhibit config found (looked for {}). Create \
+    // The same loader dexd uses, including its .json/.yaml discovery and its
+    // refusal when both files exist: reading a different file than the player
+    // reads would make the boot config and the player's config diverge.
+    // See docs/design/exhibit-config.md#dex-exhibit-apply.
+    let (config, exhibit_config_path) = match load_exhibit_config(
+        exhibit_config_path.as_deref(),
+        &DEFAULT_EXHIBIT_CONFIG_PATHS,
+    ) {
+        Ok(Some(found)) => found,
+        // Without a config this tool has nothing to do, so a missing config is
+        // refused here.
+        Ok(None) => {
+            eprintln!(
+                "error: no exhibit config found (looked for {}). Create \
                      {DEFAULT_EXHIBIT_CONFIG_PATH} next to the video, or name a config with \
                      --exhibit-config",
-                    DEFAULT_EXHIBIT_CONFIG_PATHS.join(", ")
-                );
-                return ExitCode::from(2);
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::from(2);
-            }
-        };
+                DEFAULT_EXHIBIT_CONFIG_PATHS.join(", ")
+            );
+            return ExitCode::from(2);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
     let current = match fs::read_to_string(&cmdline_path) {
         Ok(t) => t,
@@ -222,11 +218,9 @@ fn main() -> ExitCode {
         }
     };
 
-    // Name the file this run is applying FROM, before saying anything about
-    // what it did. With two possible config names and a --exhibit-config
-    // override, "which file did that apply use?" is the first question anyone
-    // debugging a wrong mode asks, and the answer belongs in the output rather
-    // than in a reconstruction from argv.
+    // Name the config this run read before reporting what it did: with two
+    // possible names and an override flag, that is the first thing to check
+    // when the display mode is wrong. See dex-exhibit-apply(1).
     println!(
         "dex-exhibit-apply: applying {exhibit_config_path} (connector {}, kms_force {})",
         config.connector, config.kms_force
@@ -242,7 +236,9 @@ fn main() -> ExitCode {
 
     let current_trimmed = current.trim_end_matches(['\n', '\r']);
     if current_trimmed == desired {
-        println!("dex-exhibit-apply: {cmdline_path} already matches the exhibit config -- no change");
+        println!(
+            "dex-exhibit-apply: {cmdline_path} already matches the exhibit config -- no change"
+        );
         return ExitCode::SUCCESS;
     }
 
@@ -251,33 +247,27 @@ fn main() -> ExitCode {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let backup_path = fresh_backup_path(&cmdline_path, stamp);
-    // Synced before the original is touched: a backup that is still only in
-    // the page cache when the mains go off is no backup at all.
+    // Synced before the original is touched, so a power cut cannot leave the
+    // backup unwritten.
     if let Err(e) = write_synced(&backup_path, current.as_bytes()) {
         eprintln!("error: cannot write backup {backup_path}: {e}");
         return ExitCode::from(1);
     }
 
-    // Preserve the file's own trailing-newline convention rather than impose
-    // one -- cmdline.txt is conventionally a single line with NO trailing
-    // newline, but writing back exactly what was there (minus the one token
-    // this tool changed) is the more conservative move regardless of which
-    // convention a given card image happens to use.
+    // Keep the file's own trailing-newline convention. cmdline.txt is
+    // conventionally a single line with no trailing newline, but card images
+    // vary, so write back what was there, minus the one option this tool
+    // changed.
     let to_write = if current.ends_with('\n') {
         format!("{desired}\n")
     } else {
         desired.clone()
     };
-    // NEVER rewrite cmdline.txt in place. `fs::write` is open(O_TRUNC) +
-    // write: a mains cut between the truncate and the data commit leaves a
-    // zero-length or garbage cmdline.txt -- an unbootable Pi in a gallery
-    // with no operator, recoverable only by pulling the SD card on site.
-    // And this tool's next printed word is "REBOOT REQUIRED", i.e. it
-    // actively invites a power cycle while an unsynced write could still be
-    // sitting in the page cache. So: write a sibling temp file, fsync it,
-    // rename over the original, fsync the directory. Even where FAT32's
-    // rename atomicity is weak, temp+sync+rename strictly shrinks the
-    // corruption window versus in-place truncation.
+    // Write a sibling temp file, fsync it, rename it over the original, then
+    // fsync the directory. Do not rewrite cmdline.txt in place: `fs::write`
+    // opens with O_TRUNC, so a power cut between the truncate and the data
+    // commit leaves a Raspberry Pi that will not boot.
+    // See docs/design/exhibit-config.md#dex-exhibit-apply.
     let tmp_path = format!("{cmdline_path}.new");
     if let Err(e) = write_synced(&tmp_path, to_write.as_bytes()) {
         eprintln!("error: cannot write {tmp_path}: {e}");
@@ -296,19 +286,16 @@ fn main() -> ExitCode {
     println!("  new: {desired}");
     println!("  backup: {backup_path}");
     prune_old_backups(&cmdline_path, &backup_path);
-    println!(
-        "REBOOT REQUIRED -- dexd binds the display from the RUNNING kernel's /proc/cmdline"
-    );
+    println!("REBOOT REQUIRED -- dexd binds the display from the running kernel's /proc/cmdline");
 
     ExitCode::SUCCESS
 }
 
 #[cfg(unix)]
 fn is_root() -> bool {
-    // geteuid() has no safe std wrapper, and this crate deliberately keeps no
-    // libc dependency (Cargo.toml's SPEC §5c policy) for one syscall — the
-    // same reasoning that keeps main.rs's mpv bindings hand-written rather
-    // than pulled in via a crate. The unsafety is exactly this one call.
+    // `geteuid` has no safe wrapper in std, and the crate declares no libc
+    // dependency for one syscall. This call is the only unsafe code in this
+    // binary.
     extern "C" {
         fn geteuid() -> u32;
     }

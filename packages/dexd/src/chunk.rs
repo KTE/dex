@@ -1,43 +1,40 @@
-//! T0 — the wrap arithmetic of the endless stream, extracted pure so it is
-//! testable without libmpv. `read_fn` in main.rs is a thin unsafe shell over
-//! `next_chunk`; the properties asserted here (never a zero-byte answer, the
-//! concatenation property) ARE the program.
+//! Loop-position arithmetic for the endless stream, kept free of libmpv so it
+//! can be tested on its own. The read callback in main.rs is a thin unsafe
+//! shell over `next_chunk`; the tests here enforce the rules that callback
+//! depends on: never a zero-byte answer, the bounds the unsafe copy relies on,
+//! and byte-for-byte reproduction of the endlessly repeated payload.
+//!
+//! See docs/design/endless-stream.md#loop-position-arithmetic.
 
 /// One read request's answer: copy `n` bytes starting at payload offset
 /// `start`; the reader's position afterwards is `next_pos`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chunk {
-    /// Offset into the payload to copy from. Always < payload length.
+    /// Offset into the payload to copy from. Always below the payload length.
     pub start: usize,
     /// Bytes to copy. Never 0.
     pub n: usize,
-    /// Reader position after the copy. Always < payload length: the wrap
-    /// happens eagerly here, never lazily on the next call, so the invariant
-    /// holds between calls.
+    /// Reader position after the copy. Always below the payload length: the
+    /// position returns to 0 as soon as a copy reaches the end of the payload,
+    /// so the bounds the unsafe copy relies on hold between calls.
     pub next_pos: usize,
 }
 
 /// Decide the next chunk of the endless loop.
 ///
 /// `len` is the payload length, `pos` the reader position (any value is
-/// tolerated; positions >= len wrap to 0 first), `want` the requested byte
-/// count.
+/// tolerated; a position at or past `len` starts again at 0), `want` the
+/// requested byte count.
 ///
-/// Returns `None` exactly when no bytes can be produced without lying: a
-/// zero-length request (`want == 0`), or the impossible-after-startup empty
-/// payload (`len == 0`). The caller turns `None` into an mpv ERROR return
-/// rather than 0 — NOT because mpv treats the two return values differently
-/// (mpv 0.40's `stream_read_unbuffered` maps any `res <= 0` to EOF
-/// uniformly, so a negative return would end the stream exactly like 0
-/// would) but because mpv never actually issues a zero-length read in the
-/// first place (`stream.c` guards `len <= 0` before calling in at all) — the
-/// distinction is for THIS CRATE'S OWN error ledger, so its diagnostics can
-/// tell "asked for nothing" apart from "ran out of things to give". If mpv
-/// ever did call with `want == 0` on some future version, the result would
-/// be an ordinary END_FILE -> fatal exit -> supervisor restart, not a seam.
+/// Returns `None` exactly when no bytes can be produced: a zero-length
+/// request, or an empty payload. The caller turns that into an mpv error
+/// rather than 0, which keeps the case visible in dexd's own diagnostics.
 ///
-/// A short read is legal (stream_cb.h), so the wrap is never stitched across
-/// one call: the tail is returned now, the head on the next call.
+/// A short read is legal (`stream_cb.h`), so one call never returns bytes from
+/// both the end and the start of the payload: the tail comes now, the head on
+/// the next call.
+///
+/// See docs/design/endless-stream.md#loop-position-arithmetic.
 pub fn next_chunk(len: usize, pos: usize, want: usize) -> Option<Chunk> {
     if len == 0 || want == 0 {
         return None;
@@ -50,11 +47,13 @@ pub fn next_chunk(len: usize, pos: usize, want: usize) -> Option<Chunk> {
     Some(Chunk { start, n, next_pos })
 }
 
-/// Clamp mpv's u64 request size to usize without ever turning a nonzero
-/// request into 0. On a 32-bit target `as usize` truncates: an `nbytes` that
-/// is an exact multiple of 2^32 would become a 0-byte request and therefore a
-/// spurious final EOF. Saturating can only shrink the request, and short
-/// reads are always legal.
+/// Convert mpv's `u64` request size to `usize`, saturating at `usize::MAX`.
+///
+/// Saturating can only shrink the request, and a short read is legal;
+/// `as usize` would truncate a multiple of 2^32 to a 0-byte request on a
+/// 32-bit target.
+///
+/// See docs/design/endless-stream.md#loop-position-arithmetic.
 pub fn clamp_want(nbytes: u64) -> usize {
     usize::try_from(nbytes).unwrap_or(usize::MAX)
 }
@@ -63,8 +62,8 @@ pub fn clamp_want(nbytes: u64) -> usize {
 mod tests {
     use super::*;
 
-    // T1: never returns n == 0 for any want >= 1 (a 0 return = final EOF to
-    // mpv, the exact event the design exists to prevent).
+    // A 0-byte answer is final end-of-file to mpv, the event the endless stream
+    // exists to prevent.
     #[test]
     fn never_zero_bytes_for_nonzero_want() {
         for len in [1usize, 2, 3, 7, 64, 1000] {
@@ -78,36 +77,37 @@ mod tests {
         }
     }
 
-    // T1: want == 0 (and the impossible len == 0) are explicit, distinct
-    // outcomes — never conflated with a zero-byte "success" that mpv would
-    // read as EOF.
+    // A zero-length request and the empty payload are separate outcomes, kept
+    // apart from a zero-byte success that mpv would read as end-of-file.
     #[test]
-    fn zero_want_and_empty_payload_are_none_not_zero_chunks() {
+    fn zero_want_and_empty_payload_produce_no_chunk() {
         assert_eq!(next_chunk(10, 0, 0), None);
         assert_eq!(next_chunk(10, 9, 0), None);
         assert_eq!(next_chunk(1, 0, 0), None);
-        assert_eq!(next_chunk(10, 10, 0), None); // even at the wrap point
-        assert_eq!(next_chunk(0, 0, 4096), None); // empty payload: error, not EOF
+        assert_eq!(next_chunk(10, 10, 0), None); // even at the end of the payload
+        assert_eq!(next_chunk(0, 0, 4096), None); // empty payload: error, not end-of-file
     }
 
-    // T1: wrap at the exact payload boundary.
+    // The copy and the next position when a request reaches the end of the payload.
     #[test]
-    fn wraps_at_exact_boundary() {
-        // pos at end-of-payload (legacy lazy-caller state): wraps to 0 first.
+    fn position_returns_to_zero_at_the_payload_boundary() {
+        // position already at the end of the payload: the copy starts at 0.
         let c = next_chunk(10, 10, 4).unwrap();
         assert_eq!((c.start, c.n, c.next_pos), (0, 4, 4));
-        // tail shorter than want: short read of the tail, next_pos wraps to 0.
+        // tail shorter than want: short read of the tail, next_pos returns to 0.
         let c = next_chunk(10, 8, 4).unwrap();
         assert_eq!((c.start, c.n, c.next_pos), (8, 2, 0));
-        // read ending exactly at len: next_pos is 0, not len (eager wrap).
+        // a copy ending at len: next_pos is 0, so the bounds the unsafe copy
+        // relies on hold between calls.
         let c = next_chunk(10, 6, 4).unwrap();
         assert_eq!((c.start, c.n, c.next_pos), (6, 4, 0));
     }
 
-    // T1: payload smaller than the request.
+    // A request larger than the whole payload.
     #[test]
     fn payload_smaller_than_want() {
-        // whole payload in one request: short read of everything, wrap to 0.
+        // whole payload in one request: short read of everything, and the position
+        // returns to 0.
         let c = next_chunk(3, 0, 4096).unwrap();
         assert_eq!((c.start, c.n, c.next_pos), (0, 3, 0));
         // single-byte payload: every read returns that byte, forever.
@@ -117,7 +117,7 @@ mod tests {
         }
     }
 
-    // T1: the position invariant read_fn's SAFETY comment relies on.
+    // The position invariant the read callback's SAFETY comment relies on.
     #[test]
     fn next_pos_always_less_than_len() {
         for len in [1usize, 2, 3, 5, 64, 4096] {
@@ -132,13 +132,14 @@ mod tests {
         }
     }
 
-    // T1: THE property — driving next_chunk repeatedly reproduces the payload
-    // repeated endlessly, byte for byte, for arbitrary request sizes. This is
-    // the only property that matters: the stream really is the loop.
+    // Driving next_chunk repeatedly reproduces the endlessly repeated payload,
+    // byte for byte, for arbitrary request sizes.
     #[test]
     fn concatenation_reproduces_the_endless_loop() {
         let payload: Vec<u8> = (0u8..=250).cycle().take(997).collect(); // prime length
-                                                                        // deterministic pseudo-random request sizes (LCG, no dependencies)
+
+        // Deterministic pseudo-random request sizes, from a linear congruential
+        // generator so that no dependency is needed.
         let mut rng: u64 = 0x853c49e6748fea9b;
         let mut random_sizes = Vec::new();
         for _ in 0..2000 {
@@ -149,7 +150,7 @@ mod tests {
         }
         let schedules: Vec<Vec<usize>> = vec![
             vec![1; 3000], // one byte at a time
-            vec![997; 8],  // exactly the payload length
+            vec![997; 8],  // the payload length itself
             vec![996; 8],  // one short of the payload
             vec![998; 8],  // one past the payload
             vec![4096; 8], // far larger than the payload
@@ -168,11 +169,8 @@ mod tests {
         }
     }
 
-    // T1: the u64 -> usize clamp saturates rather than truncating to 0.
-    // Honest limitation: on a 64-bit host try_from always succeeds, so the
-    // truncation branch only genuinely executes on a 32-bit target (the Pi 4
-    // runs aarch64). This pins the contract against someone reintroducing
-    // `as usize`; a 32-bit CI target would then catch it.
+    // The clamp saturates. `try_from` always succeeds on the 64-bit target, so
+    // this test holds the contract against a reintroduced `as usize`.
     #[test]
     fn clamp_want_never_zero_for_nonzero_input() {
         assert_eq!(clamp_want(0), 0);

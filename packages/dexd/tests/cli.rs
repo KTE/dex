@@ -1,44 +1,43 @@
-//! T3 — failure-path integration tests. Every serious bug in this program
-//! lived in a failure path; the happy path was never the problem. Each test
-//! asserts EXIT BEHAVIOUR (code + boundedness), not output niceties.
+//! Failure-path tests. Each spawns the real binary and asserts the exit code
+//! and that the run ends at all.
 //!
-//! These tests spawn the real binary, which links libmpv — this target runs
-//! on the Pi (`cargo test`); on the Mac use `cargo test --lib`.
+//! The device under test may be showing something, so every invocation here
+//! that can reach `mpv_create` carries `--no-defaults --opt vo=null --opt
+//! vid=no --opt aid=no`: the null video output never touches DRM, and
+//! deselecting every track makes mpv end on its own (`NOTHING_TO_PLAY` →
+//! `END_FILE`). One test departs from the rule and carries `#[ignore]`.
 //!
-//! DISPLAY SAFETY: a soak may own the display. Every invocation that can
-//! reach mpv_create MUST carry `--no-defaults --opt vo=null --opt vid=no
-//! --opt aid=no`: the null VO never touches DRM, and deselecting all tracks
-//! makes mpv end deterministically (NOTHING_TO_PLAY -> END_FILE) instead of
-//! playing forever.
+//! The binary links libmpv, so this target runs where libmpv is installed;
+//! elsewhere use `cargo test --lib`.
+//!
+//! See docs/design/development.md#display-safety and
+//! docs/design/development.md#test-harness.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Exit-code contract (see usage()): refused before playback vs runtime failure.
-const GATE_EXIT: i32 = 2;
+/// Exit 2 is a refusal before playback; exit 1 is a runtime failure.
+/// See docs/design/startup-checks.md#exit-codes.
+const REFUSED_EXIT: i32 = 2;
 const RUNTIME_EXIT: i32 = 1;
 
-/// Outcome of one run. `exit_code` is None when the process had to be killed
-/// at the deadline OR died by signal. For the exit-code tests both are
-/// failures the `Some(..)` assertions catch — but for the live-fire survival
-/// test the polarity flips (None is the PASS), so the two None causes must be
-/// distinguishable: `deadline_killed` is true only when THIS HARNESS killed
-/// the child at the deadline. A child that died by signal on its own
-/// (SIGSEGV/SIGABRT) has `exit_code: None` with `deadline_killed: false`,
-/// and conflating that with survival would let a crashing recovery pass a
-/// survival assertion.
+/// Outcome of one run. `exit_code` is `None` both when the harness killed the
+/// child at its deadline and when the child died by signal, so a test whose
+/// pass condition is survival reads `deadline_killed`, which is true only for
+/// the harness's own kill.
+/// See docs/design/development.md#test-harness.
 struct Run {
     exit_code: Option<i32>,
     deadline_killed: bool,
     stderr: String,
 }
 
-/// Spawn dexd, wait at most `deadline`, kill on overrun. THE DEADLINE IS
-/// THE ASSERTION: a player that hangs on a failure path is this program's
-/// worst outcome — alive, supervisor green, screen black. The shipped
-/// END_FILE idle-hang was exactly that.
+/// Spawn dexd, wait at most `deadline`, and kill the child on overrun. The
+/// deadline is the assertion: it is what catches a player that hangs on a
+/// failure path instead of exiting.
+/// See docs/design/development.md#test-harness.
 fn run_with_deadline(args: &[&str], deadline: Duration) -> Run {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dexd"))
         .args(args)
@@ -46,8 +45,8 @@ fn run_with_deadline(args: &[&str], deadline: Duration) -> Run {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn dexd");
-    // Drain stderr on a thread so a chatty child can never fill the pipe and
-    // block — a blocked child would masquerade as a hang.
+    // Drain stderr on a thread so a chatty child cannot fill the pipe and
+    // block, which would look like a hang.
     let mut pipe = child.stderr.take().expect("stderr piped");
     let reader = std::thread::spawn(move || {
         let mut s = String::new();
@@ -81,26 +80,16 @@ fn temp_path(name: &str) -> PathBuf {
     p
 }
 
-/// Minimal Annex-B HEVC scaffold: VPS, SPS, PPS, then an IDR_N_LP slice --
-/// the exact NAL payloads of a real single-frame x265 encode (16x16 black,
-/// closed GOP: `ffmpeg -f lavfi -i color=c=black:s=16x16:d=1:r=1 -frames:v 1
-/// -c:v libx265 -x265-params keyint=1 -f hevc`), not synthetic filler.
+/// The NAL units of a real single-frame HEVC encode: parameter sets and one
+/// IDR slice, taken from a 16×16 black frame with a closed GOP.
 ///
-/// This MUST be real, parseable HEVC, not arbitrary filler bytes: `loop://`
-/// never returns EOF -- that is the entire point of the player -- and
-/// libavformat's probe (`avformat_find_stream_info`) only gives up early
-/// when it hits EOF. Verified on-device: fed a garbage VPS/SPS through the
-/// endless non-EOF stream, the probe can extract nothing AND never sees
-/// end-of-stream, so it keeps demanding more data forever -- CPU pinned at
-/// 100%, RSS climbing unbounded, silent (no stderr) until the test deadline
-/// kills it. A real SPS lets `avformat_find_stream_info` resolve
-/// width/height/profile from the header in one pass, independent of the
-/// stream's (infinite) length, so mpv reaches "no video or audio streams
-/// selected" -> END_FILE in well under a second.
-///
-/// Structurally what the F4 NAL gate requires; not meant to actually
-/// *decode* -- video is deselected (`--opt vid=no`) before decode is ever
-/// attempted, so only stream *identification* needs to succeed.
+/// The bytes have to be a parseable stream: `loop://` never
+/// returns end of file, and the demuxer's probe gives up early only when it
+/// reaches one, so filler leaves it demanding data until the deadline kills
+/// the run. Real parameter sets let it resolve width, height and profile in
+/// one pass, after which mpv reaches `END_FILE` in well under a second.
+/// Nothing here has to decode: video is deselected before decode is attempted.
+/// See docs/design/development.md#fixtures.
 fn stub_annexb() -> Vec<u8> {
     fn nal(nal_type: u8, payload: &[u8]) -> Vec<u8> {
         // 4-byte start code + 2-byte NAL header (forbidden=0, layer=0, tid+1=1)
@@ -132,8 +121,8 @@ fn stub_annexb() -> Vec<u8> {
     v
 }
 
-/// Write `<asset>.json` binding `bytes` at `fps` — the deploy-path fixture.
-/// Inert before task 6 (the player ignores it); binding afterwards.
+/// Write the sidecar `<asset>.json` binding `bytes` at `fps`, as a normal
+/// start requires. See docs/design/sidecar.md#what-the-sidecar-binds.
 fn write_sidecar(asset: &Path, bytes: &[u8], fps: &str) {
     let sha = dexd::sha256::sha256_hex(bytes);
     std::fs::write(
@@ -143,26 +132,24 @@ fn write_sidecar(asset: &Path, bytes: &[u8], fps: &str) {
     .unwrap();
 }
 
-/// F6 — write a minimal, always-satisfiable exhibit config at a unique temp
-/// path and return it. `display_mode: "auto"` skips the sysfs mode
-/// pre-flight (no WxH to check), and `kms_force: "none"` is paired with
-/// `write_no_video_cmdline` below so the cmdline gate passes deterministically
-/// regardless of what the REAL host's `/proc/cmdline` happens to contain —
-/// deploy-path tests below pass BOTH this and `--proc-cmdline
-/// <write_no_video_cmdline path>` so the F6 gates are satisfied without
-/// depending on the test host's kernel command line, and the test's own gate
-/// (F3/F4/opt) still runs exactly as it did before F6 existed.
+/// Write an exhibit config that every display check accepts, at a unique temp
+/// path. `display_mode: "auto"` names no resolution, so the mode pre-flight is
+/// skipped, and `kms_force: "none"` pairs with [`write_no_video_cmdline`] so
+/// the cmdline check passes whatever the host's own kernel command line
+/// carries. Tests that want a different check to refuse pass both files, so
+/// only the one under test can fail.
+/// See docs/design/startup-checks.md#order-of-checks.
 fn write_exhibit_config(name: &str) -> PathBuf {
     let p = temp_path(name);
     std::fs::write(&p, r#"{"display_mode":"auto","kms_force":"none"}"#).unwrap();
     p
 }
 
-/// F6 — a synthetic `/proc/cmdline` with no `video=` token at all, so the
-/// cmdline gate's "kms_force=none, expect no token" branch always matches,
-/// independent of the real host's actual kernel command line (a CI container
-/// has none either way, but the real bench Pi, once F6 is deployed there,
-/// legitimately does).
+/// Write a kernel command line with no `video=` token, so the cmdline check's
+/// "kms_force=none, expect no token" branch matches on any host. A container
+/// carries no such token and a configured Raspberry Pi does, so a test that
+/// read the real file would assert different things on each.
+/// See docs/design/development.md#test-only-flags.
 fn write_no_video_cmdline(name: &str) -> PathBuf {
     let p = temp_path(name);
     std::fs::write(&p, "console=ttyS0 root=/dev/mmcblk0p2 rootwait quiet\n").unwrap();
@@ -185,7 +172,7 @@ fn missing_file_exits_2_and_names_the_path() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains("/nonexistent/dexd-test.265"),
         "stderr must name the path: {}",
@@ -211,61 +198,43 @@ fn empty_file_exits_2() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
-    // Pin the INTENDED gate (main.rs's empty-payload guard), not just any
-    // refusal: without this, deleting that guard would leave the test green
-    // via the (also exit-2) missing-sidecar path instead.
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
+    // Name the message, not only the code: the missing-sidecar path also
+    // exits 2, so a bare code check would stay green if the empty-payload
+    // check were deleted.
     assert!(r.stderr.contains("is empty"), "stderr: {}", r.stderr);
 }
 
-// REMOVED 2026-08-17: `no_args_exits_2_with_usage`, which asserted that a bare
-// `dexd` prints usage and exits 2.
-//
-// It was correct until F6 moved the asset into the exhibit config. Now
-// `ExecStart=/usr/bin/dexd` passes exactly zero arguments, so "no args" is
-// the SHIPPED invocation rather than an operator error -- and this test caught
-// that regression on the Pi within minutes, which it could only ever have done
-// there: the Mac cannot link these targets at all.
-//
-// Not merely inverted to "no args must NOT print usage", because on a card
-// whose config and asset are both complete, a bare run would START PLAYBACK
-// and take DRM master inside a test -- a visible glitch on a device that may
-// be mid-exhibition, and a failing assertion anyway (the harness deadline, not
-// an exit code). A test must not be able to interrupt a show.
-//
-// The property it protected -- a missing positional is not an argv error --
-// is covered host-independently by
-// `no_positional_asset_is_accepted_and_reaches_the_config` below, which
-// supplies its own --exhibit-config and lands on a gate rather than on
-// playback.
-
-/// A `--fps`/`--mode` with no following value used to evaporate silently
-/// (`args.get(i)` -> `None` -> the flag is just dropped) instead of refusing:
-/// an edited systemd unit or a line-continuation typo would start the player
-/// on the connector-preferred mode, or with no fps cross-check, with zero
-/// error. `--opt` already fell into `usage()` on a missing value -- these two
-/// flags must too.
+/// A flag at the end of the command line with no value must refuse with the
+/// usage text. Dropping it silently would let a line-continuation typo in a
+/// unit file start the player on the connector's preferred mode, or with no
+/// frame-rate cross-check, and say nothing.
+/// See docs/design/startup-checks.md#argument-shape.
+///
+/// No test here runs dexd with no arguments at all: on a device whose config
+/// and asset are complete that starts playback and takes DRM master. The
+/// argument shape of the packaged unit is covered by
+/// `no_positional_asset_is_accepted_and_reaches_the_config`, which supplies
+/// its own `--exhibit-config` and lands on a check.
 #[test]
 fn fps_flag_missing_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(&["/nonexistent/x.265", "--fps"], Duration::from_secs(10));
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
 #[test]
 fn mode_flag_missing_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(&["/nonexistent/x.265", "--mode"], Duration::from_secs(10));
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
-/// THE regression for shipped bug #1: mpv_create enables idle mode, so a
-/// playback failure emits END_FILE and then idles FOREVER unless the event
-/// loop treats END_FILE as fatal. Force a deterministic, display-free
-/// playback failure (vid=no + aid=no deselect every track -> mpv ends with
-/// "nothing to play" -> END_FILE) and assert the process EXITS, code 1,
-/// within the deadline. Before the END_FILE fix this exact scenario sat in
-/// idle indefinitely with the supervisor reading green.
+/// `mpv_create` enables idle mode, so a failed load emits `END_FILE` and then
+/// waits, alive, unless the event loop treats that event as fatal. Deselecting
+/// every track forces a display-free playback failure; the process must exit 1
+/// inside the deadline.
+/// See docs/design/failure-handling.md#fatal-events.
 #[test]
 fn playback_failure_exits_nonzero_never_hangs() {
     let p = temp_path("stub.265");
@@ -295,36 +264,33 @@ fn playback_failure_exits_nonzero_never_hangs() {
     );
     assert!(
         r.exit_code.is_some(),
-        "player HUNG on a playback failure (killed at deadline); stderr: {}",
+        "the player hangs on a playback failure (killed at the deadline); stderr: {}",
         r.stderr
     );
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
-    // Exit 1 is also returned by four OTHER failure sites (mpv_create,
-    // set_opt, mpv_initialize, loadfile). Without this, a regression that
-    // makes one of those fail instead -- e.g. `--opt` plumbing silently
-    // broken so `vo=null` never reaches mpv -- would produce an instant exit
-    // 1 and this test would stay green while no longer exercising the
-    // END_FILE branch at all. Pin the branch, not just the exit code.
+    // Four other sites also exit 1 (mpv_create, set_opt, mpv_initialize,
+    // loadfile), so check the message as well. A break that made one of those
+    // fail first would exit 1 at once and leave this test green without ever
+    // reaching the END_FILE branch.
     assert!(
         r.stderr.contains("playback ended"),
-        "exited 1 but not via the END_FILE branch this test exists to pin: {}",
+        "exited 1 without reaching the END_FILE branch: {}",
         r.stderr
     );
 }
 
-/// Post-F4: garbage never reaches mpv — the NAL gate refuses it at startup,
-/// fast, with a message naming the actual problem. (The pre-F4 version of
-/// this test allowed exit 1 via mpv's demux-probe failure; the event-loop
-/// hang class is covered by playback_failure_exits_nonzero_never_hangs.)
+/// Bytes that are not an HEVC stream never reach mpv: the asset check refuses
+/// them at startup, naming the missing start code.
+/// See docs/design/sidecar.md#the-asset-check.
 #[test]
-fn garbage_bytes_refused_at_the_gate_exit_2() {
+fn garbage_bytes_refused_at_startup_exit_2() {
     let p = temp_path("garbage.265");
     // 64 KiB of bytes in 0x02..=0x7E: no 0x00/0x01 -> no start code anywhere.
     let bytes: Vec<u8> = (0..65536u32)
         .map(|i| ((i.wrapping_mul(2654435761) >> 24) as u8 % 0x7d) + 0x02)
         .collect();
     std::fs::write(&p, &bytes).unwrap();
-    write_sidecar(&p, &bytes, "30"); // hash MATCHES: proves the gate, not F3, refuses
+    write_sidecar(&p, &bytes, "30"); // the checksum matches, so the asset check is what refuses
     let cfg = write_exhibit_config("garbage-exhibit.json");
     let cl = write_no_video_cmdline("garbage-cmdline");
     let r = run_with_deadline(
@@ -344,15 +310,17 @@ fn garbage_bytes_refused_at_the_gate_exit_2() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("start code"), "stderr: {}", r.stderr);
 }
 
-/// Wrong-but-intact: a CRA-led (open GOP) asset with a CORRECT sidecar hash.
-/// F3 passes — the bytes are exactly what was ingested — and F4 must still
-/// refuse, proving the hash alone is insufficient.
+/// An asset whose first picture is a CRA — an open GOP — and whose checksum
+/// matches its sidecar. The sidecar check passes and the asset check must
+/// still refuse: a matching checksum says the bytes are the prepared ones, and
+/// nothing about whether they can loop.
+/// See docs/design/sidecar.md#the-asset-check.
 #[test]
-fn open_gop_asset_refused_at_the_gate_exit_2() {
+fn open_gop_asset_refused_at_startup_exit_2() {
     let p = temp_path("opengop.265");
     let mut bytes = Vec::new();
     for t in [32u8, 33, 34, 21] {
@@ -381,11 +349,11 @@ fn open_gop_asset_refused_at_the_gate_exit_2() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("CRA"), "stderr: {}", r.stderr);
 }
 
-// ---- F3: sidecar binding (task 6) ---------------------------------------
+// ---- The sidecar check ---------------------------------------------------
 
 #[test]
 fn missing_sidecar_refused_exit_2_naming_the_sidecar_path() {
@@ -411,7 +379,7 @@ fn missing_sidecar_refused_exit_2_naming_the_sidecar_path() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains(&format!("{}.json", p.display())),
         "stderr must name the sidecar path: {}",
@@ -419,9 +387,9 @@ fn missing_sidecar_refused_exit_2_naming_the_sidecar_path() {
     );
 }
 
-/// The truncated-copy case F4 can NEVER catch: leading NALs intact, tail
-/// missing. Only the hash sees it. The sidecar binds the FULL bytes; the
-/// file on disk is truncated.
+/// A half-copied asset: the leading NAL units are intact, so the asset check
+/// passes, and only the sidecar's checksum sees the missing tail.
+/// See docs/design/sidecar.md#checksum-verification.
 #[test]
 fn truncated_asset_vs_full_hash_refused_exit_2() {
     let p = temp_path("truncated.265");
@@ -447,7 +415,7 @@ fn truncated_asset_vs_full_hash_refused_exit_2() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("sha256"), "stderr: {}", r.stderr);
 }
 
@@ -478,7 +446,7 @@ fn fps_contradicting_sidecar_refused_exit_2_naming_both() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains("25") && r.stderr.contains("30"),
         "stderr must name both rates: {}",
@@ -486,7 +454,8 @@ fn fps_contradicting_sidecar_refused_exit_2_naming_both() {
     );
 }
 
-/// Exit 1 — the mpv path — proves the gates PASSED with an agreeing --fps.
+/// Reaching mpv, and so exit 1, is what proves the checks passed when `--fps`
+/// agrees with the sidecar.
 #[test]
 fn agreeing_fps_and_sidecar_reach_playback() {
     let p = temp_path("fpsagree.265");
@@ -520,11 +489,10 @@ fn agreeing_fps_and_sidecar_reach_playback() {
     assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
 }
 
-/// A rejected mpv option is a deterministic, operator-fixable bad invocation
-/// -- the same asset + flags fail identically on every restart -- so per the
-/// exit-code contract it must be 2 ("fix and redeploy"), not 1 ("the
-/// supervisor restarts"): reading it as transient sends deploy-night triage
-/// looking in the wrong place.
+/// An option libmpv rejects exits 2: the same asset and flags fail identically
+/// on every restart, so it names an invocation to fix; a restart cannot clear
+/// it.
+/// See docs/design/startup-checks.md#exit-codes.
 #[test]
 fn bad_opt_value_refused_exit_2_not_1() {
     let p = temp_path("badopt.265");
@@ -554,18 +522,17 @@ fn bad_opt_value_refused_exit_2_not_1() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
 }
 
-/// SUSPECTED-then-confirmed (adversarial review, 2026-08-15): a rational fps
-/// string reaches mpv's `container-fps-override` and is accepted end to end.
-/// Verified live on the bench Pi at review time via manual invocation; pinned
-/// here so a future mpv, or a future edit to how fps is plumbed, cannot
-/// silently regress every NTSC-rate asset into an exit-1 boot loop.
+/// A frame rate written as a fraction reaches mpv's `container-fps-override`
+/// and is accepted, so an asset at 30000/1001 frames per second plays instead
+/// of leaving the device in a restart loop.
+/// See docs/design/sidecar.md#frame-rate-resolution.
 #[test]
 fn rational_fps_reaches_playback() {
     let p = temp_path("ntsc.265");
-    std::fs::write(&p, stub_annexb()).unwrap(); // bench path: no sidecar needed
+    std::fs::write(&p, stub_annexb()).unwrap(); // the override needs no sidecar
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
@@ -586,12 +553,13 @@ fn rational_fps_reaches_playback() {
     assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
 }
 
-/// Exit 1, not 2: the two-flag bench escape hatch bypasses the sidecar gate
-/// and reaches playback with no sidecar on disk.
+/// The `--test-rig-no-sidecar --fps` override (test rig only) skips the
+/// sidecar check and reaches playback with no sidecar on disk: exit 1, not 2.
+/// See docs/design/startup-checks.md#test-rig-only-override.
 #[test]
-fn bench_escape_hatch_bypasses_sidecar() {
-    let p = temp_path("bench.265");
-    std::fs::write(&p, stub_annexb()).unwrap(); // deliberately no sidecar
+fn test_rig_override_bypasses_the_sidecar_check() {
+    let p = temp_path("override.265");
+    std::fs::write(&p, stub_annexb()).unwrap(); // no sidecar written
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
@@ -614,9 +582,12 @@ fn bench_escape_hatch_bypasses_sidecar() {
     assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
 }
 
+/// The override is two flags or nothing: `--test-rig-no-sidecar` without
+/// `--fps` is refused, so a frame rate can never fall back to the command line
+/// on a deployment. See docs/design/startup-checks.md#test-rig-only-override.
 #[test]
-fn bench_flag_without_fps_refused_exit_2() {
-    let p = temp_path("benchnofps.265");
+fn test_rig_override_without_fps_refused_exit_2() {
+    let p = temp_path("override-nofps.265");
     std::fs::write(&p, stub_annexb()).unwrap();
     let r = run_with_deadline(
         &[
@@ -632,17 +603,18 @@ fn bench_flag_without_fps_refused_exit_2() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
 }
 
-// ---- F7: build identity + heartbeat (task 8) -----------------------------
+// ---- Build identity and heartbeat ----------------------------------------
 
 #[test]
 fn startup_identifies_version_and_build() {
-    // Even a refused start must identify its build — a field journal that
-    // begins with an unidentifiable process is undebuggable weeks later.
+    // Even a refused start prints its version and commit, so a log that opens
+    // with this process can still be read weeks later.
+    // See docs/design/startup-checks.md#startup-lines.
     let r = run_with_deadline(&["/nonexistent/x.265"], Duration::from_secs(10));
-    assert_eq!(r.exit_code, Some(GATE_EXIT));
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT));
     assert!(
         r.stderr
             .contains(&format!("dexd {}", env!("CARGO_PKG_VERSION"))),
@@ -651,32 +623,17 @@ fn startup_identifies_version_and_build() {
     );
 }
 
-// ---- F1: tier-0 health check does not disrupt normal operation ----------
+// ---- The health check ----------------------------------------------------
 
-/// F1 registers `mpv_observe_property("time-pos", ...)` unconditionally
-/// whenever `mpv_initialize` succeeds -- i.e. on every test above that
-/// reaches playback. This pins that registration succeeding SILENTLY (no
-/// "mpv_observe_property" warning in stderr) as its own assertion, so a
-/// future FFI slip (wrong arg order, wrong format constant, wrong function
-/// signature) that makes registration fail -- but not crash -- gets a
-/// dedicated regression test instead of only ever showing up as a
-/// silently-disabled safety net nobody notices.
+/// dexd registers `mpv_observe_property("time-pos", ...)` whenever
+/// `mpv_initialize` succeeds, and the registration must be silent. An FFI slip
+/// that made it fail without crashing would leave in-place recovery switched
+/// off for the run with only one warning line to show for it.
 ///
-/// What this does NOT exercise: an actual stall + in-place recovery +
-/// escalation. Doing that safely would need real decode with a selected
-/// video track and a bounded-but-nonzero wait for two ~10s health-check
-/// ticks to elapse -- and this suite's mandatory `--opt vid=no` (see the
-/// module doc above) exists specifically to forbid letting any CLI test
-/// reach real decode, because the endless-stream design means such a test
-/// could never end on its own except by being killed at a deadline. The
-/// escalation POLICY itself (attempts, thresholds, when it gives up, the
-/// position-baseline reset across a recovery) is pure logic and is
-/// exhaustively tested in src/health.rs with none of that risk; this test
-/// is the narrow slice of the mpv-facing half that CAN be exercised here
-/// without touching decode or the display. The full mpv-facing behaviour
-/// (real time-pos progressing, a real health-check tick, a real recovery)
-/// is verified manually on the Pi against the actual display and asset --
-/// see the crate's PLAN.md F1 entry and this task's session notes.
+/// The registration is the whole of what this covers. A stall, a recovery and
+/// an escalation need real decode, which this file's option rule keeps out;
+/// the policy behind them is tested in `src/health.rs`.
+/// See docs/design/failure-handling.md#health-check.
 #[test]
 fn health_check_registers_without_warning_during_normal_playback() {
     let p = temp_path("healthreg.265");
@@ -705,19 +662,18 @@ fn health_check_registers_without_warning_during_normal_playback() {
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
     assert!(
         !r.stderr.contains("mpv_observe_property"),
-        "F1's time-pos subscription failed to register: {}",
+        "the time-pos subscription failed to register: {}",
         r.stderr
     );
 }
 
 #[test]
 fn heartbeat_zero_is_emitted_at_startup() {
-    // The 10-minute cadence is untestable in a test budget; heartbeat #0
-    // right after loadfile proves temperature reading and line formatting
-    // on every boot — and therefore here. Since F9 it does NOT prove the
-    // mpv property subscriptions (frame-drops/vo-delayed/pos read "n/a" at
-    // heartbeat #0 by design, since nothing has decoded yet); that needs a
-    // longer-running on-device check, not this test.
+    // The 10-minute cadence is out of reach for a test. Heartbeat 0 is emitted
+    // right after loadfile and covers the temperature reading and the line
+    // format. It says nothing about the property subscriptions: at heartbeat 0
+    // the frame-drop, delay and position fields read "n/a", because nothing
+    // has decoded yet. See docs/design/failure-handling.md#heartbeat.
     let p = temp_path("heartbeat.265");
     let bytes = stub_annexb();
     std::fs::write(&p, &bytes).unwrap();
@@ -749,45 +705,40 @@ fn heartbeat_zero_is_emitted_at_startup() {
     );
 }
 
-// ---- T7: --test-rig-force-recovery-after-secs, the live-fire bench probe ---------
+// ---- Forced in-place recovery (test rig only) -----------------------------
 //
-// C1 (PLAN.md's F1 addendum) shipped and reached the bench without ever
-// having been exercised against a live mpv: every in-place recovery killed
-// the process on its own first step, and nothing in the suite would have
-// caught it. T7 closes that gap with a bench-only flag that forces the
-// SAME `AttemptRecovery` decision an organic stall would, on a timer,
-// during otherwise-healthy playback -- see dexd::health's
-// `HealthMonitor::force_recovery` / `ForceRecoveryTrigger` for the pure
-// logic and main.rs's `act_on_health_action` for why a forced probe drives
-// the identical mpv-facing mechanics a real stall would.
+// `--test-rig-force-recovery-after-secs` forces the same recovery decision an
+// organic stall produces, on a timer, during otherwise-healthy playback. The
+// decision and the trigger are `HealthMonitor::force_recovery` and
+// `ForceRecoveryTrigger` in dexd::health; main.rs routes both the organic tick
+// and the probe through `act_on_health_action`, so the probe drives the same
+// mpv-facing mechanics.
 //
-// The tests below stay INSIDE this file's mandatory `--opt vid=no --opt
-// aid=no` rule (see the module doc at the top of this file): they prove the
-// CLI plumbing -- the flag parses, the "impossible to enable accidentally
-// in a deployment" gate refuses it without --test-rig-no-sidecar, and the loud
-// arming warning prints -- without ever letting the forced trigger actually
-// fire, since firing needs a health check tick against playback that is
-// still alive, and vid=no/aid=no makes mpv reach "nothing to play" and end
-// in well under a second (see stub_annexb's doc comment). Actually
-// observing the forced recovery succeed against a live mpv needs REAL
-// decode, which this file's rule exists to keep out of the automated suite
-// -- that scenario is the #[ignore]d test below instead.
+// The tests here keep this file's `--opt vid=no --opt aid=no` rule, so they
+// cover the command-line half: the flag parses, it is refused without
+// `--test-rig-no-sidecar`, and the arming warning prints. Firing needs a
+// health-check tick against playback that is still alive, and those options
+// make mpv reach "nothing to play" in well under a second. The one test that
+// lets the probe fire carries `#[ignore]`.
+// See docs/design/failure-handling.md#test-rig-probes.
 
-/// The gate itself (main.rs, checked on CLI shape alone, before the asset
-/// is even read): `--test-rig-force-recovery-after-secs` without `--test-rig-no-sidecar`
-/// is refused, regardless of what -- if anything -- exists on disk at the
-/// given path. This is the "impossible to enable accidentally in a
-/// deployment" requirement, made concrete: a real deployment's ExecStart
-/// never passes --test-rig-no-sidecar (deploy/dexd.service always binds a
-/// real sidecar), so this flag can never end up armed against a gallery
-/// show, however it got pasted into a command line.
+/// `--test-rig-force-recovery-after-secs` without `--test-rig-no-sidecar` is
+/// refused on the shape of the command line alone, before the asset path is
+/// read. The packaged unit passes a real sidecar and never passes
+/// `--test-rig-no-sidecar`, so the probe cannot arm against a deployed asset
+/// however the flag reached the command line.
+/// See docs/design/startup-checks.md#test-rig-only-override.
 #[test]
 fn force_recovery_without_test_rig_no_sidecar_refused_exit_2() {
     let r = run_with_deadline(
-        &["/nonexistent/x.265", "--test-rig-force-recovery-after-secs", "5"],
+        &[
+            "/nonexistent/x.265",
+            "--test-rig-force-recovery-after-secs",
+            "5",
+        ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains("--test-rig-no-sidecar"),
         "stderr must explain the required pairing: {}",
@@ -795,22 +746,20 @@ fn force_recovery_without_test_rig_no_sidecar_refused_exit_2() {
     );
 }
 
-/// Same missing-value discipline as `--fps`/`--mode`
-/// (fps_flag_missing_value_refused_exit_2_with_usage): a flag at the end of
-/// argv with no following value must refuse loudly via usage(), not
-/// evaporate into "flag absent".
+/// Same missing-value rule as `--fps` and `--mode`: a flag at the end of the
+/// command line with no value refuses with the usage text.
 #[test]
 fn force_recovery_flag_missing_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
         &["/nonexistent/x.265", "--test-rig-force-recovery-after-secs"],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
-/// A non-numeric value must also refuse via usage(), not silently parse as
-/// 0 or panic the process.
+/// A non-numeric value refuses with the usage text; it does not parse as 0 and
+/// does not panic the process.
 #[test]
 fn force_recovery_flag_non_numeric_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
@@ -821,22 +770,20 @@ fn force_recovery_flag_non_numeric_value_refused_exit_2_with_usage() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
-/// Paired with --test-rig-no-sidecar (the only way the gate above ever
-/// accepts it), the flag is armed: startup must print the loud "(test rig only)
-/// (T7)... ARMED" warning, and playback must proceed exactly as it does
-/// without the flag (vid=no/aid=no's deterministic fast exit via "nothing
-/// to play"). `N` is large enough that the forced trigger provably never
-/// gets a chance to fire before that fast exit, so this test cannot
-/// flake on the race between the two -- it exists to prove the plumbing
-/// and the warning, not the live-fire behaviour itself.
+/// Paired with `--test-rig-no-sidecar`, the flag arms: startup prints the
+/// warning naming it, and playback proceeds as it does without the flag. `N`
+/// is large enough that the trigger cannot fire before the run's own fast exit
+/// via "nothing to play", so this test covers the wiring and the warning; the
+/// recovery itself is covered below.
+/// See docs/design/failure-handling.md#test-rig-probes.
 #[test]
 fn force_recovery_flag_with_test_rig_no_sidecar_arms_and_reaches_playback() {
     let p = temp_path("forcerecovery.265");
-    std::fs::write(&p, stub_annexb()).unwrap(); // bench path: no sidecar needed
+    std::fs::write(&p, stub_annexb()).unwrap(); // the override needs no sidecar
     let r = run_with_deadline(
         &[
             p.to_str().unwrap(),
@@ -858,101 +805,43 @@ fn force_recovery_flag_with_test_rig_no_sidecar_arms_and_reaches_playback() {
     assert_eq!(r.exit_code, Some(RUNTIME_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("(test rig only) (T7)") && r.stderr.contains("ARMED"),
-        "must print the loud arming warning: {}",
+        r.stderr.contains("(test rig only)")
+            && r.stderr
+                .contains("--test-rig-force-recovery-after-secs=3600 is armed"),
+        "startup must warn that the probe is armed: {}",
         r.stderr
     );
-    // The trigger must not have fired in this short a run -- if it had,
-    // that would mean it fired against a process already past "nothing to
-    // play", which is not the scenario this test is designed to prove.
+    // The trigger must not have fired in a run this short: it would have fired
+    // against a process already past "nothing to play", which is a different
+    // scenario from the one this test covers.
     assert!(
-        !r.stderr.contains("T7 bench probe"),
-        "the forced trigger must not have had a chance to fire here: {}",
+        !r.stderr
+            .contains("--test-rig-force-recovery-after-secs elapsed"),
+        "the trigger must not have had a chance to fire here: {}",
         r.stderr
     );
 }
 
-/// T7 -- LIVE-FIRE test for F1's in-place recovery against a REAL mpv
-/// instance: forces a tier-0 recovery a few seconds into otherwise-healthy
-/// playback and asserts the process SURVIVES it (recovery absorbed, still
-/// running) -- the exact scenario C1 broke. `is_expected_recovery_stop`'s
-/// pure-logic tests in main.rs pin the boolean condition that fixes C1;
-/// this test is the live-fire check that a REAL mpv event stream actually
-/// produces the shape that condition expects.
+/// Force an in-place recovery a few seconds into healthy playback against a
+/// real mpv, and assert the process survives it: the recovery's own
+/// `END_FILE(reason=stop)` is absorbed and the process is still running when
+/// the harness kills it at the deadline.
 ///
-/// Deliberately NOT part of the automated (default) suite: unlike every
-/// other test in this file, it does NOT pass `--opt vid=no` -- it needs the
-/// real video track selected so time-pos actually advances and a
-/// health-check tick can observe "healthy" before the forced trigger fires.
-/// `--opt vo=null` keeps it headless (no DRM, no display touched) but does
-/// NOT bound the decode: only killing at run_with_deadline's deadline does,
-/// same as it would for any endless-stream real-decode run. This is exactly
-/// the deviation this file's module doc says the mandatory vid=no/aid=no
-/// rule exists to keep out of the automated suite -- hence `#[ignore]`, not
-/// a relaxation of that rule for anything else here. `#[ignore]` also keeps
-/// this out of a Pi mid-soak's plain `cargo test`, which must not add
-/// unrelated CPU load to a thermal measurement.
+/// This is the one test here that keeps the video track selected, so the
+/// position advances and a health-check tick can read healthy playback before
+/// the trigger fires; `--opt vo=null` keeps it headless, and only the deadline
+/// bounds the decode. Hence `#[ignore]`: it runs by exact name, in a CI step
+/// of its own, and on a Raspberry Pi only with a free display and no
+/// long-running test in progress. It covers survival under software decode;
+/// the picture after a recovery needs the hardware-decode options this run
+/// skips, so that half rests on a manual run against a real display.
 ///
-/// **CI now runs this test deliberately**, by exact name, as its own step
-/// in `.github/workflows/dexd.yml` (after `Test`, before
-/// `Build package`) -- the debian:trixie container has no display and no
-/// DRM, so it exercises the same headless `vo=null` + software-HEVC-decode
-/// path this doc comment describes, with no code path skipped. Manual
-/// invocation (e.g. on the Pi, against `dexpi4.local`) still works exactly
-/// as before:
+/// ```text
+/// cargo test --test cli force_recovery_survives_against_real_mpv -- --ignored --nocapture
+/// ```
 ///
-///   cargo test --test cli force_recovery_survives_against_real_mpv -- --ignored --nocapture
-///
-/// DO NOT manually run this on dexpi4.local while its thermal soak is
-/// active (its tmux sessions "dexeye"/"thermal" own the display and the CPU
-/// is being measured -- see this task's hard constraint). Once the soak has
-/// concluded, or on any OTHER Pi 4 (or dev machine) with libmpv 0.40+
-/// installed and nothing else on the display, the command above is safe.
-///
-/// Expected stderr, in order:
-///   1. "dexd 0.1.0 (...)"                                -- normal startup
-///   2. "warning: (test rig only) (T7): --test-rig-force-recovery-after-secs=3 is ARMED"
-///   3. (a few seconds of nothing -- real decode, no per-frame logging)
-///   4. "dexd: health check: T7 bench probe: ... -- attempting in-place
-///      recovery 1/3 ..."
-///   5. "dexd: health check: in-place recovery's loadfile replaced the
-///      stream; absorbing the expected END_FILE(reason=stop) ..."
-///   6. process is STILL RUNNING when this test kills it at its deadline,
-///      and never printed a SECOND "attempting in-place recovery 2/" (see
-///      the assertion below for why that matters at this deadline).
-///
-/// If C1 has regressed: step 5 never appears, and the process exits 1 right
-/// after step 4 instead (the recovery's own END_FILE(reason=stop) treated
-/// as fatal) -- well before the deadline.
-///
-/// **What this test does (and does not) prove.** It proves the process
-/// survives its own recovery and that time-pos resumes advancing afterwards
-/// (the recovery-2/-absence check below), under software decode and
-/// `vo=null`, with no display. It does NOT prove the picture actually comes
-/// back on real hardware: that claim lives entirely in the option set this
-/// test never exercises -- `hwdec=drm`, `gpu-hwdec-interop=drmprime-overlay`,
-/// the swapped DRM plane assignment -- all skipped here via `--no-defaults`.
-/// A recovery whose `loadfile replace` tears down and rebuilds the
-/// DRM/hwdec chain incorrectly could leave a black screen with a perfectly
-/// alive, CI-green process. Only the on-Pi bench run with a real display
-/// (this test's invocation above, minus `--no-defaults`/`vo=null`, against
-/// the actual exhibition display) closes that gap -- CI proves survival,
-/// only the bench proves the picture.
-///
-/// **Residual gap even within what CI can see, stated rather than papered
-/// over:** the recovery-2/-absence assertion below proves "no SECOND
-/// recovery fired organically", which requires the event loop to still be
-/// alive and ticking (mpv_wait_event waking on its timeout, HealthMonitor
-/// still being ticked) even if it never got a second STALL to react to. A
-/// process whose event loop wedged COMPLETELY right after the absorb --
-/// mpv_wait_event itself never returning again, no further ticks at all --
-/// would produce neither a second "attempting in-place recovery" line NOR
-/// an exit, and every assertion here (still alive, attempt 1/, absorption,
-/// no attempt 2/) would pass vacuously. Closing that fully would need a
-/// positive post-recovery signal (e.g. a bench-only per-tick "healthy" log
-/// line while T7 is armed, asserted present at least once after the
-/// absorb) -- not implemented here; this comment exists so that gap is
-/// recorded rather than silently assumed covered.
+/// See docs/design/development.md#display-safety and
+/// docs/design/failure-handling.md#test-rig-probes.
 #[test]
 #[ignore]
 fn force_recovery_survives_against_real_mpv() {
@@ -974,18 +863,15 @@ fn force_recovery_survives_against_real_mpv() {
         ],
         Duration::from_secs(30),
     );
-    // Survival means "still running when THIS TEST killed it at the deadline"
-    // -- asserted via `deadline_killed`, not via `exit_code == None`, because
-    // death by signal (SIGSEGV/SIGABRT) also yields `exit_code: None`. A
-    // C1-class regression that crashed via signal AFTER printing the absorb
-    // line would pass an exit_code-shaped assertion; it cannot pass this one.
+    // Survival is read from `deadline_killed`, not from `exit_code == None`:
+    // a child that died by signal also has no exit code, and a recovery that
+    // crashed after printing the absorb line would pass the weaker check.
     assert!(
         r.deadline_killed,
-        "process must SURVIVE the forced recovery (still running when killed \
-         at the deadline); it ended on its own with exit_code {:?} -- an exit \
-         means the recovery's own END_FILE(reason=stop) was NOT absorbed, and \
-         exit_code None here means death by signal -- either way C1 has \
-         regressed. stderr: {}",
+        "the process must survive the forced recovery and still be running when \
+         killed at the deadline; it ended on its own with exit_code {:?} -- an \
+         exit means the recovery's own END_FILE(reason=stop) was not absorbed, \
+         and no exit code here means death by signal. stderr: {}",
         r.exit_code, r.stderr
     );
     assert!(
@@ -996,99 +882,94 @@ fn force_recovery_survives_against_real_mpv() {
     assert!(
         r.stderr
             .contains("absorbing the expected END_FILE(reason=stop)"),
-        "recovery's own END_FILE was not absorbed -- this is exactly C1: {}",
+        "the recovery's own END_FILE was not absorbed: {}",
         r.stderr
     );
-    // The three assertions above are satisfiable by a process that
-    // "survives" only because its event loop wedged solid right after
-    // absorbing the stop -- alive, but not actually playing. A genuine
-    // recovery lets time-pos resume advancing, which feeds the health
-    // monitor a fresh "healthy" sample and means NO second recovery gets
-    // triggered organically. At a 30s deadline (trigger at 3s, health-check
-    // ticks every ~10s) a wedged-but-alive process would reach a second
-    // organic attempt at roughly trigger+20s =~ 23s -- comfortably inside
-    // this deadline -- so this string's ABSENCE is a real "playback
-    // actually resumed" proxy, not decoration. (It would be vacuously true
-    // at the old 15s deadline, which is why the deadline was raised.)
+    // The assertions above are also satisfied by a process that survives with
+    // an event loop that stopped iterating. A recovery that worked lets the
+    // position resume advancing, which feeds the health check a healthy sample
+    // and means no second recovery fires. With the trigger at 3 s and ticks
+    // about every 10 s, an alive-but-unresponsive process would reach a second
+    // attempt around 23 s, inside this 30 s deadline -- so keep the deadline
+    // above the second attempt, or this check passes with nothing running.
+    // See docs/design/failure-handling.md#residual-gaps.
     assert!(
         !r.stderr.contains("attempting in-place recovery 2/"),
-        "a second recovery fired organically after the forced one -- time-pos \
-         likely never resumed advancing post-recovery (event loop unresponsive \
-         rather than truly recovered): {}",
+        "a second recovery fired after the forced one, so the position likely \
+         never resumed advancing: {}",
         r.stderr
     );
 }
 
-// ---- F6: the exhibit display config --------------------------------------
+// ---- The exhibit config ---------------------------------------------------
 //
-// The pure decision surface (grammar, resolve_display, the cmdline
-// comparator, reconcile_cmdline, the sysfs pre-flight parser) is exhaustively
-// tested in src/exhibit.rs on the Mac -- these tests exist only to pin how
-// main.rs WIRES that logic in: gate ORDER (display gates fire before the
-// asset is even read), the new flags parse, and the CLI-level refusal
-// messages. All of them stay inside this file's mandatory `vo=null --opt
-// vid=no --opt aid=no` rule.
+// The decisions behind these checks -- the display-mode grammar,
+// `resolve_display`, the cmdline comparator, `reconcile_cmdline` and the
+// pre-flight parser -- are pure functions with unit tests in src/exhibit.rs.
+// The tests here cover what those cannot: the order of the checks, the parsing
+// of the flags, and the refusal messages. All of them keep this file's
+// `--opt vo=null --opt vid=no --opt aid=no` rule.
+// See docs/design/startup-checks.md#test-scope.
 
-/// An `--exhibit-config` naming a file that is not there, and no
-/// `--test-rig-no-sidecar`: refused before even the asset path is looked at, and
-/// refused NAMING THE PATH THE OPERATOR GAVE.
+/// An `--exhibit-config` naming a file that is not there is refused before the
+/// asset path is read, and the refusal names the path that was given.
 ///
-/// The naming half is the point. Until the dual-format work this borrowed
-/// `resolve_display`'s "no exhibit config — create /opt/dex/exhibit.yaml"
-/// message, which is wrong advice for someone who just pointed the flag
-/// somewhere else: they would create a file the run they are debugging does
-/// not read. Same class as the EACCES fix on the read path.
+/// Naming that path is the point: the message telling an operator to create
+/// the installed default would send them to a file the run they are debugging
+/// does not read. See docs/design/startup-checks.md#message-rules.
 #[test]
 fn missing_exhibit_config_refused_exit_2_before_the_asset_is_read() {
-    let improbable = temp_path("f6-default-exhibit-config-must-not-exist.json");
+    let improbable = temp_path("default-exhibit-config-must-not-exist.json");
     let _ = std::fs::remove_file(&improbable); // never written; just proving absence
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-missing-config.265",
+            "/nonexistent/missing-config.265",
             "--exhibit-config",
             improbable.to_str().unwrap(),
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("f6-default-exhibit-config-must-not-exist.json"),
+        r.stderr
+            .contains("default-exhibit-config-must-not-exist.json"),
         "the refusal must name the path that was actually given: {}",
         r.stderr
     );
-    // The load-bearing negative: the asset gate must NOT have run yet.
+    // The negative carries the ordering claim: the asset check must not have
+    // run yet.
     assert!(
-        !r.stderr.contains("f6-missing-config.265"),
-        "the exhibit gate should refuse BEFORE the asset path is even looked \
-         at, but the asset-missing message appeared too: {}",
+        !r.stderr.contains("missing-config.265"),
+        "the exhibit check must refuse before the asset path is read, but the \
+         asset-missing message appeared too: {}",
         r.stderr
     );
 }
 
-// The complementary case -- NO --exhibit-config and no config in the assets
-// directory, so resolve_display's "no exhibit config, create this file"
-// message fires -- is deliberately NOT tested here. It would depend on the
-// HOST lacking /opt/dex, which is true on the Mac and false on the Pi, so it
-// would assert one thing in development and silently something else on the
-// device -- the vacuous-check class this file has been bitten by before. It is
-// covered where it is host-independent: `load_returns_none_when_no_default_exists`
-// and `resolve_display`'s own unit tests in src/exhibit.rs.
+// The complementary case -- no --exhibit-config and no config in the assets
+// directory, so the "no exhibit config, create this file" message fires -- is
+// not tested here. Its outcome depends on whether the host has /opt/dex, so it
+// would assert one thing on a workstation and another on a device. It is
+// covered where it is host-independent, by
+// `load_returns_none_when_no_default_exists` and `resolve_display`'s unit
+// tests in src/exhibit.rs. See docs/design/startup-checks.md#test-scope.
 
-/// A YAML exhibit config drives the real binary end to end — the same gate
-/// order, from a `.yaml` file. Pins that the format dispatch is wired into
-/// main.rs and not merely unit-tested in the library.
+/// A YAML exhibit config drives the binary through the same order of checks a
+/// JSON one does, so the format dispatch is wired into main.rs and not only
+/// unit-tested in the library.
+/// See docs/design/exhibit-config.md.
 #[test]
 fn yaml_exhibit_config_binds_the_display_like_json_does() {
-    let cfg = temp_path("f6-yaml-exhibit.yaml");
+    let cfg = temp_path("yaml-exhibit.yaml");
     std::fs::write(
         &cfg,
         "# a venue would really write this\ndisplay_mode: 7680x4320@60\nkms_force: none\n",
     )
     .unwrap();
-    let cl = write_no_video_cmdline("f6-yaml-cmdline");
+    let cl = write_no_video_cmdline("yaml-cmdline");
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-yaml.265",
+            "/nonexistent/yaml.265",
             "--exhibit-config",
             cfg.to_str().unwrap(),
             "--proc-cmdline",
@@ -1096,31 +977,32 @@ fn yaml_exhibit_config_binds_the_display_like_json_does() {
         ],
         Duration::from_secs(10),
     );
-    // Reaching the sysfs pre-flight (which refuses this implausible 8K mode)
-    // proves the YAML parsed, validated, and bound the display: a config that
-    // had failed earlier could not produce THIS message.
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    // Reaching the mode pre-flight, which refuses this 8K mode, is what shows
+    // the YAML parsed, validated and bound the display: a config that failed
+    // earlier could not produce this message.
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("7680x4320"), "stderr: {}", r.stderr);
 }
 
-/// **The shipped deployment invocation shape**: no positional asset path at
-/// all, everything from the exhibit config. `ExecStart=/usr/bin/dexd`
-/// passes exactly this, so if a no-argument run were rejected on argv shape,
-/// the packaged unit would exit 2 in a permanent restart loop on the device
-/// while every other test here — all of which pass arguments — stayed green.
+/// The invocation the packaged unit uses: no positional asset path, everything
+/// from the exhibit config. `ExecStart=/usr/bin/dexd` passes exactly this, so
+/// a no-argument run refused on argument shape would leave the device in a
+/// restart loop while every other test here, all of which pass arguments,
+/// stayed green.
 ///
-/// Uses `--exhibit-config` (never the real default) so the test does not
-/// depend on the host having, or lacking, `/opt/dex`; and an implausible mode,
-/// so it lands on the sysfs pre-flight rather than starting playback.
+/// The config comes from `--exhibit-config` so the test does not depend on the
+/// host having `/opt/dex`, and its mode is one no connector offers, so the run
+/// lands on the mode pre-flight instead of starting playback.
+/// See docs/design/service-unit.md.
 #[test]
 fn no_positional_asset_is_accepted_and_reaches_the_config() {
-    let cfg = temp_path("f6-noposition-exhibit.yaml");
+    let cfg = temp_path("noposition-exhibit.yaml");
     std::fs::write(
         &cfg,
-        "asset: /nonexistent/f6-fromconfig.265\ndisplay_mode: 7680x4320@60\n",
+        "asset: /nonexistent/fromconfig.265\ndisplay_mode: 7680x4320@60\n",
     )
     .unwrap();
-    let cl = write_no_video_cmdline("f6-noposition-cmdline");
+    let cl = write_no_video_cmdline("noposition-cmdline");
     let r = run_with_deadline(
         &[
             "--exhibit-config",
@@ -1130,29 +1012,29 @@ fn no_positional_asset_is_accepted_and_reaches_the_config() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
-    // Reached a real gate, NOT the usage text.
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
+    // The run reached a check, and the usage text stayed unprinted.
     assert!(
         !r.stderr.contains("usage:"),
-        "a no-argument run must not be refused on argv shape -- that is how the \
-         packaged unit invokes the player: {}",
+        "a no-argument run must not be refused on argument shape -- that is how \
+         the packaged unit invokes the player: {}",
         r.stderr
     );
     assert!(r.stderr.contains("7680x4320"), "stderr: {}", r.stderr);
 }
 
-/// The asset actually comes FROM the config: with a valid display and a config
-/// naming a nonexistent asset, the run gets as far as failing to read that
-/// exact path — which only happens if `resolve_asset` took it from the file.
+/// The asset comes from the config: with a valid display and a config naming
+/// an asset that is not there, the run gets as far as failing to read that
+/// path, which happens only if `resolve_asset` took it from the file.
 #[test]
 fn the_exhibit_config_names_which_asset_plays() {
-    let cfg = temp_path("f6-assetfromconfig-exhibit.yaml");
+    let cfg = temp_path("assetfromconfig-exhibit.yaml");
     std::fs::write(
         &cfg,
-        "asset: /nonexistent/f6-named-by-config.265\ndisplay_mode: auto\n",
+        "asset: /nonexistent/named-by-config.265\ndisplay_mode: auto\n",
     )
     .unwrap();
-    let cl = write_no_video_cmdline("f6-assetfromconfig-cmdline");
+    let cl = write_no_video_cmdline("assetfromconfig-cmdline");
     let r = run_with_deadline(
         &[
             "--exhibit-config",
@@ -1162,28 +1044,27 @@ fn the_exhibit_config_names_which_asset_plays() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("f6-named-by-config.265"),
+        r.stderr.contains("named-by-config.265"),
         "the asset named by the config must be the one the player tried to read: {}",
         r.stderr
     );
 }
 
-/// A relative `asset` names the file NEXT TO the config, not next to the
-/// service's working directory: the run gets as far as failing to read the
-/// path formed from the config's own directory.
-///
-/// Uses `--exhibit-config` in a temp directory, so the test depends on neither
-/// the host having nor lacking `/opt/dex`.
+/// A relative `asset` names the file next to the config: the run gets as far
+/// as failing to read the path formed from the config's own directory, not one
+/// formed from the service's working directory. The config sits in a temp
+/// directory, so the test does not depend on the host having `/opt/dex`.
+/// See docs/design/exhibit-config.md.
 #[test]
 fn a_relative_asset_in_the_config_resolves_next_to_the_config() {
-    let cfg = temp_path("f6-relasset-exhibit.yaml");
-    let artwork = temp_path("f6-relasset-artwork.265");
+    let cfg = temp_path("relasset-exhibit.yaml");
+    let artwork = temp_path("relasset-artwork.265");
     let bare = artwork.file_name().unwrap().to_str().unwrap().to_string();
     let _ = std::fs::remove_file(&artwork); // never written; the read must fail
     std::fs::write(&cfg, format!("asset: {bare}\ndisplay_mode: auto\n")).unwrap();
-    let cl = write_no_video_cmdline("f6-relasset-cmdline");
+    let cl = write_no_video_cmdline("relasset-cmdline");
     let r = run_with_deadline(
         &[
             "--exhibit-config",
@@ -1193,7 +1074,7 @@ fn a_relative_asset_in_the_config_resolves_next_to_the_config() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains(artwork.to_str().unwrap()),
         "a bare file name must resolve against the config's directory, giving {}: {}",
@@ -1202,20 +1083,20 @@ fn a_relative_asset_in_the_config_resolves_next_to_the_config() {
     );
 }
 
-/// A positional path that CONTRADICTS the config is refused naming both — the
-/// asset analogue of `mode_contradicting_exhibit_config_refused_naming_both`.
+/// A positional path that contradicts the config is refused naming both, like
+/// `mode_contradicting_exhibit_config_refused_naming_both` does for the mode.
 #[test]
 fn positional_asset_contradicting_the_config_refused_naming_both() {
-    let cfg = temp_path("f6-assetconflict-exhibit.yaml");
+    let cfg = temp_path("assetconflict-exhibit.yaml");
     std::fs::write(
         &cfg,
-        "asset: /nonexistent/f6-config-asset.265\ndisplay_mode: auto\n",
+        "asset: /nonexistent/config-asset.265\ndisplay_mode: auto\n",
     )
     .unwrap();
-    let cl = write_no_video_cmdline("f6-assetconflict-cmdline");
+    let cl = write_no_video_cmdline("assetconflict-cmdline");
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-cli-asset.265",
+            "/nonexistent/cli-asset.265",
             "--exhibit-config",
             cfg.to_str().unwrap(),
             "--proc-cmdline",
@@ -1223,22 +1104,23 @@ fn positional_asset_contradicting_the_config_refused_naming_both() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("f6-config-asset.265") && r.stderr.contains("f6-cli-asset.265"),
+        r.stderr.contains("config-asset.265") && r.stderr.contains("cli-asset.265"),
         "stderr must name both assets: {}",
         r.stderr
     );
 }
 
-/// A config with no `asset`, and no path given: refuses rather than falling
-/// back to /opt/dex/loop.265. The fail-closed row of `resolve_asset`'s table,
-/// driven through the real binary.
+/// A config with no `asset` and no path on the command line refuses, so no
+/// file nobody named is ever played. This is the fail-closed row of
+/// `resolve_asset`'s table, driven through the binary.
+/// See docs/design/startup-checks.md#fail-closed-startup.
 #[test]
-fn no_asset_named_anywhere_refused_without_guessing_loop_265() {
-    let cfg = temp_path("f6-noasset-exhibit.yaml");
+fn no_asset_named_anywhere_refused_rather_than_guessed() {
+    let cfg = temp_path("noasset-exhibit.yaml");
     std::fs::write(&cfg, "display_mode: auto\n").unwrap();
-    let cl = write_no_video_cmdline("f6-noasset-cmdline");
+    let cl = write_no_video_cmdline("noasset-cmdline");
     let r = run_with_deadline(
         &[
             "--exhibit-config",
@@ -1248,61 +1130,61 @@ fn no_asset_named_anywhere_refused_without_guessing_loop_265() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("no asset"), "stderr: {}", r.stderr);
-    // The load-bearing negative: it must not have quietly tried the old
-    // hardcoded path.
+    // The negative: no fixed path is tried when the config names none.
     assert!(
         !r.stderr.contains("cannot read /opt/dex/loop.265"),
-        "a missing asset must never fall back to the pre-F6 hardcoded path: {}",
+        "a missing asset must never fall back to a fixed path: {}",
         r.stderr
     );
 }
 
-/// The dispatch, at the CLI level: YAML syntax inside a `.json` file is
-/// refused rather than quietly accepted by a permissive parser.
+/// The file extension selects the parser: YAML written into a `.json` file is
+/// refused instead of being accepted by a permissive parser.
+/// See docs/design/exhibit-config.md.
 #[test]
 fn yaml_contents_in_a_json_named_config_refused() {
-    let cfg = temp_path("f6-yaml-in-json.json");
+    let cfg = temp_path("yaml-in-json.json");
     std::fs::write(&cfg, "display_mode: 3840x2160@30\n").unwrap();
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-yamlinjson.265",
+            "/nonexistent/yamlinjson.265",
             "--exhibit-config",
             cfg.to_str().unwrap(),
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("JSON"), "stderr: {}", r.stderr);
 }
 
-/// An unparseable exhibit config is refused with the specific parse error —
-/// distinct from "missing", per main.rs's read/parse split (see the comment
-/// at the exhibit_config read site).
+/// An exhibit config that does not parse is refused with the parse error, kept
+/// distinct from the message for a config that is missing, because the two
+/// have different repairs. See docs/design/startup-checks.md#message-rules.
 #[test]
 fn malformed_exhibit_config_refused_exit_2_naming_the_parse_error() {
-    let cfg = temp_path("f6-malformed-exhibit.json");
+    let cfg = temp_path("malformed-exhibit.json");
     std::fs::write(&cfg, r#"{"display_mode":"auto","kms_forse":"none"}"#).unwrap(); // typo
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-malformed.265",
+            "/nonexistent/malformed.265",
             "--exhibit-config",
             cfg.to_str().unwrap(),
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("kms_forse"), "stderr: {}", r.stderr);
 }
 
-/// `--test-rig-no-sidecar` bypasses BOTH the exhibit config AND the cmdline
-/// gate: no `--exhibit-config` is supplied, no `--proc-cmdline` is supplied,
-/// and the run still reaches playback (exit 1, not 2) because bench mode
-/// consults neither.
+/// `--test-rig-no-sidecar` skips the exhibit config and the cmdline check as
+/// well as the sidecar: neither `--exhibit-config` nor `--proc-cmdline` is
+/// given and the run still reaches playback, exit 1 instead of 2.
+/// See docs/design/startup-checks.md#test-rig-only-override.
 #[test]
-fn bench_flag_bypasses_the_exhibit_config_and_cmdline_gate_too() {
-    let p = temp_path("f6-bench.265");
+fn test_rig_override_bypasses_the_exhibit_config_and_cmdline_checks() {
+    let p = temp_path("override-nochecks.265");
     std::fs::write(&p, stub_annexb()).unwrap();
     let r = run_with_deadline(
         &[
@@ -1324,17 +1206,21 @@ fn bench_flag_bypasses_the_exhibit_config_and_cmdline_gate_too() {
     assert!(r.stderr.contains("playback ended"), "stderr: {}", r.stderr);
 }
 
-/// A `--mode` that contradicts the exhibit config's `display_mode` is
-/// refused, naming both — the F6 analogue of
-/// `fps_contradicting_sidecar_refused_exit_2_naming_both`.
+/// A `--mode` that contradicts the exhibit config's `display_mode` is refused
+/// naming both, like `fps_contradicting_sidecar_refused_exit_2_naming_both`
+/// does for the frame rate.
 #[test]
 fn mode_contradicting_exhibit_config_refused_naming_both() {
-    let cfg = temp_path("f6-modeconflict-exhibit.json");
-    std::fs::write(&cfg, r#"{"display_mode":"3840x2160@30","kms_force":"none"}"#).unwrap();
-    let cl = write_no_video_cmdline("f6-modeconflict-cmdline");
+    let cfg = temp_path("modeconflict-exhibit.json");
+    std::fs::write(
+        &cfg,
+        r#"{"display_mode":"3840x2160@30","kms_force":"none"}"#,
+    )
+    .unwrap();
+    let cl = write_no_video_cmdline("modeconflict-cmdline");
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-modeconflict.265",
+            "/nonexistent/modeconflict.265",
             "--exhibit-config",
             cfg.to_str().unwrap(),
             "--proc-cmdline",
@@ -1344,7 +1230,7 @@ fn mode_contradicting_exhibit_config_refused_naming_both() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains("3840x2160@30") && r.stderr.contains("2560x1440@60"),
         "stderr must name both modes: {}",
@@ -1352,20 +1238,19 @@ fn mode_contradicting_exhibit_config_refused_naming_both() {
     );
 }
 
-/// The cmdline gate: exhibit config says `kms_force=none`, but the (fixture)
-/// kernel cmdline carries a `video=HDMI-A-1:...` token anyway — the exact
-/// 2026-08-15 incident class (a force removed as "stale" while still in use,
-/// or here, the mirror case: a config edited to "none" while the boot config
-/// was never reconciled). Must refuse naming the fix, before the asset is
-/// even read.
+/// The cmdline check: the exhibit config says `kms_force: none` while the
+/// kernel command line still carries a `video=HDMI-A-1:...` token, which is
+/// what a config edited without reconciling the boot config looks like. The
+/// refusal names the repair, before the asset is read.
+/// See docs/design/startup-checks.md#message-rules.
 #[test]
 fn cmdline_mismatch_refused_naming_dex_exhibit_apply() {
-    let cfg = write_exhibit_config("f6-cmdlinemismatch-exhibit.json"); // kms_force: none
-    let cl = temp_path("f6-cmdlinemismatch-cmdline");
+    let cfg = write_exhibit_config("cmdlinemismatch-exhibit.json"); // kms_force: none
+    let cl = temp_path("cmdlinemismatch-cmdline");
     std::fs::write(&cl, "console=ttyS0 video=HDMI-A-1:3840x2160@30 rootwait\n").unwrap();
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-cmdlinemismatch.265",
+            "/nonexistent/cmdlinemismatch.265",
             "--exhibit-config",
             cfg.to_str().unwrap(),
             "--proc-cmdline",
@@ -1373,7 +1258,7 @@ fn cmdline_mismatch_refused_naming_dex_exhibit_apply() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains("dex-exhibit-apply") && r.stderr.contains("3840x2160@30"),
         "stderr: {}",
@@ -1381,26 +1266,23 @@ fn cmdline_mismatch_refused_naming_dex_exhibit_apply() {
     );
 }
 
-/// The sysfs mode pre-flight: a non-"auto" display_mode that no real
-/// connector could plausibly offer (8K60 — no HDMI-A-1 sink on a CI runner OR
-/// this project's actual bench displays advertises this) is refused, either
-/// because the connector cannot be found at all (a CI container with no DRM)
-/// or because it is found but does not list the mode — the two-layer
-/// "cannot find" vs "not among the modes" split from the F6 design's §2.4.
-/// Either message names the requested resolution, which is what this test
-/// pins portably across both hosts.
+/// The mode pre-flight: a `display_mode` no connector offers, here 8K60, is
+/// refused either because no connector is found (a container with no DRM) or
+/// because the one found does not list the mode. Both messages name the
+/// requested resolution, which is what this test can assert on either host.
+/// See docs/design/startup-checks.md#resolution-and-refresh.
 #[test]
 fn implausible_mode_refused_by_the_sysfs_preflight() {
-    let cfg = temp_path("f6-implausible-exhibit.json");
+    let cfg = temp_path("implausible-exhibit.json");
     std::fs::write(
         &cfg,
         r#"{"display_mode":"7680x4320@60","kms_force":"none"}"#,
     )
     .unwrap();
-    let cl = write_no_video_cmdline("f6-implausible-cmdline");
+    let cl = write_no_video_cmdline("implausible-cmdline");
     let r = run_with_deadline(
         &[
-            "/nonexistent/f6-implausible.265",
+            "/nonexistent/implausible.265",
             "--exhibit-config",
             cfg.to_str().unwrap(),
             "--proc-cmdline",
@@ -1408,39 +1290,42 @@ fn implausible_mode_refused_by_the_sysfs_preflight() {
         ],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains("7680x4320"),
         "stderr must name the implausible resolution: {}",
         r.stderr
     );
-    // And it must not be the asset-missing message -- the display gates run
-    // first, exactly like the "no exhibit config" case above.
-    assert!(!r.stderr.contains("f6-implausible.265"), "stderr: {}", r.stderr);
+    // And not the asset-missing message: the display checks run first, as in
+    // the "no exhibit config" case above.
+    assert!(
+        !r.stderr.contains("implausible.265"),
+        "stderr: {}",
+        r.stderr
+    );
 }
 
-// ---- F10: --test-rig-hang-after-secs, the systemd-watchdog live-fire probe -
+// ---- A forced supervisor-thread hang (test rig only) ----------------------
 //
-// F9 proved a wedged mpv core produces SILENCE on this program's supervisor
-// thread, and F1 acts on that silence in-process. Neither covers the supervisor
-// thread hanging in code that is NOT an mpv call at all (e.g. `eprintln!`
-// against a wedged journald) -- see dexd::watchdog's module doc
-// ("Framing"). `--test-rig-hang-after-secs` deliberately reproduces that one
-// remaining hazard class on a timer, so its plumbing gets the same
-// "impossible to enable accidentally in a deployment" gate as T7's
-// `--test-rig-force-recovery-after-secs`, tested the same way here.
+// An mpv core that stops responding goes silent on the supervisor thread, and
+// the health check acts on that silence in-process. Neither covers the
+// supervisor thread hanging in code that is not an mpv call at all, such as a
+// write to a system log that has stopped accepting them.
+// `--test-rig-hang-after-secs` reproduces that case on a timer, and carries
+// the same pairing requirement as `--test-rig-force-recovery-after-secs`,
+// tested the same way here.
+// See docs/design/failure-handling.md#test-rig-probes.
 
-/// The gate itself, mirroring
-/// `force_recovery_without_test_rig_no_sidecar_refused_exit_2`:
-/// `--test-rig-hang-after-secs` without `--test-rig-no-sidecar` is refused on CLI
-/// shape alone, before the asset is even read.
+/// `--test-rig-hang-after-secs` without `--test-rig-no-sidecar` is refused on
+/// the shape of the command line alone, before the asset is read, like
+/// `force_recovery_without_test_rig_no_sidecar_refused_exit_2`.
 #[test]
 fn test_rig_hang_without_test_rig_no_sidecar_refused_exit_2() {
     let r = run_with_deadline(
         &["/nonexistent/x.265", "--test-rig-hang-after-secs", "5"],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(
         r.stderr.contains("--test-rig-no-sidecar"),
         "stderr must explain the required pairing: {}",
@@ -1448,50 +1333,41 @@ fn test_rig_hang_without_test_rig_no_sidecar_refused_exit_2() {
     );
 }
 
-/// Same missing-value discipline as every other flag taking a value.
+/// Same missing-value rule as every other flag that takes a value.
 #[test]
 fn test_rig_hang_flag_missing_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
         &["/nonexistent/x.265", "--test-rig-hang-after-secs"],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
-/// A non-numeric value must also refuse via usage(), not silently parse as
-/// 0 or panic the process.
+/// A non-numeric value refuses with the usage text; it does not parse as 0 and
+/// does not panic the process.
 #[test]
 fn test_rig_hang_flag_non_numeric_value_refused_exit_2_with_usage() {
     let r = run_with_deadline(
         &["/nonexistent/x.265", "--test-rig-hang-after-secs", "soon"],
         Duration::from_secs(10),
     );
-    assert_eq!(r.exit_code, Some(GATE_EXIT), "stderr: {}", r.stderr);
+    assert_eq!(r.exit_code, Some(REFUSED_EXIT), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("usage"), "stderr: {}", r.stderr);
 }
 
-/// The mechanism itself: with `--test-rig-hang-after-secs 0`, the hang check
-/// fires on the very first loop iteration, unconditionally, BEFORE that same
-/// iteration's event-id dispatch can act on whatever `mpv_wait_event`
-/// happened to return (see the firing site's comment in main.rs for why
-/// that ordering matters -- with `--opt vid=no --opt aid=no`, mpv reaches
-/// "nothing to play" and would otherwise race this probe to an ordinary
-/// `exit(1)`). A process that has genuinely wedged never exits on its own,
-/// so the ONLY way this test ends is the harness's own deadline kill --
-/// `deadline_killed` must be true, mirroring the `Run` struct's own doc
-/// comment on why that is the correct assertion (an exit_code of `None`
-/// alone cannot distinguish "wedged, harness killed it" from "died by
-/// signal on its own").
+/// With `--test-rig-hang-after-secs 0` the hang check fires on the first loop
+/// iteration, before that iteration's event dispatch, so the run's own fast
+/// exit under `--opt vid=no --opt aid=no` cannot win the race. A parked
+/// supervisor thread never exits on its own, so the run ends only at the
+/// harness's deadline, and the assertion reads `deadline_killed`.
 ///
-/// This proves the MECHANISM -- that the flag genuinely, permanently parks
-/// the supervisor thread -- not that a systemd watchdog then kills it: this
-/// harness has no systemd to observe. That half is proved on the Pi; see
-/// PLAN.md's F10 entry and README.md for the on-device procedure
-/// (journalctl showing `Watchdog timeout`, a SIGABRT, and a supervisor
-/// restart).
+/// This covers the flag parking the thread. This harness runs no systemd, so
+/// whether a watchdog then kills the process is a manual run on a Raspberry
+/// Pi.
+/// See docs/design/development.md#test-only-flags.
 #[test]
-fn test_rig_hang_flag_actually_hangs_the_supervisor_thread_forever() {
+fn test_rig_hang_flag_parks_the_supervisor_thread_forever() {
     let p = temp_path("hang.265");
     std::fs::write(&p, stub_annexb()).unwrap();
     let r = run_with_deadline(
@@ -1514,19 +1390,19 @@ fn test_rig_hang_flag_actually_hangs_the_supervisor_thread_forever() {
     );
     assert!(
         r.deadline_killed,
-        "a genuinely unresponsive supervisor thread must never exit on its own -- exit_code {:?}, \
+        "an unresponsive supervisor thread must never exit on its own -- exit_code {:?}, \
          stderr: {}",
         r.exit_code, r.stderr
     );
     assert!(
-        r.stderr.contains("(test rig only) (F10 hang probe)") && r.stderr.contains("ARMED"),
-        "must print the loud arming warning: {}",
+        r.stderr.contains("(test rig only) (hang probe)")
+            && r.stderr.contains("--test-rig-hang-after-secs=0 is armed"),
+        "startup must warn that the probe is armed: {}",
         r.stderr
     );
     assert!(
-        r.stderr
-            .contains("deliberately parking the supervisor thread forever"),
-        "must print the firing line proving the probe actually triggered: {}",
+        r.stderr.contains("parking the supervisor thread forever"),
+        "the firing line must show that the probe triggered: {}",
         r.stderr
     );
 }

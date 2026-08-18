@@ -1,27 +1,27 @@
 //! End-to-end tests for `dex-sidecar write`, run against real HEVC streams.
 //!
-//! The streams are made here with ffmpeg rather than checked in, so the suite
-//! needs no fixtures and each case gets a stream of exactly the shape it is
-//! about. Two shapes are used: one whose encoder wrote frame timing into the
-//! stream, and one whose encoder did not — the second is the case where no
-//! frame rate can be read back out and the tool has to insist on being told.
+//! The streams are encoded here with ffmpeg rather than checked in, so the
+//! suite carries no fixtures and every case gets a stream of the shape it is
+//! about. Two shapes cover the cases: one whose encoder wrote frame timing
+//! into the stream, and one whose encoder left it out, where no frame rate can
+//! be read back and `--fps` has to be given.
 //!
-//! Without ffmpeg and ffprobe on PATH these tests FAIL with a message that
-//! says what to install. A machine that cannot make a test stream may set
-//! DEXD_ALLOW_MEDIA_SKIP=1 to skip them instead; the skip note is only shown
-//! under `cargo test -- --nocapture`, which is why skipping is opt-in and not
-//! the default. CI installs both tools and checks for them, so the tests
-//! really run there.
+//! The tests that need a stream fail when ffmpeg and ffprobe are not both on
+//! the search path, with a message naming what to install;
+//! `DEXD_ALLOW_MEDIA_SKIP=1` turns that failure into a skip on a machine that
+//! cannot encode.
+//! See docs/design/development.md#test-layers.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 /// Refused before anything was written, or a malformed command line.
+/// See docs/design/sidecar.md#dex-sidecar for the exit codes.
 const EXIT_REFUSED: i32 = 2;
 /// The stream could not be read, or a sidecar failed verification.
 const EXIT_FAILED: i32 = 1;
 
-/// Are ffmpeg and ffprobe both usable? Every test here needs them.
+/// Reports whether ffmpeg and ffprobe can both be run.
 fn media_tools_present() -> bool {
     ["ffmpeg", "ffprobe"].iter().all(|bin| {
         Command::new(bin)
@@ -34,34 +34,33 @@ fn media_tools_present() -> bool {
     })
 }
 
-/// Fail the calling test when ffmpeg is missing — unless the caller has opted
-/// into skipping with DEXD_ALLOW_MEDIA_SKIP=1. The test runner hides stderr
-/// from passing tests, so a skip that merely prints a note would look exactly
-/// like a pass; failing by default is what keeps this file from quietly
-/// testing nothing.
+/// Fails the calling test when ffmpeg or ffprobe is missing, unless
+/// `DEXD_ALLOW_MEDIA_SKIP` is set. A skipped test still reports a pass, so
+/// skipping is opt-in. See docs/design/development.md#test-layers.
 macro_rules! needs_ffmpeg {
     () => {
         if !media_tools_present() {
             if std::env::var_os("DEXD_ALLOW_MEDIA_SKIP").is_some() {
                 eprintln!(
-                    "SKIP {}: ffmpeg and ffprobe are not both on PATH, so no test \
-                     stream can be made (DEXD_ALLOW_MEDIA_SKIP is set)",
+                    "skipped {}: ffmpeg and ffprobe are not both on the search \
+                     path, so no test stream can be made (DEXD_ALLOW_MEDIA_SKIP \
+                     is set)",
                     module_path!()
                 );
                 return;
             }
             panic!(
-                "ffmpeg and ffprobe are not both on PATH, so no test stream can be \
-                 made. Install them (Debian: apt install ffmpeg; macOS: brew install \
-                 ffmpeg), or set DEXD_ALLOW_MEDIA_SKIP=1 to skip these tests."
+                "ffmpeg and ffprobe are not both on the search path, so no \
+                 test stream can be made. Install them (Debian: apt install \
+                 ffmpeg; macOS: brew install ffmpeg), or set \
+                 DEXD_ALLOW_MEDIA_SKIP=1 to skip these tests."
             );
         }
     };
 }
 
 /// A scratch directory of this test's own, under the system temp directory.
-/// Left behind after the run, like the rest of this crate's tests, so a
-/// failure can still be looked at.
+/// It stays after the run so a failure can still be inspected.
 fn work_dir(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!("dexd-sidecar-write-{}-{name}", std::process::id()));
@@ -75,9 +74,9 @@ fn stream_with_timing(path: &Path) {
     encode(path, &[]);
 }
 
-/// The same stream with the frame timing left out, which is what a raw stream
-/// coming from many other encoders looks like. ffprobe answers about this one
-/// with its internal timebase, not a frame rate.
+/// The same stream with the frame timing left out, as many other encoders
+/// produce it. ffprobe then reports its internal timebase in place of a frame
+/// rate. See docs/design/sidecar.md#frame-rate-at-ingest.
 fn stream_without_timing(path: &Path) {
     encode(path, &["-x265-params", "vui-timing-info=0"]);
 }
@@ -107,7 +106,7 @@ fn encode(path: &Path, extra: &[&str]) {
     assert!(len > 0, "ffmpeg made an empty stream at {}", path.display());
 }
 
-/// Run dex-sidecar and hand back everything it did.
+/// Runs dex-sidecar and returns its exit status, stdout and stderr.
 fn dex_sidecar(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_dex-sidecar"))
         .args(args)
@@ -127,8 +126,8 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Flip one byte in the middle of a file. Not the first byte: this is about
-/// the hash noticing a change, not about anything in the stream's structure.
+/// Changes one byte in the middle of a file, leaving the stream's leading
+/// parameter sets intact.
 fn flip_a_byte(path: &Path) {
     let mut bytes = std::fs::read(path).expect("read stream");
     let middle = bytes.len() / 2;
@@ -157,7 +156,7 @@ fn a_written_sidecar_passes_check() {
     );
     let sidecar = format!("{stream}.json");
     assert!(Path::new(&sidecar).exists(), "no sidecar at {sidecar}");
-    // The size ffprobe reported travels along, informationally.
+    // The dimensions ffprobe reported are written to the sidecar as well.
     let text = std::fs::read_to_string(&sidecar).unwrap();
     assert!(text.contains(r#""width":64"#), "sidecar: {text}");
     assert!(text.contains(r#""height":64"#), "sidecar: {text}");
@@ -167,8 +166,8 @@ fn a_written_sidecar_passes_check() {
     assert!(stdout(&checked).starts_with("OK "), "{}", stdout(&checked));
 }
 
-/// The half that a writer nobody has tested always gets wrong: check has to
-/// FAIL when the stream is not the one the sidecar was made from.
+/// `check` reports a failure once the stream stops matching the sidecar it
+/// was written from. See docs/design/sidecar.md#checksum-verification.
 #[test]
 fn check_fails_once_the_stream_changes() {
     needs_ffmpeg!();
@@ -227,9 +226,9 @@ fn an_existing_sidecar_is_not_replaced_without_force() {
     assert_eq!(exit_code(&forced), 0, "stderr: {}", stderr(&forced));
 }
 
-/// A typo in `--fps` binds the wrong rate into a sidecar that then verifies
-/// perfectly forever, and the video plays at the wrong speed with nothing
-/// reporting an error. So a rate far from the one in the stream is refused.
+/// A mistyped `--fps` would bind a rate that keeps verifying while the video
+/// plays at the wrong speed, so a rate far from the stream's is refused.
+/// See docs/design/sidecar.md#frame-rate-at-ingest.
 #[test]
 fn an_fps_that_contradicts_the_stream_is_refused() {
     needs_ffmpeg!();
@@ -263,12 +262,12 @@ fn an_fps_that_contradicts_the_stream_is_refused() {
     let text = std::fs::read_to_string(&out).unwrap();
     assert!(
         text.contains(r#""fps":"3""#),
-        "--force must bind the rate that was asked for, not the detected one: {text}"
+        "--force must bind the rate given on the command line: {text}"
     );
 }
 
-/// A rate close to the detected one is two spellings of the same thing, not a
-/// contradiction, and goes through without --force.
+/// A rate within the tolerance of the detected one is accepted without
+/// `--force`, whichever way it is spelled.
 #[test]
 fn an_fps_that_agrees_with_the_stream_needs_no_force() {
     needs_ffmpeg!();
@@ -286,8 +285,8 @@ fn an_fps_that_agrees_with_the_stream_needs_no_force() {
     );
 }
 
-/// When the encoder wrote no timing, there is nothing to read the rate from,
-/// and guessing is the one thing this tool must never do.
+/// With no timing in the stream there is no rate to read, so `write` refuses
+/// and asks for `--fps`.
 #[test]
 fn fps_is_required_when_the_stream_carries_no_timing() {
     needs_ffmpeg!();
@@ -313,7 +312,7 @@ fn fps_is_required_when_the_stream_carries_no_timing() {
         "a refused write must not leave a sidecar behind"
     );
 
-    // Told the rate, it writes one — and it still verifies.
+    // Given the rate, the write succeeds and the sidecar passes `check`.
     let written = dex_sidecar(&["write", stream, "--fps", "30"]);
     assert_eq!(exit_code(&written), 0, "stderr: {}", stderr(&written));
     let sidecar = format!("{stream}.json");
@@ -322,7 +321,7 @@ fn fps_is_required_when_the_stream_carries_no_timing() {
 }
 
 #[test]
-fn a_stream_that_is_not_there_is_reported_as_such() {
+fn a_missing_stream_is_reported_with_its_name() {
     let missing = work_dir("missing").join("nope.265");
     let out = dex_sidecar(&["write", missing.to_str().unwrap(), "--fps", "30"]);
     assert_eq!(exit_code(&out), EXIT_FAILED, "stderr: {}", stderr(&out));
@@ -333,10 +332,9 @@ fn a_stream_that_is_not_there_is_reported_as_such() {
     );
 }
 
-/// With no ffprobe on PATH nothing can be read from the stream, so the tool
-/// insists on --fps, and once told the rate it writes a sidecar without the
-/// width and height it could not learn. Any bytes serve as the stream here:
-/// nothing gets probed, so this test does not need ffmpeg itself.
+/// The run gets an empty PATH, so ffprobe cannot be found: `--fps` is
+/// required, and the sidecar then written leaves out the width and height.
+/// The bytes here are never probed, so this test needs no ffmpeg.
 #[test]
 fn without_ffprobe_the_rate_must_be_given_and_dimensions_are_left_out() {
     let dir = work_dir("noffprobe");
@@ -390,7 +388,7 @@ fn an_empty_stream_is_refused() {
 
 #[test]
 fn a_command_line_without_a_subcommand_gets_usage() {
-    // The old two-argument form, which is now `check`.
+    // Two paths with no subcommand in front of them.
     let out = dex_sidecar(&["loop.265.json", "loop.265"]);
     assert_eq!(exit_code(&out), EXIT_REFUSED, "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("usage:"), "stderr: {}", stderr(&out));
@@ -410,9 +408,8 @@ fn an_unknown_subcommand_gets_usage() {
     assert!(stderr(&out).contains("usage:"), "stderr: {}", stderr(&out));
 }
 
-/// A flag at the end of the line with nothing after it. It has to refuse
-/// rather than quietly behave as if the flag were absent, which would write a
-/// sidecar with a rate nobody chose.
+/// dex-sidecar refuses a `--fps` with no value after it, so no sidecar is
+/// written with a rate nobody chose.
 #[test]
 fn a_trailing_fps_with_no_value_gets_usage() {
     needs_ffmpeg!();

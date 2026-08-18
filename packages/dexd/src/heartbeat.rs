@@ -1,106 +1,76 @@
-//! F7/F9 — the heartbeat line: one log line every ~10 min so a weeks-later
-//! field failure is diagnosable from the journal after the fact (was it
-//! degrading? hot? dropping frames? did the core stop answering?).
-//! Formatting is pure and unit-tested here; scheduling and the mpv/sysfs
-//! plumbing live in main.rs.
+//! The heartbeat line: one line in the system log every ten minutes, so a
+//! failure at the venue is still diagnosable weeks later. Formatting lives
+//! here and is unit-tested; the scheduling and the mpv and sysfs plumbing
+//! live in main.rs.
 //!
-//! # F9 — why every field here comes from an event, never a synchronous read
+//! ```text
+//! dexd: heartbeat loops=143 uptime=3600s temp=48.2C frame-drops=0 vo-delayed=2 pos=3599.4s pos-age=0s watchdog=armed pings-dropped=0
+//! ```
 //!
-//! Before F9, `emit_heartbeat` called `mpv_get_property_string` directly from
-//! the supervisor thread. Verified against mpv v0.40.0 source:
-//! `mpv_get_property_string` -> `run_locked` -> `mp_dispatch_lock`
-//! (misc/dispatch.c:364-394) spins on `mp_cond_wait` with **no timeout**
-//! until the core thread is trapped inside `mp_dispatch_queue_process()`. A
-//! core thread wedged in a DRM ioctl mid-playloop never reaches that trap
-//! point, so the caller -- this supervisor thread, the same one `mpv_wait_event`
-//! runs on -- blocks forever. That is bug #1's exact shape (process alive,
-//! supervisor green, screen black) entered through the one diagnostic that
-//! was supposed to help detect it.
+//! Every value arrives in an `MPV_EVENT_PROPERTY_CHANGE` event. No function
+//! here takes an mpv handle, which keeps a synchronous property read — a wait
+//! on mpv's core thread with no timeout — out of the diagnostic.
 //!
-//! The fix is not "read less often", it is "never call in". Every value a
-//! heartbeat line prints now arrives ONLY via `MPV_EVENT_PROPERTY_CHANGE`,
-//! the same door F1's `time-pos` subscription already uses. Three source-backed
-//! properties make that strictly better than the synchronous read it
-//! replaces, not merely no-worse:
+//! A value that has not arrived prints `n/a`; a counter whose subscription
+//! never registered prints `off`, a different fact.
 //!
-//! 1. **The read migrates off our thread.** Observed-property getters run on
-//!    the core thread via `send_client_property_changes()`, which explicitly
-//!    drops the client lock around the getter call (player/client.c
-//!    :1694-1699, "property getters can do whatever they want"). A wedged
-//!    getter blocks neither our supervisor thread nor `mpv_wait_event`. If the
-//!    core is wedged we get silence, not a hang -- and silence is exactly
-//!    the signal `pos-age=` below exists to surface.
-//! 2. **Steady-state cost is a handful of events per counter, ever, never
-//!    queued.** Registration forces one initial notification per counter
-//!    (client.h) that arrives promptly as `format=NONE`/`data=NULL` because
-//!    no VO chain exists yet (player/command.c:763-781); a second event
-//!    carries the first real `INT64` value once the VO chain comes up
-//!    (availability flipping counts as a change independent of value
-//!    equality, player/client.c:1715). After that, change events fire only
-//!    when the value actually changes (`equal_mpv_value`,
-//!    player/client.c:1715-1717). A gallery run with no drops emits two
-//!    events per counter around startup, then silence for three weeks.
-//! 3. **They cannot contribute to `QUEUE_OVERFLOW`.** Property-change events
-//!    are "never queued" (player/client.c:942-943) -- generated inside
-//!    `mpv_wait_event` only once the queue has drained. Observing more
-//!    properties cannot push this program toward the one event it treats as
-//!    fatal.
-//!
-//! `mpv_get_property_string` and the `mpv_free` it requires are gone from
-//! main.rs's FFI surface entirely (not merely unused) -- see the comment
-//! left in their place there. With no `*mut MpvHandle` in scope,
-//! `emit_heartbeat` cannot call into mpv even by accident. That is a gate,
-//! not a rule: per this repo's gates-over-rules principle, "don't add a
-//! blocking read here" as a comment can be forgotten; a missing parameter
-//! cannot.
+//! See docs/design/failure-handling.md#heartbeat.
 
-/// One mpv counter as the heartbeat knows it: a value learned ONLY from
-/// `MPV_EVENT_PROPERTY_CHANGE`, never from a synchronous read (see the
-/// module doc for why that distinction is the whole of F9).
+/// One mpv counter as the heartbeat sees it: a value learned from
+/// `MPV_EVENT_PROPERTY_CHANGE` events alone, never from a synchronous read.
+/// See docs/design/failure-handling.md#heartbeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedCounter {
     observed: bool,
     last_raw: Option<u64>,
-    /// Whether ANY real sample has ever arrived, via `sample`. Deliberately
-    /// separate from `last_raw`: `mark_unavailable` clears `last_raw` (the
-    /// diffing baseline) but must NOT make an already-earned `total` render
-    /// as "n/a" again -- that would trade one false-all-clear risk (a raw
-    /// counter reading 0 right after a reset) for another (a real,
-    /// already-known total flickering back to "no value yet" for the
-    /// ordinary few-second VO-chain gap every recovery causes).
+    /// Whether any real sample has arrived. Separate from `last_raw`, which
+    /// `mark_unavailable` clears: a total already counted keeps rendering as
+    /// a number across the few-second gap every in-place recovery leaves.
     has_sample: bool,
     total: u64,
 }
 
 impl ObservedCounter {
-    /// `mpv_observe_property` succeeded: this run can produce values.
+    /// Start a counter whose `mpv_observe_property` call succeeded, so this
+    /// run can produce values.
     pub const fn observed() -> Self {
-        Self { observed: true, last_raw: None, has_sample: false, total: 0 }
+        Self {
+            observed: true,
+            last_raw: None,
+            has_sample: false,
+            total: 0,
+        }
     }
 
-    /// `mpv_observe_property` FAILED: this run never will. Renders `off`,
-    /// which is a different fact from "no value yet" -- see the module doc
-    /// (principle 2, "distinguish the two no-value cases").
+    /// Start a counter whose `mpv_observe_property` call failed, so this run
+    /// never produces a value. Renders `off`: the subscription is missing,
+    /// where `n/a` means it is registered and still waiting for a first
+    /// value.
     pub const fn unobserved() -> Self {
-        Self { observed: false, last_raw: None, has_sample: false, total: 0 }
+        Self {
+            observed: false,
+            last_raw: None,
+            has_sample: false,
+            total: 0,
+        }
     }
 
-    /// Feed one `MPV_EVENT_PROPERTY_CHANGE` payload (already unwrapped from
-    /// `MPV_FORMAT_INT64`). Accumulates across per-file counter resets --
-    /// see the body comment for why that is required, not merely tidy.
+    /// Feed one `MPV_EVENT_PROPERTY_CHANGE` payload, already unwrapped from
+    /// `MPV_FORMAT_INT64`. Adds forward deltas and reads a decrease as mpv
+    /// restarting the counter for a new playback session, so the total keeps
+    /// climbing across an in-place recovery.
+    /// See docs/design/failure-handling.md#heartbeat.
     pub fn sample(&mut self, raw: i64) {
-        // mpv's drop counters are PER PLAYBACK SESSION: F1's tier-0 recovery
-        // (`loadfile ... replace`) rebuilds the VO chain and restarts both
-        // at 0. Printed raw, the last heartbeat before a field failure could
-        // read `frame-drops=0` purely because a recovery reset it four
-        // minutes earlier -- a false all-clear in the ONE line that is the
-        // only diagnostic channel on site. So accumulate: add forward
-        // deltas, and treat any decrease as a reset whose post-reset value
-        // is itself new.
+        // mpv's drop counters count one playback session: an in-place
+        // recovery (`loadfile ... replace`) rebuilds the video output chain
+        // and restarts both at 0. Adding forward deltas, and treating any
+        // decrease as a reset whose post-reset value is itself new, keeps the
+        // printed total from falling back to `frame-drops=0` after a recovery
+        // that dropped hundreds.
         //
-        // `max(0)`: mpv never reports a negative drop count, but this value
-        // arrives through a hand-transcribed FFI tag check, and a clamp is
-        // cheaper than a cast that could wrap into billions.
+        // `max(0)`: mpv reports no negative drop count, but this value
+        // crosses a hand-written FFI boundary, and the clamp keeps a negative
+        // from wrapping into billions as u64.
         let raw = raw.max(0) as u64;
         let delta = match self.last_raw {
             Some(prev) if raw >= prev => raw - prev,
@@ -113,39 +83,21 @@ impl ObservedCounter {
     }
 
     /// Cumulative count since process start, or `None` if no sample has
-    /// EVER arrived. Test/caller accessor; rendering goes through `Display`.
-    /// Gated on `has_sample`, not `last_raw`: `mark_unavailable` clears the
-    /// latter (a diffing-baseline reset) without un-earning a total this
-    /// counter has already accumulated -- see `has_sample`'s doc comment.
+    /// arrived yet. Accessor for callers and tests; the heartbeat line goes
+    /// through `Display`.
     pub fn total(&self) -> Option<u64> {
         self.has_sample.then_some(self.total)
     }
 
-    /// Record that mpv reported this property as currently UNAVAILABLE (an
-    /// `MPV_EVENT_PROPERTY_CHANGE` with `format=MPV_FORMAT_NONE` arrived --
-    /// no VO chain, at startup or mid-recovery). `total` (and whether
-    /// `total()` renders it at all -- see `has_sample`) is untouched: this
-    /// is not itself a counter reset, and a total already earned must not
-    /// flicker back to "n/a" for the ordinary few-second gap every recovery
-    /// causes. `last_raw` IS cleared, so the next real sample -- however
-    /// small -- is read as a fresh first sample (added in full) rather than
-    /// diffed against a value that may already belong to a dead playback
-    /// session.
+    /// Record that mpv reported this property as unavailable: an
+    /// `MPV_EVENT_PROPERTY_CHANGE` carrying `format=MPV_FORMAT_NONE`, which
+    /// arrives whenever no video output chain exists, at startup and during
+    /// an in-place recovery.
     ///
-    /// Why this exists (MINOR, three adversarial reviews, 2026-08-15):
-    /// `sample`'s only reset signal is a numeric DECREASE, but mpv coalesces
-    /// property-change events -- only the latest state per changed property
-    /// survives to the next drain (client.h). If a recovery's teardown
-    /// (unavailable), the new session's restart at 0, and a climb past the
-    /// old session's total all happen before this program's supervisor thread
-    /// drains -- plausible exactly during a recovery, when that thread is
-    /// busy absorbing the END_FILE/START_FILE burst -- the visible sequence
-    /// can be e.g. 5 -> 7 with no decrease at all, and `sample` would count
-    /// a delta of 2 when 7 new drops actually occurred. Marking the
-    /// unavailable state narrows that window (the NONE event itself could
-    /// still be coalesced away) rather than closing it -- full closure is
-    /// not possible from the client side, and isn't worth more machinery
-    /// for a diagnostic line.
+    /// `total` is untouched; `last_raw` is cleared, so the next real sample
+    /// counts in full instead of being diffed against a value from a playback
+    /// session that has ended.
+    /// See docs/design/failure-handling.md#heartbeat.
     pub fn mark_unavailable(&mut self) {
         self.last_raw = None;
     }
@@ -154,48 +106,37 @@ impl ObservedCounter {
 impl std::fmt::Display for ObservedCounter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if !self.observed {
-            // Subscription never registered: this number is not evidence of
-            // anything, look at the startup lines instead.
+            // No subscription was registered, so no number is available; the
+            // startup lines give the reason.
             write!(f, "off")
         } else if let Some(total) = self.total() {
             write!(f, "{total}")
         } else {
-            // Registered, but no real sample has EVER arrived (`total()` is
-            // gated on `has_sample`, not on the diffing baseline
-            // `mark_unavailable` clears -- so this branch, unlike a plain
-            // "no current value" check, is NOT re-entered by an ordinary
-            // few-second VO-chain gap once at least one sample has already
-            // landed). Two distinct causes render identically, both
-            // correctly: (1) no VO chain has EVER come up in this run's
-            // whole life -- expected only for heartbeat #0, unusual after;
-            // (2) the property NAME is unknown to this mpv build.
-            // `mpv_observe_property` never validates the name -- it fails
-            // only for a bad FORMAT or OOM (client.h: "Observing a property
-            // that doesn't exist is allowed") -- so a future mpv renaming
-            // `frame-drop-count`/`vo-delayed-frame-count` would not fail
-            // `observe()` (which would render "off" instead, see above); it
-            // would silently subscribe successfully and sit here forever.
-            // Whichever cause, a run stuck here for HOURS (not seconds) IS
-            // the diagnosis: the core asked and never usefully answered.
+            // Registered, and no sample has arrived yet. Two causes render
+            // the same way: no video output chain has come up in this run,
+            // expected only for the first heartbeat; or the property name is
+            // unknown to this mpv build, because `mpv_observe_property`
+            // accepts a name it does not recognise and fails only on a bad
+            // format or out of memory. A run that stays at `n/a` for hours
+            // rather than seconds is itself the diagnosis: the subscription
+            // registered and no value arrived.
             write!(f, "n/a")
         }
     }
 }
 
-/// The last known playback position and how stale it is. One struct, not
-/// two `Option`s, because "position known but age unknown" cannot occur --
-/// both come from the same `MPV_EVENT_PROPERTY_CHANGE`.
+/// The last known playback position and how stale it is. Both values arrive
+/// together in the same `MPV_EVENT_PROPERTY_CHANGE`, so neither is ever known
+/// without the other.
+/// See docs/design/failure-handling.md#heartbeat.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PositionSample {
     pub secs: f64,
     pub age_secs: u64,
 }
 
-/// Everything one heartbeat line prints. A struct with NAMED fields, not a
-/// multi-argument function: two of the fields are `ObservedCounter` and two
-/// are integers, so a positional call site could silently transpose
-/// frame_drops/vo_delayed (or loops/uptime) and no test in the crate would
-/// catch it -- main.rs is the one file the Mac cannot run.
+/// Everything one heartbeat line prints.
+/// See docs/design/failure-handling.md#heartbeat.
 #[derive(Debug, Clone, Copy)]
 pub struct HeartbeatSnapshot {
     pub loops: u64,
@@ -204,15 +145,9 @@ pub struct HeartbeatSnapshot {
     pub position: Option<PositionSample>,
     pub frame_drops: ObservedCounter,
     pub vo_delayed: ObservedCounter,
-    /// F10: `None` when the systemd watchdog is inert for this run (no
-    /// `$NOTIFY_SOCKET` -- every Mac/bench/CI run); `Some(n)` when armed,
-    /// `n` being the cumulative count of pings that could not be sent
-    /// (`dexd::watchdog::PingOutcome::Dropped`) since process start.
-    /// Kept as a plain `Option<u64>` rather than importing
-    /// `dexd::watchdog`'s own types here -- this module already prints
-    /// two other subsystems' state (F1's position, F9's counters) as plain
-    /// values, and pulling in a third module's enum just to render one
-    /// number would be the odd one out.
+    /// `None` when the systemd watchdog is inert for this run (see
+    /// `watchdog::InertReason` for the causes); `Some(n)` when it is armed,
+    /// `n` counting the pings that could not be sent since process start.
     pub watchdog_pings_dropped: Option<u64>,
 }
 
@@ -221,26 +156,28 @@ impl HeartbeatSnapshot {
     pub fn render(&self) -> String {
         let temp = match self.temp_millicelsius {
             Some(m) => {
-                // Extract the sign before dividing: `m / 1000` truncates
-                // toward zero, so for m in -999..=-1 it is 0 -- an unheated
-                // venue on a winter cold-boot (e.g. -250 m°C) would
-                // otherwise render as a plausible-looking POSITIVE "0.2C" in
-                // the journal. `unsigned_abs` sidesteps the one panic hazard
-                // in this shape (`i64::MIN.abs()`) entirely, though sysfs
-                // never reports a value near it.
-                let (sign, mag) = if m < 0 { ("-", m.unsigned_abs()) } else { ("", m as u64) };
+                // Take the sign before dividing: `m / 1000` truncates toward
+                // zero, so any value in -999..=-1 divides to 0 and would
+                // print as a positive "0.2C". `unsigned_abs` also avoids the
+                // one panic in this shape, `i64::MIN.abs()`.
+                let (sign, mag) = if m < 0 {
+                    ("-", m.unsigned_abs())
+                } else {
+                    ("", m as u64)
+                };
                 format!("{sign}{}.{}C", mag / 1000, (mag % 1000) / 100)
             }
             None => "n/a".to_string(),
         };
         let (pos, pos_age) = match self.position {
-            Some(PositionSample { secs, age_secs }) => (format!("{secs:.1}s"), format!("{age_secs}s")),
+            Some(PositionSample { secs, age_secs }) => {
+                (format!("{secs:.1}s"), format!("{age_secs}s"))
+            }
             None => ("n/a".to_string(), "n/a".to_string()),
         };
-        // F10: "inert" and "armed pings-dropped=0" are different facts (no
-        // systemd watchdog at all, vs. one that is armed and has never lost
-        // a ping yet) -- both worth telling apart from the journal after
-        // the fact, same reasoning as `ObservedCounter`'s off/n/a split.
+        // `inert` and `armed pings-dropped=0` are different facts: no systemd
+        // watchdog at all, against one that is armed and has lost no ping.
+        // Same split as `off` against `n/a` above.
         let watchdog = match self.watchdog_pings_dropped {
             Some(n) => format!("armed pings-dropped={n}"),
             None => "inert".to_string(),
@@ -263,10 +200,9 @@ mod tests {
     fn unobserved_renders_off_even_after_a_stray_sample() {
         let mut c = ObservedCounter::unobserved();
         assert_eq!(c.to_string(), "off");
-        // A stray sample must not happen in practice (nothing feeds an
-        // unobserved counter), but the render must stay "off" regardless --
-        // "off" means "the subscription never registered", which a sample
-        // arriving cannot retroactively change.
+        // Nothing feeds an unobserved counter in practice. The render stays
+        // `off` regardless, because `off` means the subscription never
+        // registered and a later sample does not change that.
         c.sample(5);
         assert_eq!(c.to_string(), "off");
     }
@@ -296,31 +232,24 @@ mod tests {
     }
 
     #[test]
-    fn a_decrease_is_a_tier_0_recovery_reset_and_accumulates_the_post_reset_value() {
-        // The scenario this pins: F1's in-place recovery (`loadfile ...
-        // replace`) rebuilds the VO chain, and mpv restarts frame-drop-count
-        // at 0 for the new playback session. Printed raw, that reset would
-        // make `frame-drops=0` look like a false all-clear right after a
-        // recovery. The heartbeat must instead keep counting forward from
-        // where it was.
+    fn a_decrease_is_a_recovery_reset_and_the_post_reset_value_is_added() {
+        // An in-place recovery (`loadfile ... replace`) rebuilds the video
+        // output chain, and mpv restarts frame-drop-count at 0 for the new
+        // playback session. The heartbeat keeps counting forward instead.
         let mut c = ObservedCounter::observed();
-        c.sample(40); // pre-recovery: 40 drops accumulated
-        c.sample(3); // recovery reset the session counter to 3
-        assert_eq!(c.total(), Some(43), "the post-reset value must be added, not replace the total");
+        c.sample(40); // 40 drops accumulated before the recovery
+        c.sample(3); // the new playback session's counter, already at 3
+        assert_eq!(
+            c.total(),
+            Some(43),
+            "the post-reset value must be added to the total, not replace it"
+        );
         c.sample(3); // steady after the reset: no further change
         assert_eq!(c.total(), Some(43));
     }
 
     #[test]
     fn mark_unavailable_keeps_total_but_makes_the_next_sample_a_fresh_first_sample() {
-        // The scenario `mark_unavailable` exists for: mpv coalesces
-        // property-change events, so an unavailability blip that lands
-        // between two drains can hide an ENTIRE recovery episode's session
-        // reset from `sample`'s only reset signal (a numeric decrease) --
-        // see `mark_unavailable`'s doc comment. `total` must survive
-        // untouched; `last_raw` must NOT, so the next sample is read as a
-        // fresh first sample (added in full) rather than diffed against a
-        // value that may belong to a dead session.
         let mut c = ObservedCounter::observed();
         c.sample(40);
         assert_eq!(c.total(), Some(40));
@@ -329,18 +258,17 @@ mod tests {
         assert_eq!(
             c.total(),
             Some(40),
-            "an already-earned total must not flicker back to n/a for an \
-             ordinary unavailability blip -- total() is gated on has_sample, \
-             not on the diffing baseline mark_unavailable clears"
+            "a counted total keeps rendering as a number after \
+             mark_unavailable: total() is gated on has_sample, not on the \
+             diffing baseline that mark_unavailable clears"
         );
 
-        c.sample(7); // a coalesced sequence would otherwise read as delta=7
+        c.sample(7);
         assert_eq!(
             c.total(),
             Some(47),
-            "post-unavailability sample must be added in full as a fresh \
-             first sample, not diffed against the stale pre-unavailability \
-             last_raw"
+            "a sample after mark_unavailable counts in full, instead of being \
+             diffed against the cleared last_raw"
         );
     }
 
@@ -353,12 +281,10 @@ mod tests {
 
     #[test]
     fn total_saturates_at_u64_max() {
-        // Three `i64::MAX` contributions overflow u64 (u64::MAX = 2 *
-        // i64::MAX + 1, so a third addition of i64::MAX always overflows).
-        // Each contribution arrives via a "reset to 0, then jump back to
-        // i64::MAX" pair so every sample stays a legal i64 input -- this
-        // tests `saturating_add`, not a way to smuggle an out-of-range raw
-        // value past the FFI boundary.
+        // Three `i64::MAX` contributions overflow u64, since u64::MAX is
+        // 2 * i64::MAX + 1. Each contribution arrives as a "reset to 0, then
+        // jump back to i64::MAX" pair, so the test exercises `saturating_add`
+        // while every value that crosses the FFI boundary stays a legal i64.
         let mut c = ObservedCounter::observed();
         c.sample(i64::MAX);
         c.sample(0); // reset
@@ -380,7 +306,10 @@ mod tests {
             loops: 143,
             uptime_secs: 3600,
             temp_millicelsius: Some(48_250),
-            position: Some(PositionSample { secs: 3599.4, age_secs: 0 }),
+            position: Some(PositionSample {
+                secs: 3599.4,
+                age_secs: 0,
+            }),
             frame_drops,
             vo_delayed,
             watchdog_pings_dropped: Some(0),
@@ -393,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn all_missing_sources_degrade_to_na_not_errors() {
+    fn every_missing_source_renders_na() {
         let snap = HeartbeatSnapshot {
             loops: 0,
             uptime_secs: 0,
@@ -448,10 +377,9 @@ mod tests {
 
     #[test]
     fn inert_watchdog_never_prints_a_dropped_count() {
-        // `None` means "no systemd watchdog at all" -- distinct from "armed,
-        // zero drops so far" (Some(0), pinned by `renders_the_full_line`
-        // above). A dropped-count number here would misleadingly suggest a
-        // watchdog exists when it does not.
+        // `None` means there is no systemd watchdog at all, a different fact
+        // from armed with zero drops so far, which `renders_the_full_line`
+        // covers as `Some(0)`.
         let snap = HeartbeatSnapshot {
             loops: 0,
             uptime_secs: 0,
@@ -468,11 +396,8 @@ mod tests {
 
     #[test]
     fn sub_zero_temperatures_keep_their_sign() {
-        // -250 m°C: an unheated venue on a winter cold-boot. Before the
-        // original fix, `m / 1000 == 0` for any m in -999..=-1, so this
-        // silently rendered as the POSITIVE "0.2C" -- a plausible-looking
-        // wrong reading in exactly the diagnostic line this module exists
-        // to make trustworthy. Carried over verbatim from F7.
+        // Dividing before taking the sign gives `m / 1000 == 0` for any m in
+        // -999..=-1, so -250 m°C would render as the positive "0.2C".
         let base = HeartbeatSnapshot {
             loops: 0,
             uptime_secs: 0,
@@ -494,7 +419,7 @@ mod tests {
             "dexd: heartbeat loops=0 uptime=0s temp=-1.5C frame-drops=n/a \
              vo-delayed=n/a pos=n/a pos-age=n/a watchdog=inert"
         );
-        // i64::MIN: the one value where a naive `.abs()` would panic.
+        // i64::MIN: the one value a plain `.abs()` would panic on.
         // `unsigned_abs()` does not.
         base.temp_millicelsius = Some(i64::MIN);
         let s = base.render();
@@ -507,34 +432,47 @@ mod tests {
             loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
-            position: Some(PositionSample { secs: 12.049, age_secs: 4 }),
+            position: Some(PositionSample {
+                secs: 12.049,
+                age_secs: 4,
+            }),
             frame_drops: ObservedCounter::observed(),
             vo_delayed: ObservedCounter::observed(),
             watchdog_pings_dropped: None,
         };
-        assert!(snap.render().contains("pos=12.0s pos-age=4s"), "{}", snap.render());
+        assert!(
+            snap.render().contains("pos=12.0s pos-age=4s"),
+            "{}",
+            snap.render()
+        );
     }
 
     #[test]
-    fn a_large_position_from_weeks_of_uptime_does_not_go_exponential() {
-        // Three weeks at ~1x realtime: well past the point where `{}` would
-        // switch a float to scientific notation if this used a bare
-        // Display impl instead of a fixed `{:.1}` format.
+    fn a_position_after_weeks_of_uptime_stays_in_decimal_notation() {
+        // Three weeks at about realtime rate: past the point where `{}` would
+        // switch a float to scientific notation, which the fixed `{:.1}`
+        // format in `render` prevents.
         let three_weeks_secs = 3600.0 * 24.0 * 21.0;
         let snap = HeartbeatSnapshot {
             loops: 0,
             uptime_secs: 0,
             temp_millicelsius: None,
-            position: Some(PositionSample { secs: three_weeks_secs, age_secs: 0 }),
+            position: Some(PositionSample {
+                secs: three_weeks_secs,
+                age_secs: 0,
+            }),
             frame_drops: ObservedCounter::observed(),
             vo_delayed: ObservedCounter::observed(),
             watchdog_pings_dropped: None,
         };
         let s = snap.render();
         assert!(s.contains("pos=1814400.0s"), "{s}");
-        // Not a whole-line check: "heartbeat" itself contains 'e'. Scope the
-        // scientific-notation check to the pos field's rendered text alone.
+        // Scoped to the pos field alone, because "heartbeat" itself
+        // contains an 'e'.
         let pos_field = s.split("pos=").nth(1).unwrap().split(' ').next().unwrap();
-        assert!(!pos_field.contains('e') && !pos_field.contains('E'), "{pos_field}");
+        assert!(
+            !pos_field.contains('e') && !pos_field.contains('E'),
+            "{pos_field}"
+        );
     }
 }

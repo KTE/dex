@@ -1,136 +1,42 @@
-//! F1 — tier-0 self-healing: the escalation policy for the periodic health
-//! check, extracted pure so the policy that decides "recover in place" vs.
-//! "give up and let the supervisor restart" is testable without libmpv, a
-//! display, or even the crate's FFI half. `main.rs` is a thin driver over
-//! this: it samples a playback-position property on a fixed cadence and
-//! feeds the sample to [`HealthMonitor::tick`]; every other decision is made
-//! here.
+//! Stall detection and the in-place recovery policy for the periodic health
+//! check, as plain state machines with no libmpv, display or FFI behind them,
+//! so the policy can be tested on its own. `main.rs` samples mpv's playback
+//! position on a fixed cadence, feeds each sample to [`HealthMonitor::tick`]
+//! and carries out the [`HealthAction`] that comes back.
 //!
-//! # Why this exists (PLAN.md F1)
+//! The position reaches this module only through the property-change events
+//! mpv pushes, never through a synchronous property read, so judging health
+//! cannot itself block the supervisor thread inside a stalled mpv core.
 //!
-//! The event loop already treats a fatal mpv event (END_FILE,
-//! QUEUE_OVERFLOW) as tier 1: exit non-zero, let `Restart=always` recover.
-//! That covers a display absent at BOOT. It does not cover an INTERMITTENT
-//! loss mid-show — the projector's HDMI blinking, a sink waking up late —
-//! where mpv itself never emits a fatal event at all: it just silently stops
-//! making progress while the process stays alive and every existing signal
-//! (heartbeat, supervisor) reads green. Killing a player that LOOKS healthy
-//! over one glitch is heavy-handed and loses seconds of picture in front of
-//! the public; never checking at all is bug #1's exact shape (alive, green,
-//! screen black) with a different trigger. Tier 0 is the middle path: try a
-//! cheap in-place repair first, and escalate only if that keeps failing.
-//!
-//! # The escalation policy, precisely
-//!
-//! * A "tick" happens on a fixed wall-clock cadence (main.rs: ~10 s, off the
-//!   decode path — see that module's comment on the event-wait timeout for
-//!   why the cadence has to be enforced by a TIMEOUT, not just by events).
-//! * Each tick reports the LATEST known playback position (e.g. `time-pos`).
-//!   `None` means no update has arrived since the monitor was created (or
-//!   since it was last reset by a recovery) — treated identically to "the
-//!   value is unchanged", because a wedged core stops producing property
-//!   updates entirely; the absence of an update IS the stall symptom, not a
-//!   distinct case needing its own handling.
-//! * The position must strictly increase between two ticks to count as
-//!   progress. Two CONSECUTIVE non-advancing ticks (not one) are required
-//!   before acting, to absorb ordinary jitter around a check boundary — see
-//!   PLAN.md's F1 text ("has not advanced across two consecutive checks").
-//! * Once that bar is met, the caller is told to attempt an in-place
-//!   recovery (re-issue `loadfile ... replace`, which opens a brand-new
-//!   `loop://` stream, restarting demux+decode and forcing a `vo_reconfig`).
-//!   In mpv v0.40, a playlist replace tears down and rebuilds the demuxer
-//!   and decoder chain but does NOT tear down the video output itself
-//!   (`uninit_video_out` runs only on process termination) -- so this
-//!   plausibly repairs a decode-side wedge, but a fault in the DRM/GPU
-//!   context surviving the replace may still need a full process restart
-//!   (tier 1) to clear. Unverified against a physical HDMI-loss bench test
-//!   as of 2026-08-15; see PLAN.md's F1 addendum.
-//! * Recovery attempts are drawn from a budget fixed at construction and
-//!   NEVER replenished for the life of the process — see "why the budget
-//!   never resets" below. Once exhausted, the next qualifying stall
-//!   escalates instead of attempting another recovery.
-//!
-//! # Why the budget never resets on a temporary recovery
-//!
-//! The obvious alternative — give the counter back after some period of
-//! sustained health following a recovery — reopens exactly the hole the cap
-//! exists to close. A fault that FLAPS (heals for a while, stalls again,
-//! repeat) would keep resetting the counter before it ever reached the cap,
-//! producing a total number of in-place retries that is unbounded across the
-//! process's lifetime even though each individual episode looks bounded.
-//! That is "an unbounded in-place retry loop... wearing a different hat" —
-//! exactly the failure mode the task brief warns against, just spread out in
-//! time instead of packed into one burst. A cumulative, never-replenished
-//! budget is the only shape that bounds the WORST case, not just the common
-//! one. And leaning on tier 1 sooner than strictly necessary is cheap and
-//! safe here: `Restart=always` with `StartLimitIntervalSec=0`
-//! (`deploy/dexd.service`) never gives up either, so the process comes
-//! back regardless of which tier does the healing — tier 0 running out of
-//! budget means tier 1 takes over, not that the show stops.
-//!
-//! # Why the sample that drives this arrives asynchronously (F9's concern)
-//!
-//! A prior review (F9, SUSPECTED, recorded in PLAN.md) flagged that a
-//! synchronous `mpv_get_property_string` call made from a supervisor thread
-//! is itself a core-wedge risk: if the mpv core is ever stuck (e.g. the VO
-//! thread blocked in a DRM ioctl against a dying projector, holding whatever
-//! the core needs), a synchronous property read could block that thread
-//! forever — reproducing bug #1's exact shape (alive, supervisor green,
-//! screen black) through a new door instead of closing it. F1 takes that
-//! seriously rather than reproducing it:
-//!
-//! * `main.rs` never polls `mpv_get_property_string` (or any synchronous
-//!   property read) for this feature. It registers exactly ONE
-//!   `mpv_observe_property` call at startup — documented in client.h as
-//!   non-blocking, queuing a subscription and returning immediately — and
-//!   thereafter only ever learns the position from `MPV_EVENT_PROPERTY_CHANGE`
-//!   events delivered through the SAME `mpv_wait_event` loop that already
-//!   proves, by the very fact that this program correctly detects END_FILE
-//!   and QUEUE_OVERFLOW today, that it cannot block indefinitely (the wait
-//!   call takes a caller-supplied timeout).
-//! * If the core wedges, no new property-change events arrive at all. That
-//!   surfaces here as `tick(None)` (or an unchanging value) — exactly the
-//!   stall signal this module already exists to notice, produced by the same
-//!   mechanism that already detects every other fault, rather than by a new
-//!   blocking call that could itself hang.
-//! * Recovery is issued the same way: `mpv_command_async`, not the
-//!   synchronous `mpv_command` this program already uses once at startup
-//!   (safe there — nothing has had a chance to wedge before the first
-//!   frame). Using the async variant for recovery means the one new
-//!   synchronous-shaped risk this feature could have introduced — blocking
-//!   on `loadfile` from the supervisor thread while trying to fix a wedged core —
-//!   does not exist either.
-//!
-//! In short: every new mpv-facing call this feature adds is either
-//! documented non-blocking (`mpv_observe_property`, `mpv_command_async`) or
-//! not a new call at all (`mpv_wait_event`, already relied on). No new
-//! synchronous call is introduced, so F1 does not add a new way to hang —
-//! the exact requirement the task brief states.
+//! See docs/design/failure-handling.md#health-check for the policy, the
+//! recovery budget and what an in-place recovery does and does not rebuild.
 
 /// What the caller should do after feeding one health-check sample to
 /// [`HealthMonitor::tick`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthAction {
-    /// Progress since the last tick, or too early to judge yet (the very
-    /// first sample, or only one non-advancing tick so far). Nothing to do.
+    /// The position advanced, or there is not enough history to judge yet:
+    /// the first sample, or a single non-advancing one. Nothing to do.
     Healthy,
-    /// No progress across >= 2 consecutive ticks, and the recovery budget is
-    /// not yet exhausted. The caller should force VO reconfiguration
-    /// (re-issue `loadfile ... replace`, asynchronously) and keep running.
+    /// The position has not advanced across two consecutive samples and the
+    /// recovery budget still has attempts left. The caller re-issues
+    /// `loadfile ... replace` asynchronously and keeps running.
     AttemptRecovery {
-        /// This attempt's number (1-based) against `max`.
+        /// This attempt's number, counting from 1, against `max`.
         attempt: u32,
         max: u32,
     },
-    /// No progress across >= 2 consecutive ticks, and the recovery budget is
-    /// exhausted. The caller should escalate to tier 1: exit non-zero so the
-    /// supervisor restarts the whole process.
+    /// The position has not advanced across two consecutive samples and the
+    /// recovery budget is spent. The caller exits non-zero so systemd
+    /// restarts the process.
     Escalate,
 }
 
-/// The tier-0 escalation state machine. See the module doc for the policy
-/// and the reasoning behind it; this struct only holds the state that
-/// policy needs.
+/// The stall-detection state machine: two consecutive non-advancing samples
+/// count as a stall, and every recovery it grants is drawn from one budget
+/// that spans the life of the process.
+///
+/// See docs/design/failure-handling.md#health-check.
 pub struct HealthMonitor {
     last_position: Option<f64>,
     consecutive_stalls: u32,
@@ -139,8 +45,11 @@ pub struct HealthMonitor {
 }
 
 impl HealthMonitor {
-    /// `max_recovery_attempts` is the CUMULATIVE, process-lifetime budget of
-    /// in-place recoveries — see the module doc for why it never refills.
+    /// `max_recovery_attempts` is the whole budget for the life of the
+    /// process. It never refills, so a fault that heals and stalls again
+    /// cannot earn further attempts.
+    ///
+    /// See docs/design/failure-handling.md#recovery-budget.
     pub fn new(max_recovery_attempts: u32) -> Self {
         Self {
             last_position: None,
@@ -150,21 +59,22 @@ impl HealthMonitor {
         }
     }
 
-    /// Feed one health-check tick. `position` is the latest known playback
-    /// position (e.g. `time-pos` seconds), or `None` if no update has been
-    /// observed since the monitor was created, or since it was last reset by
-    /// a recovery attempt — see the module doc for why that is treated the
-    /// same as "value unchanged".
+    /// Feed one health-check sample. `position` is the latest known playback
+    /// position in seconds, or `None` when no update has arrived since the
+    /// monitor was created or since a recovery cleared its baseline. A stalled
+    /// mpv core stops sending updates at all, so `None` is judged the same as
+    /// an unchanged value.
+    ///
+    /// See docs/design/failure-handling.md#health-check.
     pub fn tick(&mut self, position: Option<f64>) -> HealthAction {
         let advanced = match (position, self.last_position) {
             (Some(p), Some(prev)) => p > prev,
-            // First sample since start (or since the last recovery reset
-            // the baseline below): nothing to compare against yet. Treating
-            // this as progress, not a stall, avoids counting mpv's own
-            // startup/reload latency -- a few hundred ms to a few seconds
-            // for a 4K decode to begin -- as a fault. A REAL startup hang
-            // (no sample ever arrives) is still caught: two consecutive
-            // `None` ticks below is exactly that case.
+            // First sample since start, or since a recovery cleared the
+            // baseline below: there is nothing to compare against. Counting it
+            // as progress keeps mpv's own startup and reload latency, a few
+            // hundred milliseconds to a few seconds before a 3840x2160 decode
+            // begins, from reading as a fault. A startup that produces no
+            // sample at all is still caught: that is two `None` ticks below.
             (Some(_), None) => true,
             (None, _) => false,
         };
@@ -183,58 +93,41 @@ impl HealthMonitor {
             return HealthAction::Healthy;
         }
 
-        // Two consecutive non-advancing ticks: a qualifying stall episode.
-        // Reset the LOCAL jitter counter so the next attempt (if any) or the
-        // eventual escalation gets its own clean 2-tick window rather than
-        // re-triggering on the very next tick -- but do NOT reset the
-        // budget itself; see the module doc.
+        // Two consecutive non-advancing samples: a stall. Clear the jitter
+        // counter so the attempt that follows, or the escalation, gets its own
+        // two-sample window instead of re-triggering on the next tick. The
+        // budget is untouched here; only `issue_recovery_or_escalate` spends
+        // it.
         self.consecutive_stalls = 0;
         self.issue_recovery_or_escalate()
     }
 
-    /// T7 -- bench-only live-fire probe (PLAN.md): force EXACTLY the
-    /// `AttemptRecovery`/`Escalate` decision an organic stall would produce,
-    /// without waiting for one. Draws from the SAME cumulative budget and
-    /// performs the SAME position-baseline reset as `tick` -- see "why the
-    /// budget never resets" above -- so a forced probe exercises the
-    /// IDENTICAL mpv-facing code path (main.rs's `loadfile ... replace`,
-    /// absorbing the resulting `END_FILE(reason=stop)`) that a real stall
-    /// would, rather than a look-alike that could pass while the real path
-    /// stays broken. That identity is the whole point: C1 (every recovery
-    /// attempt killing the process on its own first step) shipped and
-    /// reached the bench without ever having been exercised against a live
-    /// mpv, because nothing -- test or otherwise -- had ever driven this
-    /// path for real. See main.rs's `--test-rig-force-recovery-after-secs` for what
-    /// decides WHEN to call this.
+    /// Produce the recovery decision a qualifying stall would produce, without
+    /// waiting for one (test rig only; `main.rs` arms it from
+    /// `--test-rig-force-recovery-after-secs`). It spends the same budget and
+    /// clears the same position baseline as [`HealthMonitor::tick`], so the
+    /// caller drives the identical mpv code path.
     ///
-    /// Not a stall: whatever jitter `consecutive_stalls` was accumulating
-    /// before this call is stale the moment a recovery actually issues (the
-    /// same reset `tick` performs on a qualifying stall), so it is cleared
-    /// here too rather than left to bleed into the next organic judgment.
+    /// See docs/design/failure-handling.md#test-rig-probes.
     pub fn force_recovery(&mut self) -> HealthAction {
         self.consecutive_stalls = 0;
         self.issue_recovery_or_escalate()
     }
 
-    /// The budget check + attempt/escalate decision shared by `tick`'s
-    /// qualifying-stall arm and `force_recovery` -- the only two places
-    /// allowed to spend the recovery budget. Callers are responsible for
-    /// whatever precedes "a recovery decision is due now" (stall counting
-    /// for `tick`, nothing for `force_recovery`); this is only the part
-    /// that must stay identical between them.
+    /// The budget check and the attempt-or-escalate decision shared by
+    /// [`HealthMonitor::tick`]'s stall arm and
+    /// [`HealthMonitor::force_recovery`] — the only two places that spend the
+    /// recovery budget. Each caller does its own stall bookkeeping first.
     fn issue_recovery_or_escalate(&mut self) -> HealthAction {
         if self.recovery_attempts_used >= self.max_recovery_attempts {
             return HealthAction::Escalate;
         }
         self.recovery_attempts_used += 1;
-        // A successful in-place recovery re-opens the stream from byte 0
-        // (main.rs issues `loadfile ... replace` on the SAME loop:// URL,
-        // which creates a brand-new stream via open_fn), so it legitimately
-        // restarts mpv's own position counter near zero. Forget the
-        // pre-recovery baseline so the very next real sample -- however
-        // small -- reads as progress rather than "still less than the old
-        // high-water mark", which would otherwise misread a recovery that
-        // WORKED as a continuing stall.
+        // A recovery re-opens the stream from byte 0: `main.rs` issues
+        // `loadfile ... replace` on the same loop:// URL, which creates a
+        // fresh stream, so mpv's position counter restarts near zero. Drop the
+        // baseline here, or the next real sample would compare below the
+        // pre-recovery high-water mark and read as a continuing stall.
         self.last_position = None;
         HealthAction::AttemptRecovery {
             attempt: self.recovery_attempts_used,
@@ -243,18 +136,13 @@ impl HealthMonitor {
     }
 }
 
-/// T7 -- bench-only live-fire probe (PLAN.md): decides WHEN to fire a single
-/// forced tier-0 recovery, entirely independent of whether anything has
-/// actually stalled. Pure so the "fires exactly once, at or after N seconds
-/// of uptime, never before, never twice" contract is testable without mpv.
+/// Decides when to fire one forced recovery, independent of whether anything
+/// has stalled (test rig only). It fires once per process, so a run exercises
+/// the recovery path against a real mpv one time; `main.rs` arms it from
+/// `--test-rig-force-recovery-after-secs` and
+/// [`HealthMonitor::force_recovery`] is what firing calls.
 ///
-/// Fires ONCE, not repeatedly: T7 exists to prove the recovery mechanism
-/// survives contact with a live mpv at all (the C1 regression), not to run
-/// an ongoing chaos-monkey campaign against it -- a single forced episode,
-/// same as the reviewer's manual probe that caught C1, is the minimal thing
-/// that closes the gap PLAN.md describes. See `main.rs`'s
-/// `--test-rig-force-recovery-after-secs` for how a run arms this, and
-/// `HealthMonitor::force_recovery` for what firing does once armed.
+/// See docs/design/failure-handling.md#test-rig-probes.
 pub struct ForceRecoveryTrigger {
     after_secs: u64,
     fired: bool,
@@ -268,9 +156,9 @@ impl ForceRecoveryTrigger {
         }
     }
 
-    /// Feed the current uptime. Returns `true` exactly once -- the first
-    /// call where `uptime_secs >= after_secs` -- and `false` on every call
-    /// before or after that.
+    /// Feed the current uptime. Returns `true` on the first call where
+    /// `uptime_secs >= after_secs`, and `false` on every call before and
+    /// after that one.
     pub fn should_fire(&mut self, uptime_secs: u64) -> bool {
         if self.fired || uptime_secs < self.after_secs {
             return false;
@@ -285,57 +173,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_ever_tick_is_healthy_even_with_no_prior_position() {
+    fn the_first_sample_is_healthy_with_no_position_to_compare() {
         let mut m = HealthMonitor::new(3);
         assert_eq!(m.tick(Some(0.0)), HealthAction::Healthy);
     }
 
     #[test]
-    fn steady_advancement_never_acts() {
+    fn a_steadily_advancing_position_never_triggers_an_action() {
         let mut m = HealthMonitor::new(3);
         let mut pos = 0.0;
         for _ in 0..50 {
-            pos += 0.033; // roughly one 30fps frame's worth per tick
+            pos += 0.033; // roughly one frame at 30 fps per tick
             assert_eq!(m.tick(Some(pos)), HealthAction::Healthy);
         }
     }
 
     #[test]
     fn a_single_non_advancing_tick_is_not_enough_to_act() {
-        // PLAN.md: "if it has NOT ADVANCED ACROSS TWO CONSECUTIVE checks" --
-        // one stalled tick must not trigger anything, or ordinary jitter
-        // around a check boundary would cause spurious recoveries.
+        // One stalled sample must trigger nothing, or ordinary jitter around a
+        // check boundary would cause spurious recoveries.
         let mut m = HealthMonitor::new(3);
         assert_eq!(m.tick(Some(1.0)), HealthAction::Healthy);
-        assert_eq!(m.tick(Some(1.0)), HealthAction::Healthy); // stall #1
-        assert_eq!(m.tick(Some(2.0)), HealthAction::Healthy); // recovers before 2
+        assert_eq!(m.tick(Some(1.0)), HealthAction::Healthy); // stall 1
+        assert_eq!(m.tick(Some(2.0)), HealthAction::Healthy); // advances again
     }
 
     #[test]
     fn two_consecutive_stalls_trigger_the_first_recovery_attempt() {
         let mut m = HealthMonitor::new(3);
         assert_eq!(m.tick(Some(1.0)), HealthAction::Healthy);
-        assert_eq!(m.tick(Some(1.0)), HealthAction::Healthy); // stall #1
+        assert_eq!(m.tick(Some(1.0)), HealthAction::Healthy); // stall 1
         assert_eq!(
-            m.tick(Some(1.0)), // stall #2 -- qualifies
+            m.tick(Some(1.0)), // stall 2 — qualifies
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
     }
 
     #[test]
-    fn none_samples_count_as_stalls_exactly_like_an_unchanged_value() {
-        // No property-change event arriving at all is the same symptom as
-        // the value not changing -- see the module doc's F9 discussion.
-        // Unlike a genuine `Some` value, `None` gets NO "first sample" grace
-        // period: the forgiveness for `Some` exists to absorb ordinary
-        // startup LATENCY (a value arrives a moment late), but a string of
-        // `None`s is exactly the real-startup-hang case the module doc
-        // calls out ("a value that never arrives at all") -- so it must not
-        // be forgiven for an extra tick the way a merely-late value is.
+    fn a_missing_sample_counts_as_a_stall_like_an_unchanged_position() {
+        // No property-change event arriving is the same symptom as a value
+        // that does not change. A `Some` value gets one tick of grace to
+        // absorb startup latency; `None` gets none, since a run of `None`s is
+        // the startup that never produces a position at all.
         let mut m = HealthMonitor::new(3);
-        assert_eq!(m.tick(None), HealthAction::Healthy); // stall #1
+        assert_eq!(m.tick(None), HealthAction::Healthy); // stall 1
         assert_eq!(
-            m.tick(None), // stall #2 -- qualifies, no grace period for None
+            m.tick(None), // stall 2 — qualifies, no grace for None
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
     }
@@ -344,36 +227,31 @@ mod tests {
     fn recovery_gets_a_fresh_two_tick_window_before_being_judged_again() {
         let mut m = HealthMonitor::new(3);
         m.tick(Some(1.0));
-        m.tick(Some(1.0)); // stall #1
+        m.tick(Some(1.0)); // stall 1
         assert_eq!(
-            m.tick(Some(1.0)), // stall #2: attempt 1
+            m.tick(Some(1.0)), // stall 2: attempt 1
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
-        // Immediately after an attempt, ONE more sample must NOT
-        // re-trigger -- the attempt needs its own 2-tick window, otherwise
-        // a recovery that has not even had time to take effect gets judged
-        // as having already failed.
+        // One further sample right after an attempt must not re-trigger: the
+        // attempt needs its own two-tick window, or a recovery that has had no
+        // time to take effect is judged as having already failed.
         assert_eq!(m.tick(Some(0.05)), HealthAction::Healthy);
     }
 
     #[test]
-    fn recovery_resets_the_position_baseline_so_a_reload_restart_is_not_misread_as_still_stalled(
-    ) {
-        // loadfile replace opens a BRAND NEW loop:// stream, so a real
-        // recovery legitimately restarts mpv's own position counter near
-        // zero. Without resetting the monitor's baseline too, the very next
-        // real sample (small) would compare as "less than" the
-        // pre-recovery high-water mark and register as ANOTHER stall --
-        // punishing the exact recovery that worked.
+    fn recovery_clears_the_position_baseline_so_a_restarted_stream_reads_as_progress() {
+        // A `loadfile ... replace` opens a fresh loop:// stream, so mpv's
+        // position counter restarts near zero. Without clearing the monitor's
+        // baseline, the next real sample would compare below the pre-recovery
+        // high-water mark and register as a further stall.
         let mut m = HealthMonitor::new(3);
         m.tick(Some(500.0));
-        m.tick(Some(500.0)); // stall #1
+        m.tick(Some(500.0)); // stall 1
         assert_eq!(
-            m.tick(Some(500.0)), // stall #2: recovery issued, baseline dropped
+            m.tick(Some(500.0)), // stall 2: recovery issued, baseline dropped
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
-        // The reload starts over near zero -- this must read as progress,
-        // not as "0.1 < 500, another stall".
+        // The reloaded stream starts near zero, which must read as progress.
         assert_eq!(m.tick(Some(0.1)), HealthAction::Healthy);
         assert_eq!(m.tick(Some(0.2)), HealthAction::Healthy);
     }
@@ -387,7 +265,7 @@ mod tests {
             m.tick(Some(1.0)),
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
-        // The stream advances again (recovery worked): healthy indefinitely.
+        // The stream advances again — the recovery worked — and stays healthy.
         let mut pos = 0.0;
         for _ in 0..20 {
             pos += 0.1;
@@ -397,29 +275,26 @@ mod tests {
 
     #[test]
     fn budget_is_cumulative_and_never_refills_across_separate_episodes() {
-        // The behaviour the module doc's "why the budget never resets"
-        // section defends: a fault that heals in between episodes must NOT
-        // get its budget back, or a flapping fault produces an unbounded
-        // total number of recovery attempts spread across many separate
-        // episodes -- the same failure the cap exists to prevent, just
-        // spread out in time instead of packed into one burst.
+        // A fault that heals between episodes does not get its budget back. A
+        // budget that refilled would let a flapping fault run an unbounded
+        // total of in-place recoveries, spread across many episodes.
         let mut m = HealthMonitor::new(2);
 
-        // Episode 1: stalls, recovers (attempt 1/2).
+        // Episode 1: stalls, recovers (attempt 1 of 2).
         m.tick(Some(1.0));
         m.tick(Some(1.0));
         assert_eq!(
             m.tick(Some(1.0)),
             HealthAction::AttemptRecovery { attempt: 1, max: 2 }
         );
-        // Fully healthy for a long stretch afterwards.
+        // Healthy for a long stretch afterwards.
         let mut pos = 0.0;
         for _ in 0..100 {
             pos += 0.1;
             assert_eq!(m.tick(Some(pos)), HealthAction::Healthy);
         }
 
-        // Episode 2: stalls again, recovers (attempt 2/2 -- budget exhausted).
+        // Episode 2: stalls again, recovers (attempt 2 of 2 — budget spent).
         let stalled_at = pos;
         m.tick(Some(stalled_at));
         assert_eq!(
@@ -433,9 +308,9 @@ mod tests {
             assert_eq!(m.tick(Some(pos)), HealthAction::Healthy);
         }
 
-        // Episode 3: budget is gone -- this one must escalate, not attempt
-        // a third recovery, even though the stream has been perfectly
-        // healthy for hundreds of ticks since the last stall.
+        // Episode 3: the budget is gone, so this stall escalates instead of
+        // taking a third recovery, however healthy the hundreds of ticks in
+        // between were.
         let stalled_at = pos;
         m.tick(Some(stalled_at));
         assert_eq!(m.tick(Some(stalled_at)), HealthAction::Escalate);
@@ -450,8 +325,8 @@ mod tests {
             m.tick(Some(1.0)),
             HealthAction::AttemptRecovery { attempt: 1, max: 1 }
         );
-        // Budget is now exhausted (1/1 used). The next qualifying stall
-        // must escalate, not attempt a second recovery.
+        // The budget is spent (1 of 1 used), so the next qualifying stall
+        // escalates instead of taking a second recovery.
         m.tick(Some(0.1));
         m.tick(Some(0.1));
         assert_eq!(m.tick(Some(0.1)), HealthAction::Escalate);
@@ -459,10 +334,9 @@ mod tests {
 
     #[test]
     fn zero_budget_escalates_on_the_first_qualifying_stall() {
-        // Edge case sanity: a monitor configured with NO recovery budget at
-        // all still requires 2 consecutive stalls (the jitter guard is
-        // unconditional) but then escalates immediately rather than ever
-        // attempting an in-place recovery.
+        // A monitor built with no recovery budget still needs two consecutive
+        // stalls — the jitter guard is unconditional — and then escalates
+        // without ever attempting an in-place recovery.
         let mut m = HealthMonitor::new(0);
         m.tick(Some(1.0));
         m.tick(Some(1.0));
@@ -470,27 +344,25 @@ mod tests {
     }
 
     #[test]
-    fn position_going_backwards_counts_as_a_stall_not_progress() {
-        // Should never happen for a monotonic, clock-driven time-pos, but
-        // the policy must not treat it as advancement if it ever does (e.g.
-        // a property glitch during a VO reconfigure) -- strictly `>`, not
-        // `!=`.
+    fn position_going_backwards_counts_as_a_stall() {
+        // A clock-driven playback position only moves forward, but if a
+        // property glitch during a video-output reconfigure ever moves it
+        // back, that counts as a stall: the comparison is `>`, not `!=`.
         let mut m = HealthMonitor::new(3);
         m.tick(Some(5.0));
-        m.tick(Some(4.0)); // stall #1 (went backwards)
+        m.tick(Some(4.0)); // stall 1 (went backwards)
         assert_eq!(
-            m.tick(Some(4.0)), // stall #2
+            m.tick(Some(4.0)), // stall 2
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
     }
 
-    // ---- T7: force_recovery / ForceRecoveryTrigger --------------------
+    // ---- Forced recovery, test rig only --------------------------------
 
     #[test]
     fn force_recovery_attempts_immediately_with_no_stall_observed() {
-        // The whole point of T7: unlike `tick`, this needs no stall history
-        // at all -- perfectly healthy, freshly-advancing playback still
-        // gets forced into a recovery attempt.
+        // Unlike `tick`, this needs no stall history: steadily advancing
+        // playback is still forced into a recovery attempt.
         let mut m = HealthMonitor::new(3);
         m.tick(Some(1.0));
         m.tick(Some(2.0));
@@ -503,24 +375,22 @@ mod tests {
 
     #[test]
     fn force_recovery_shares_the_same_cumulative_budget_as_tick() {
-        // A forced probe must spend from the SAME budget an organic stall
-        // would -- two independent counters would let the total number of
-        // in-place retries exceed max_recovery_attempts, exactly the
-        // unbounded-worst-case hole the budget exists to close (see the
-        // module doc).
+        // A forced attempt spends from the budget an organic stall would
+        // spend. Two separate counters would let the total number of in-place
+        // recoveries exceed `max_recovery_attempts`.
         let mut m = HealthMonitor::new(2);
         assert_eq!(
             m.force_recovery(),
             HealthAction::AttemptRecovery { attempt: 1, max: 2 }
         );
         m.tick(Some(10.0));
-        m.tick(Some(10.0)); // stall #1
+        m.tick(Some(10.0)); // stall 1
         assert_eq!(
-            m.tick(Some(10.0)), // stall #2 -- second and LAST budgeted attempt
+            m.tick(Some(10.0)), // stall 2 — the second and last budgeted attempt
             HealthAction::AttemptRecovery { attempt: 2, max: 2 }
         );
-        // Budget exhausted by one forced + one organic attempt: a third
-        // request of EITHER kind must escalate, not attempt again.
+        // One forced plus one organic attempt spends the budget, so a third
+        // request of either kind escalates.
         assert_eq!(m.force_recovery(), HealthAction::Escalate);
     }
 
@@ -531,12 +401,10 @@ mod tests {
     }
 
     #[test]
-    fn force_recovery_resets_the_position_baseline_like_a_real_recovery() {
-        // Same reasoning as tick's own reset test: the forced recovery's
-        // loadfile-replace restarts mpv's position counter near zero, so
-        // the monitor's baseline must drop too or the next real sample
-        // reads as "still less than the old high-water mark" -- a stall
-        // that never happened.
+    fn force_recovery_clears_the_position_baseline_like_a_stall_recovery() {
+        // The forced recovery's `loadfile ... replace` restarts mpv's position
+        // counter near zero, so the monitor's baseline drops with it and the
+        // next real sample reads as progress.
         let mut m = HealthMonitor::new(3);
         m.tick(Some(500.0));
         assert_eq!(
@@ -547,21 +415,19 @@ mod tests {
     }
 
     #[test]
-    fn force_recovery_clears_accumulated_jitter_so_the_next_stall_needs_its_own_two_ticks(
-    ) {
-        // One non-advancing tick (not yet qualifying) followed by a forced
-        // probe must not leave that lone stall "banked" -- the next
-        // organic judgment needs its own fresh two-tick window, same as
-        // after any other recovery.
+    fn force_recovery_clears_accumulated_jitter_so_the_next_stall_needs_its_own_two_ticks() {
+        // One non-advancing tick, which does not yet qualify, followed by a
+        // forced recovery: the lone stall is not banked, so the next judgment
+        // needs its own two-tick window.
         let mut m = HealthMonitor::new(3);
         m.tick(Some(1.0));
-        m.tick(Some(1.0)); // stall #1 -- does not yet qualify
+        m.tick(Some(1.0)); // stall 1 — does not yet qualify
         assert_eq!(
             m.force_recovery(),
             HealthAction::AttemptRecovery { attempt: 1, max: 3 }
         );
-        // If the pre-existing stall had survived, this single non-advancing
-        // tick would immediately qualify as "stall #2". It must not.
+        // Had the earlier stall survived, this single non-advancing tick would
+        // qualify as stall 2. It must not.
         assert_eq!(m.tick(Some(0.1)), HealthAction::Healthy);
     }
 
@@ -573,12 +439,12 @@ mod tests {
     }
 
     #[test]
-    fn force_recovery_trigger_fires_exactly_once_at_the_deadline() {
+    fn force_recovery_trigger_fires_once_at_the_deadline() {
         let mut t = ForceRecoveryTrigger::new(10);
         assert!(!t.should_fire(9));
         assert!(t.should_fire(10));
-        // Same call again (a later tick at the same or a later uptime) must
-        // not re-fire -- T7 is a single live-fire probe, not a repeating one.
+        // A later poll at the same or a higher uptime must not fire again:
+        // one forced recovery per run.
         assert!(!t.should_fire(10));
         assert!(!t.should_fire(11));
         assert!(!t.should_fire(1_000_000));
@@ -586,9 +452,8 @@ mod tests {
 
     #[test]
     fn force_recovery_trigger_fires_late_if_polled_late_but_still_only_once() {
-        // The driver in main.rs polls this on a cadence, not continuously --
-        // a poll that lands after the deadline must still fire (once), not
-        // wait for an exact match.
+        // `main.rs` polls this on a cadence, so a poll that lands after the
+        // deadline still fires, once, instead of waiting for an exact match.
         let mut t = ForceRecoveryTrigger::new(10);
         assert!(!t.should_fire(3));
         assert!(t.should_fire(47));

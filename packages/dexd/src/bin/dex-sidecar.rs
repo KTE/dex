@@ -1,17 +1,17 @@
-//! Create and verify the sidecar file that has to sit next to every video
-//! stream dexd plays.
+//! Create and verify the sidecar file that sits next to every video dexd
+//! plays.
 //!
-//! dexd plays raw HEVC streams. A raw stream carries no frame rate, so the
-//! rate has to travel next to it: `<stream>.json`, a small JSON file holding
-//! the frame rate and the SHA-256 of the stream's exact bytes. dexd refuses to
-//! start when that file is missing, unreadable, or bound to different bytes.
+//! A raw HEVC stream carries no frame rate, so the rate travels beside it in
+//! `<stream>.json`, a small JSON file holding the frame rate and the SHA-256
+//! of the stream's exact bytes. dexd refuses to start when that file is
+//! missing, unreadable, or bound to different bytes.
 //!
-//! `write` creates one at ingest; `check` verifies an existing pair. Both go
-//! through the same parser and the same hash the player itself uses, so a
-//! sidecar this tool accepts is one dexd will accept. Nothing here contains a
-//! second copy of the file format.
+//! `write` creates a sidecar and `check` verifies an existing pair. Both call
+//! the parser and the hash from the library the player links, so the sidecar
+//! format has one implementation. `USAGE` below gives the options and the exit
+//! codes.
 //!
-//! Build: cargo build --release --bin dex-sidecar
+//! See docs/design/sidecar.md#dex-sidecar.
 
 use dexd::sha256::sha256_hex;
 use dexd::sidecar;
@@ -28,7 +28,7 @@ const EXIT_FAILED: u8 = 1;
 
 const USAGE: &str = "\
 usage: dex-sidecar check <sidecar.json> <stream.265>
-       dex-sidecar write <stream.265> [--fps F] [--out FILE] [--force]
+       dex-sidecar write <stream.265> [--fps <F>] [--out <file>] [--force]
 
 dexd will not play a raw HEVC stream without a sidecar next to it: a small
 JSON file holding the frame rate and the SHA-256 of the stream's exact bytes.
@@ -37,12 +37,13 @@ check <sidecar.json> <stream.265>
     Parse the sidecar and confirm its SHA-256 matches the stream on disk.
 
 write <stream.265>
-    --fps F     Frame rate to bind, written as \"30\", \"29.97\" or
+    --fps <F>   Frame rate to bind, written as \"30\", \"29.97\" or
                 \"30000/1001\". Without it the rate is read from the stream
                 with ffprobe, which only works when the encoder wrote timing
                 into the stream itself. When it did not, --fps is required
                 rather than guessed.
-    --out FILE  Where to write the sidecar. Default <stream.265>.json, which
+    --out <file>
+                Where to write the sidecar. Default <stream.265>.json, which
                 is the only name dexd looks for.
     --force     Proceed past two refusals: overwriting a sidecar that already
                 exists, and a --fps that disagrees with the rate ffprobe read
@@ -93,8 +94,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    // The exact bytes the player reads: `fs::read(&path)` in main.rs, no
-    // filtering. Same call here, on purpose.
+    // The same `fs::read` call the player makes in main.rs: the digest has to
+    // cover the bytes the player would see. Change both together or neither.
     let payload = match fs::read(stream_path) {
         Ok(p) => p,
         Err(e) => {
@@ -126,13 +127,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
 
 // ---- frame rates ---------------------------------------------------------
 
-// A raw stream has no container timestamps, so ffprobe can only report a real
-// frame rate when the encoder wrote timing into the stream's own headers. When
-// it did not, ffprobe answers with its internal timebase — typically 1200000/1
-// — which is not a frame rate at all. So a reported rate is believed only
-// inside a plausible range. 1000 is a deliberately generous upper bound: it
-// lets any real camera or encoder rate through and still rejects that timebase
-// by three orders of magnitude.
+// A rate read from the stream must fall in this range. Without timing in the
+// stream's own headers ffprobe answers with its internal timebase, typically
+// 1200000/1, which is not a frame rate. Before narrowing the range, check that
+// it still passes every camera and encoder rate in use — see
+// docs/design/sidecar.md#frame-rate-at-ingest.
 const SANE_MIN: f64 = 1.0;
 const SANE_MAX: f64 = 1000.0;
 
@@ -140,8 +139,9 @@ const SANE_MAX: f64 = 1000.0;
 /// before the two are treated as contradicting each other.
 const FPS_TOLERANCE: f64 = 0.02;
 
-/// Turn ffprobe's `r_frame_rate` (always `num/den`) into a frame rate this
-/// tool is willing to bind, or `None` when it is not believable.
+/// Turn ffprobe's `r_frame_rate` into a frame rate reduced to lowest terms.
+/// `None` when the value is not a `num/den` fraction of non-zero whole numbers,
+/// or falls outside `SANE_MIN..=SANE_MAX`.
 fn detect_fps(rate: &str) -> Option<String> {
     let parts: Vec<&str> = rate.trim().split('/').collect();
     if parts.len() != 2 {
@@ -174,9 +174,9 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
-/// A frame rate as a number, so two of them can be compared. Rounded to six
-/// decimals, which is far finer than the tolerance and keeps `30000/1001` and
-/// `29.97` from looking different by an artifact of binary floating point.
+/// A frame rate as a number, so two of them can be compared. The result is
+/// rounded to six decimals, far finer than `FPS_TOLERANCE`, so that `30000/1001`
+/// and `29.97` do not differ by a floating-point artifact.
 fn fps_to_decimal(fps: &str) -> Option<f64> {
     let value = if let Some((num, den)) = fps.split_once('/') {
         let num: f64 = num.parse().ok()?;
@@ -194,10 +194,9 @@ fn fps_to_decimal(fps: &str) -> Option<f64> {
     Some((value * 1e6).round() / 1e6)
 }
 
-/// Do these two frame rates contradict each other? Two spellings of the same
-/// rate (`30000/1001` and `29.97`) do not; `3` and `30` do. Anything that
-/// cannot be compared counts as a contradiction, so an unreadable value is
-/// never waved through.
+/// Whether two frame rates contradict each other: two spellings of one rate
+/// (`30000/1001` and `29.97`) do not, `3` and `30` do. A value that cannot be
+/// read as a number counts as a contradiction.
 fn fps_disagrees(given: &str, detected: &str) -> bool {
     match (fps_to_decimal(given), fps_to_decimal(detected)) {
         (Some(a), Some(b)) => (a - b).abs() > FPS_TOLERANCE,
@@ -205,16 +204,14 @@ fn fps_disagrees(given: &str, detected: &str) -> bool {
     }
 }
 
-/// Ask the player's own parser whether it would accept this frame rate, by
-/// handing it a sidecar built around the value. Deliberately not a second
-/// implementation of the rate format: the one that matters is the one dexd
-/// reads with.
+/// Whether dexd's parser reads this frame rate back unchanged, asked by building
+/// a sidecar around the value and parsing it. The rate format has one
+/// implementation, the player's — see docs/design/sidecar.md#frame-rate-at-ingest.
 fn fps_is_acceptable(fps: &str) -> bool {
     let probe = sidecar_json(fps, &"0".repeat(64), None, None);
     match sidecar::Sidecar::from_json(&probe) {
-        // The equality check matters as much as the parse: a value carrying
-        // quotes or backslashes could otherwise reshape the JSON around it,
-        // and what came back out would not be what was asked for.
+        // Compare as well as parse: a value carrying quotes or backslashes
+        // would otherwise reshape the JSON built around it.
         Ok(parsed) => parsed.fps == fps,
         Err(_) => false,
     }
@@ -230,9 +227,8 @@ struct Probe {
     rate: Option<String>,
 }
 
-/// Ask ffprobe for the stream's size and frame rate. `None` when ffprobe is
-/// not installed or could not read the file — both of which end up at the same
-/// place: the caller has to supply `--fps`.
+/// Ask ffprobe for the stream's size and frame rate. `None` when ffprobe is not
+/// installed or could not read the file; the caller then needs `--fps`.
 fn probe_stream(path: &Path) -> Option<Probe> {
     let output = Command::new("ffprobe")
         .args([
@@ -299,9 +295,8 @@ struct WriteArgs {
 }
 
 /// Read `write`'s arguments. `None` means the command line was malformed and
-/// the caller should print usage. A flag whose value is missing — the last
-/// token on the line, an edited script, a stray line break — is malformed
-/// rather than silently ignored.
+/// the caller should print usage. A flag whose value is missing, such as the
+/// last token on the line, makes the whole command line malformed.
 fn parse_write_args(args: &[String]) -> Option<WriteArgs> {
     let mut stream: Option<String> = None;
     let mut fps: Option<String> = None;
@@ -369,8 +364,8 @@ fn cmd_write(args: &[String]) -> ExitCode {
         .clone()
         .unwrap_or_else(|| format!("{}.json", args.stream));
 
-    // Never replace a sidecar someone already made without being told to: the
-    // old one may be the only record of what was ingested.
+    // Replacing an existing sidecar takes --force: the old one may be the only
+    // record of the rate the video was prepared with.
     if Path::new(&out).exists() && !args.force {
         eprintln!("error: {out} already exists; pass --force to replace it");
         return ExitCode::from(EXIT_REFUSED);
@@ -438,13 +433,13 @@ fn cmd_write(args: &[String]) -> ExitCode {
                  could not read the file, or answered with something that is not a \
                  frame rate."
             );
-            eprintln!("       Pass --fps <rate> explicitly.");
+            eprintln!("       Pass --fps <F> explicitly.");
             return ExitCode::from(EXIT_REFUSED);
         }
     };
 
-    // The exact bytes on disk, unmodified — the same read the player does, so
-    // the hash means the same thing on both sides.
+    // The same `fs::read` call the player makes, so both sides hash the same
+    // bytes.
     let payload = match fs::read(&stream) {
         Ok(p) => p,
         Err(e) => {
@@ -467,9 +462,9 @@ fn cmd_write(args: &[String]) -> ExitCode {
 
     let json = sidecar_json(&fps, &sha256, width, height);
 
-    // Read back what is about to be written, with the player's parser and the
-    // player's hash, before it becomes the file dexd will load. A writer that
-    // has only ever been watched succeeding is a writer nobody has tested.
+    // Parse the text with the player's parser and re-check the digest before
+    // the file takes its final name, so a defect here writes nothing. See
+    // docs/design/sidecar.md#writing.
     let parsed = match sidecar::Sidecar::from_json(&json) {
         Ok(p) => p,
         Err(e) => {
@@ -527,7 +522,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_believable_rate_is_reduced_to_lowest_terms() {
+    fn a_rate_in_range_is_reduced_to_lowest_terms() {
         assert_eq!(detect_fps("30/1").as_deref(), Some("30"));
         assert_eq!(detect_fps("60/2").as_deref(), Some("30"));
         assert_eq!(detect_fps("30000/1001").as_deref(), Some("30000/1001"));
@@ -535,15 +530,15 @@ mod tests {
         assert_eq!(detect_fps("24000/1001").as_deref(), Some("24000/1001"));
     }
 
-    /// The case this bound exists for: with no timing in the stream's headers,
-    /// ffprobe answers with its internal timebase, which is not a frame rate.
+    /// With no timing in the stream's headers, ffprobe answers with its
+    /// internal timebase, which is not a frame rate.
     #[test]
-    fn ffprobes_internal_timebase_is_not_believed() {
+    fn ffprobes_internal_timebase_is_out_of_range() {
         assert_eq!(detect_fps("1200000/1"), None);
     }
 
     #[test]
-    fn the_bound_is_inclusive_at_both_ends() {
+    fn the_range_is_inclusive_at_both_ends() {
         assert_eq!(detect_fps("1/1").as_deref(), Some("1"));
         assert_eq!(detect_fps("1000/1").as_deref(), Some("1000"));
         assert_eq!(detect_fps("1/2"), None); // 0.5, below the floor
@@ -551,11 +546,11 @@ mod tests {
     }
 
     #[test]
-    fn a_rate_that_is_not_a_fraction_is_not_believed() {
+    fn a_rate_that_is_not_a_fraction_is_refused() {
         for bad in [
             "", "30", "0/0", "0/1", "30/0", "-30/1", "30/-1", "30/1/1", "banana", "N/A", "1.5/1",
         ] {
-            assert_eq!(detect_fps(bad), None, "believed {bad:?}");
+            assert_eq!(detect_fps(bad), None, "read {bad:?} as a rate");
         }
     }
 
@@ -589,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rates_dexd_reads_are_accepted_and_others_are_not() {
+    fn only_the_rates_dexd_reads_are_accepted() {
         for good in ["30", "25", "29.97", "23.976", "30000/1001", "60"] {
             assert!(fps_is_acceptable(good), "rejected {good:?}");
         }
@@ -598,10 +593,10 @@ mod tests {
         }
     }
 
-    /// A rate carrying JSON punctuation must not be able to reshape the file
-    /// built around it: whatever comes back out has to be what went in.
+    /// A rate carrying JSON punctuation must not reshape the file built around
+    /// it: what comes back out has to be what went in.
     #[test]
-    fn a_rate_cannot_smuggle_extra_json_in() {
+    fn a_rate_carrying_json_punctuation_is_refused() {
         for hostile in [
             r#"30","sha256":"0000000000000000000000000000000000000000000000000000000000000000"#,
             r#"30\"#,
@@ -623,7 +618,7 @@ mod tests {
             sidecar_json("30000/1001", &sha, None, None),
             format!("{{\"fps\":\"30000/1001\",\"sha256\":\"{sha}\"}}\n")
         );
-        // A half-known size is left out entirely rather than written alone.
+        // A size known on only one axis is left out entirely.
         assert_eq!(
             sidecar_json("30", &sha, Some(3840), None),
             format!("{{\"fps\":\"30\",\"sha256\":\"{sha}\"}}\n")

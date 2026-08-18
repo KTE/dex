@@ -1,154 +1,30 @@
-//! F10 — systemd `WatchdogSec=` + a hand-rolled `sd_notify`: the actor of
-//! last resort for the one hazard F1/F9 cannot see. See PLAN.md's F10 entry
-//! for the full design record (the "F9/F10 distinction" framing, the socket
-//! analysis, the dependency decision, the timing math); this doc condenses
-//! the parts an implementer reading this file needs, plus the parts a
-//! reviewer of *this file specifically* needs.
+//! The systemd watchdog handshake: decide whether to ping, and send one
+//! `WATCHDOG=1` datagram per health-check tick.
 //!
-//! # Framing: what F10 is for, and why it is a separate feature from F1/F9
+//! `main.rs` sends the ping at the end of each tick, after the health check
+//! and any recovery that tick ordered, so a supervisor thread that hangs
+//! anywhere in the tick stops pinging and systemd restarts the process. Do
+//! not ping from any other path: a ping sent from the heartbeat or from an
+//! exit path resets systemd's countdown over the hang this module exists to
+//! catch.
 //!
-//! F9 proved a wedged mpv core produces SILENCE on this program's supervisor
-//! thread, not a block (`mpv_observe_property` getters run on the core
-//! thread with the client lock dropped — verified against mpv 0.40 source,
-//! see `dexd::health`'s module doc). F1 acts on that silence in-process,
-//! with a bounded budget. Neither covers the one thing left: **our own supervisor
-//! thread hanging in code that is not an mpv call at all** — the canonical
-//! case being `eprintln!` blocking against a wedged journald, including on
-//! the `Escalate` arm whose entire job is "exit so tier 1 can take over" (see
-//! `main.rs::act_on_health_action`'s `Escalate` arm). Nothing in-process can
-//! detect that; it needs an external actor. That is systemd, driven by
-//! `WatchdogSec=` in the unit (`deploy/dexd.service`) plus this module.
-//!
-//! # The liveness criterion — and why a WEDGED PLAYER FAILS it
-//!
-//! `main.rs` pings `WATCHDOG=1` once per `HEALTH_CHECK_SECS` tick, **after**
-//! that tick's `HealthMonitor::tick` evaluation (and any resulting recovery
-//! command) has completed — never from anywhere else, and specifically never
-//! from the 600s heartbeat (longer than any sane `WatchdogSec`). "The process
-//! is alive" alone would be worthless (PLAN.md's own words) — the reason
-//! this criterion is NOT that is a property F1 already guarantees: its
-//! recovery budget (`MAX_RECOVERY_ATTEMPTS`, `main.rs`) is cumulative and
-//! NEVER refills (see `dexd::health`'s "why the budget never resets"),
-//! so a display-wedged player's tick sequence is forced, by construction,
-//! through: silence → stall detected at 2 ticks (~20s) → ≤3 budgeted
-//! recoveries (~20s each) → `Escalate` → `std::process::exit(1)`. A wedged
-//! display therefore emits a BOUNDED number of pings and then either exits
-//! (moot — tier 1's exit-code path already handles it) or, on the one path
-//! that can still hang (`Escalate`'s own `eprintln!` before `exit(1)`, or a
-//! hang anywhere else in the loop body), STOPS pinging entirely — because
-//! the ping sits at the very end of a duty cycle that a genuine hang, by
-//! definition, never completes again. Within this hazard class — a wedged
-//! mpv core or a hung supervisor thread — there is no third state: either
-//! progress continues (pings continue, correctly, nothing to do), or the
-//! duty cycle stops completing (pings stop, watchdog fires). The loop
-//! cannot both hang and ping.
-//!
-//! Scope, stated precisely: that guarantee covers wedged-core/wedged-thread
-//! failures ONLY. A player whose `time-pos` keeps advancing while no photons
-//! reach the wall — HDMI signal lost mid-run, panel powered off, the plane
-//! presenting to a disconnected sink — reads as healthy to F1 (decode and
-//! present proceed internally) and therefore pings forever. No in-process
-//! liveness criterion can see that; it is a signal-level failure, explicitly
-//! out of F10's scope — see PLAN.md's F10 entry ("residual states") for the
-//! record and a possible future closure (DRM connector-status polling).
-//!
-//! # Gate placement: the ping is emitted OUTSIDE the health `Option` gate
-//!
-//! `main.rs` pings regardless of whether `health: Option<HealthMonitor>` is
-//! `Some` — i.e. even in the near-zero-probability case where the `time-pos`
-//! `mpv_observe_property` registration itself failed and F1 is DISABLED for
-//! the run. In that mode the ping only certifies "the event loop completed
-//! an iteration," a strictly weaker claim — but stopping pings there instead
-//! would convert a degraded-but-otherwise-fine run into a guaranteed
-//! `WatchdogSec`-later kill loop, which is a worse outcome than the
-//! diagnostically-honest weaker claim. The DISABLED warning at startup gains
-//! a clause saying so. See `main.rs`'s tick site for where this is wired.
-//!
-//! # No new blocking call — the socket analysis
-//!
-//! `sd_notify` is `sendto(2)` on an `AF_UNIX SOCK_DGRAM` socket to
-//! `$NOTIFY_SOCKET`. Unlike UDP, Unix datagram sockets have flow control: if
-//! the receiver's (PID 1's) queue is full, a *blocking* `sendto` blocks
-//! rather than dropping. PID 1's queue is generally enormous relative to a
-//! 10-byte payload, but "generally" was exactly the standard of proof F9's
-//! lesson raised the bar past — so this module does not rely on it: the
-//! socket this crate opens is put into **non-blocking mode**
-//! (`UnixDatagram::set_nonblocking(true)`, done once in `main.rs`, the
-//! socket's owner), and `EAGAIN`/`EWOULDBLOCK` is treated as a **dropped
-//! ping**, never retried synchronously, never panicked on — see
-//! [`interpret_send_result`] and [`send_ping`]. With a 10s ping cadence and
-//! `WatchdogSec=180` (`deploy/dexd.service`), systemd needs ~17
-//! consecutive drops before a spurious kill; a run that sick is not a wrong
-//! restart. The dropped-ping count is surfaced in the 600s heartbeat line
-//! (`watchdog=armed pings-dropped=N`, see `heartbeat.rs`) so a run degraded
-//! this way is diagnosable after the fact, per this crate's "loud, never
-//! silent" principle.
-//!
-//! # Dependency: zero. Hand-written, `std` only
-//!
-//! The entire protocol this crate needs is: read `$NOTIFY_SOCKET`, open an
-//! unbound `AF_UNIX SOCK_DGRAM` socket, send the literal bytes `WATCHDOG=1`.
-//! `std::os::unix::net::UnixDatagram` covers all of it, including the
-//! abstract-namespace case (`std::os::linux::net::SocketAddrExt`, stable
-//! since 1.70 — comfortably inside this crate's `rust-version = "1.85"`).
-//! No `libsystemd` binding (would add a shared-object link, growing the
-//! `.deb`'s `$auto`-derived `Depends`, to avoid ~150 lines) and no
-//! `sd-notify` crate (removes less than it appears to — the ping policy,
-//! the env handshake, and an audit of its socket handling for the
-//! non-blocking guarantee this feature requires would all still be owned
-//! here). See PLAN.md's F10 entry, §3, for the full comparison this crate's
-//! SPEC §5c ("a dependency earns its place by removing code we would
-//! otherwise own") is weighed against. `Cargo.toml`'s dependency list and
-//! `$auto`-derived `.deb` `Depends` are both UNCHANGED by this feature.
-//!
-//! Deliberately **not** sent: `READY=1` (a no-op under `Type=simple` +
-//! `NotifyAccess=main`, and sending it would invite a future switch to
-//! `Type=notify` that PLAN.md explicitly forbids — a notify unit that never
-//! sends `READY=1` sits inactive forever, and this program has no natural
-//! "ready" moment before the endless stream starts). Also not sent:
-//! `STOPPING=1` (no graceful shutdown exists, by design — the mains switch
-//! IS the shutdown path).
-//!
-//! # A deliberate deviation from PLAN.md's literal test recipe, and why
-//!
-//! PLAN.md's §6 test plan calls for the non-blocking-guarantee test to
-//! `shrink [the receiver's] SO_RCVBUF` via `setsockopt` before flooding it.
-//! `std` exposes no safe way to do that, and this crate is
-//! `#![forbid(unsafe_code)]` crate-wide (`lib.rs`) — a `forbid`, not a
-//! `deny`, so it cannot be locally overridden even inside a `#[cfg(test)]`
-//! module; that is the entire point of choosing `forbid` there. Rather than
-//! reach for a `libc`/raw-FFI dependency (itself a SPEC §5c question this
-//! feature's whole point is to avoid needing) just to shrink a buffer for a
-//! test, [`tests::send_ping_eventually_reports_dropped_once_the_receiver_queue_fills`]
-//! instead floods the OS's UNMODIFIED default receive buffer within a
-//! bounded iteration count. A 10-byte datagram still costs real per-message
-//! kernel accounting overhead, so even a generous default buffer fills
-//! within at most a few thousand sends — the bound used has two orders of
-//! magnitude of headroom over that. This is a real behavioural test (an
-//! actual unread socket, actually exhausted) of the exact property this
-//! module depends on, just without artificially engineering the buffer size
-//! first. Flagged here per this crate's practice of stating a deviation
-//! rather than silently reinterpreting the brief.
+//! See docs/design/failure-handling.md#systemd-watchdog for what a ping
+//! certifies, docs/design/failure-handling.md#ping-protocol for the wire
+//! protocol and the startup handshake, and docs/design/packaging.md#crates
+//! for why the protocol is written against `std` alone.
 
 use std::io;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 
-/// The entire wire payload this program ever sends. No trailing newline:
-/// sd_notify's protocol is newline-separated `KEY=VALUE` lines, and this is
-/// the only line this crate ever emits (see the module doc for why
-/// `READY=1`/`STOPPING=1` are deliberately never sent) — a trailing newline
-/// would be decoration systemd does not require (`sd-daemon` sources treat a
-/// single-line unterminated datagram as a complete, valid notification).
+/// The one message dexd sends over the notify socket. No trailing newline:
+/// the protocol separates `KEY=VALUE` lines with newlines, and a single
+/// unterminated line is a complete notification.
 pub const WATCHDOG_PING_PAYLOAD: &[u8] = b"WATCHDOG=1";
 
-/// Raw environment inputs the handshake decision needs, as explicit values
-/// rather than three direct `std::env::var` calls inside [`resolve`] — that
-/// keeps `resolve` pure (no I/O, no global state) and testable with
-/// synthetic inputs, without mutating the real process environment (which
-/// races every other test in the same test binary; see `std::env::set_var`'s
-/// own safety caveats). [`WatchdogEnv::from_process_env`] is the one place
-/// that actually reads the real environment, for `main.rs` to call once at
-/// startup.
+/// The three systemd notify-protocol variables, read once and handed to
+/// [`resolve`] as values, so the decision does no I/O and no test has to
+/// change the process environment.
+/// See docs/design/failure-handling.md#ping-protocol.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WatchdogEnv {
     pub notify_socket: Option<String>,
@@ -157,10 +33,9 @@ pub struct WatchdogEnv {
 }
 
 impl WatchdogEnv {
-    /// Read the three systemd notify-protocol variables from the real
-    /// process environment. The only non-pure function in this module;
-    /// everything downstream of it ([`resolve`], [`socket_addr`],
-    /// [`send_ping`]) takes its inputs explicitly instead.
+    /// Read the three variables from the process environment. The only
+    /// function here that touches global state; [`resolve`], [`socket_addr`]
+    /// and [`send_ping`] take their inputs explicitly.
     pub fn from_process_env() -> Self {
         Self {
             notify_socket: std::env::var("NOTIFY_SOCKET").ok(),
@@ -170,76 +45,69 @@ impl WatchdogEnv {
     }
 }
 
-/// Where to send pings, in a form that survives being decided on ANY
-/// platform. Kept as this crate's own enum rather than a real
-/// `std::os::unix::net::SocketAddr` — turning `Abstract` into a concrete
-/// address needs `std::os::linux::net::SocketAddrExt`, which does not exist
-/// outside Linux/Android, so [`resolve`] (which must stay compilable and
-/// testable on macOS, the dev machine) cannot construct one directly. See
-/// [`socket_addr`] for the platform-gated conversion.
+/// Where to send pings, as this module's own enum because an abstract name
+/// needs `std::os::linux::net::SocketAddrExt`, which exists only on Linux,
+/// while [`resolve`] also builds and runs on macOS. [`socket_addr`] does the
+/// platform-gated conversion.
+/// See docs/design/development.md#portability-details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotifySocketAddr {
-    /// A filesystem path — the common case (containers, VMs, most systemd
-    /// configurations).
+    /// A filesystem path — the common case (containers, virtual machines,
+    /// most systemd configurations).
     Path(String),
-    /// `$NOTIFY_SOCKET` began with `@`: an abstract-namespace name (the
-    /// leading `@` already stripped, matching `sd_notify`'s own convention —
-    /// see systemd's `sd-daemon.c`).
+    /// `$NOTIFY_SOCKET` began with `@`: an abstract-namespace name, with the
+    /// leading `@` stripped as `sd_notify` strips it.
     Abstract(String),
 }
 
-/// Why the watchdog is inert for this run. Every arm here describes a
-/// NORMAL run, not an error: the Mac dev machine, a bench tmux session, CI,
-/// and any manual invocation off systemd all land in
-/// [`InertReason::NoNotifySocket`] — the overwhelmingly common case. Logged
-/// once at startup, not warned.
+/// Why no pings are sent for this run. Every arm describes a normal run: a
+/// development machine, a test rig, CI and any invocation outside systemd all
+/// land in [`InertReason::NoNotifySocket`]. Logged once at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InertReason {
-    /// No `$NOTIFY_SOCKET` at all: not running under a systemd unit with
-    /// `NotifyAccess=` set.
+    /// No `$NOTIFY_SOCKET`: the process is not running under a systemd unit
+    /// with `NotifyAccess=` set.
     NoNotifySocket,
-    /// `$WATCHDOG_PID` is set and does not identify this process. The
-    /// watchdog handshake belongs to a DIFFERENT process (e.g. a wrapper
-    /// script systemd also tracks under the same unit) — pinging under
-    /// someone else's identity would be actively wrong, not merely useless,
-    /// so this is inert rather than armed-anyway. A value that fails to
-    /// parse as a pid at all is treated identically to "set and different":
-    /// it cannot possibly equal our own pid either way.
-    WatchdogPidMismatch { ours: u32, unit: String },
+    /// `$WATCHDOG_PID` is set and names another process — a wrapper script
+    /// systemd also tracks under the same unit, for example — so the
+    /// handshake belongs to that process and pinging under its identity
+    /// would be wrong. A value that does not parse as a pid is treated the
+    /// same way: it cannot equal this process's pid either.
+    WatchdogPidMismatch { dexd_pid: u32, unit: String },
 }
 
 impl std::fmt::Display for InertReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InertReason::NoNotifySocket => write!(f, "no NOTIFY_SOCKET"),
-            InertReason::WatchdogPidMismatch { ours, unit } => write!(
+            InertReason::WatchdogPidMismatch { dexd_pid, unit } => write!(
                 f,
-                "WATCHDOG_PID={unit} does not match our pid {ours} -- the watchdog handshake \
-                 belongs to a different process"
+                "WATCHDOG_PID={unit} does not match this process's pid {dexd_pid} -- the watchdog \
+                 handshake belongs to a different process"
             ),
         }
     }
 }
 
-/// A startup condition worth a loud warning even though the watchdog IS (or
-/// becomes) armed — distinct from [`InertReason`], which is never a problem.
+/// A misconfigured unit, reported once at startup on a run that does send
+/// pings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArmedWarning {
-    /// `$WATCHDOG_USEC` is set but small enough that this program's fixed
-    /// ping cadence does not clear systemd's own "ping at least twice per
-    /// window" guidance with any margin (PLAN.md F10 §4). Pings are still
-    /// sent every tick regardless — there is nothing better to do from
-    /// inside the process — this is purely diagnostic, flagging a likely
-    /// unit misconfiguration rather than something this code can fix.
+    /// `$WATCHDOG_USEC` names a window shorter than twice the ping cadence,
+    /// the margin systemd's documentation recommends. Pings still go out
+    /// every tick; the unit is what needs correcting.
     WindowTooShortForCadence { window_secs: u64, tick_secs: u64 },
 }
 
 impl std::fmt::Display for ArmedWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ArmedWarning::WindowTooShortForCadence { window_secs, tick_secs } => write!(
+            ArmedWarning::WindowTooShortForCadence {
+                window_secs,
+                tick_secs,
+            } => write!(
                 f,
-                "WatchdogSec window ({window_secs}s) gives our {tick_secs}s ping cadence little \
+                "WatchdogSec window ({window_secs}s) gives the {tick_secs}s ping cadence little \
                  margin (systemd recommends pinging at least twice per window) -- likely a \
                  misconfigured unit; pings are still sent every tick regardless"
             ),
@@ -247,39 +115,41 @@ impl std::fmt::Display for ArmedWarning {
     }
 }
 
-/// The one decision this module exists to make, taken once at startup from
+/// The decision this module makes, taken once at startup from
 /// [`WatchdogEnv`] alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchdogDecision {
     Inert(InertReason),
     Armed {
         addr: NotifySocketAddr,
-        /// `$WATCHDOG_USEC`, converted to whole seconds, when systemd
-        /// exported it (it does whenever `WatchdogSec=` is configured on
-        /// the unit — absent only if `NotifyAccess=` was granted without
-        /// `WatchdogSec=`, an unusual configuration). Carried through so
-        /// `main.rs`'s startup log line can state the real window rather
-        /// than the value this crate merely hopes the unit file has.
+        /// `$WATCHDOG_USEC` in whole seconds, when systemd exported it. It
+        /// is absent only where `NotifyAccess=` was granted without
+        /// `WatchdogSec=`. Carried through so the startup log line can name
+        /// the window the unit set.
         window_secs: Option<u64>,
         warning: Option<ArmedWarning>,
     },
 }
 
-/// Decide whether — and where — to ping, from raw env strings alone. Pure:
-/// no I/O, no socket, no env access (see [`WatchdogEnv::from_process_env`]
-/// for the one caller that supplies real values). `tick_secs` is
-/// `HEALTH_CHECK_SECS` (`main.rs`), passed in explicitly rather than
-/// imported, so this module has zero dependency on `main`'s constants.
-pub fn resolve(env: &WatchdogEnv, our_pid: u32, tick_secs: u64) -> WatchdogDecision {
+/// Decide whether, and where, to ping, from the environment strings alone.
+/// No I/O, no socket and no environment access, so a test can drive every arm
+/// with synthetic values; [`WatchdogEnv::from_process_env`] supplies the real
+/// ones. `tick_secs` is the health-check interval, passed in so this module
+/// depends on none of `main.rs`'s constants.
+/// See docs/design/failure-handling.md#ping-protocol.
+pub fn resolve(env: &WatchdogEnv, dexd_pid: u32, tick_secs: u64) -> WatchdogDecision {
     let Some(sock) = env.notify_socket.as_deref().filter(|s| !s.is_empty()) else {
         return WatchdogDecision::Inert(InertReason::NoNotifySocket);
     };
 
     if let Some(unit_pid) = env.watchdog_pid.as_deref() {
-        let matches = unit_pid.parse::<u32>().map(|p| p == our_pid).unwrap_or(false);
+        let matches = unit_pid
+            .parse::<u32>()
+            .map(|p| p == dexd_pid)
+            .unwrap_or(false);
         if !matches {
             return WatchdogDecision::Inert(InertReason::WatchdogPidMismatch {
-                ours: our_pid,
+                dexd_pid,
                 unit: unit_pid.to_string(),
             });
         }
@@ -291,10 +161,10 @@ pub fn resolve(env: &WatchdogEnv, our_pid: u32, tick_secs: u64) -> WatchdogDecis
         NotifySocketAddr::Path(sock.to_string())
     };
 
-    // A malformed WATCHDOG_USEC (never expected from a real systemd, but
-    // this is text from the environment, not a value this program controls)
-    // fails safe: no window is known, so no "too short" warning is invented
-    // either -- see the "window unknown" rendering this leaves to main.rs.
+    // WATCHDOG_USEC is arbitrary text from the environment. A value that does
+    // not parse leaves the window unknown, and no "window too short" warning
+    // is derived from an unknown window; main.rs renders the unknown window in
+    // the startup line.
     let window_secs = env
         .watchdog_usec
         .as_deref()
@@ -302,20 +172,24 @@ pub fn resolve(env: &WatchdogEnv, our_pid: u32, tick_secs: u64) -> WatchdogDecis
         .map(|usec| usec / 1_000_000);
 
     let warning = window_secs.and_then(|w| {
-        (w < tick_secs.saturating_mul(2))
-            .then_some(ArmedWarning::WindowTooShortForCadence { window_secs: w, tick_secs })
+        (w < tick_secs.saturating_mul(2)).then_some(ArmedWarning::WindowTooShortForCadence {
+            window_secs: w,
+            tick_secs,
+        })
     });
 
-    WatchdogDecision::Armed { addr, window_secs, warning }
+    WatchdogDecision::Armed {
+        addr,
+        window_secs,
+        warning,
+    }
 }
 
-/// Resolve a [`NotifySocketAddr`] into the concrete address `send_to_addr`
-/// needs. `Err` only for [`NotifySocketAddr::Abstract`] on a non-Linux
-/// build (`std::os::linux::net::SocketAddrExt` does not exist there) --
-/// unreachable in the one place that matters (a real systemd host is
-/// Linux), and exists only so this module still compiles and is readable on
-/// the Mac dev machine rather than `#[cfg]`-ing the whole abstract-name
-/// branch out of existence there.
+/// Turn a [`NotifySocketAddr`] into the concrete address `send_to_addr`
+/// needs. `Err` only for [`NotifySocketAddr::Abstract`] off Linux, where
+/// `std::os::linux::net::SocketAddrExt` does not exist; a systemd host is
+/// always Linux, so that arm only keeps the module building on macOS.
+/// See docs/design/development.md#portability-details.
 pub fn socket_addr(target: &NotifySocketAddr) -> io::Result<SocketAddr> {
     match target {
         NotifySocketAddr::Path(p) => SocketAddr::from_pathname(p),
@@ -342,18 +216,17 @@ fn abstract_addr(_name: &str) -> io::Result<SocketAddr> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PingOutcome {
     Sent,
-    /// The datagram did not go out -- EAGAIN/EWOULDBLOCK (receiver's queue
-    /// full) or any other send error (e.g. the notify socket path vanishing
-    /// mid-run). Every failure mode is treated identically as "try again
-    /// next tick": see the module doc's socket analysis for why this is
-    /// never escalated, never retried synchronously, and never panics.
+    /// The datagram did not go out: the receiver's queue was full, or the
+    /// send failed for another reason such as the notify socket path
+    /// vanishing mid-run. Every failure means the same thing here, try again
+    /// next tick, so none is escalated, retried inline or panicked on.
+    /// See docs/design/failure-handling.md#ping-protocol.
     Dropped,
 }
 
-/// The ONLY place that decides "was this ping delivered" -- separated from
-/// the I/O call itself so the policy (a failed send degrades, it is never
-/// fatal and never retried inline) is directly testable with synthetic
-/// [`io::Result`]s, without a real socket at all.
+/// Map one send result to an outcome. Split from the I/O call so the policy —
+/// every failure degrades to a dropped ping — is testable with synthetic
+/// [`io::Result`]s and no socket.
 pub fn interpret_send_result(result: io::Result<usize>) -> PingOutcome {
     match result {
         Ok(_) => PingOutcome::Sent,
@@ -361,12 +234,12 @@ pub fn interpret_send_result(result: io::Result<usize>) -> PingOutcome {
     }
 }
 
-/// Send one watchdog ping over a socket the caller has already opened
-/// non-blocking (`main.rs` owns creating and holding that socket across the
-/// process's whole life, matching every other piece of process-lifetime
-/// state in this crate's driver -- this function itself performs no setup,
-/// so it cannot silently forget to set non-blocking mode). Never blocks,
-/// never panics on a send failure: see [`interpret_send_result`].
+/// Send one watchdog ping over a socket the caller has already set
+/// non-blocking. `main.rs` creates that socket once and holds it for the life
+/// of the process; this function performs no setup. Keep the caller's
+/// `set_nonblocking`: a blocking send parks the supervisor thread against a
+/// full receiver queue, which is the fault the watchdog exists to catch. A
+/// send failure returns [`PingOutcome::Dropped`] and never panics.
 pub fn send_ping(socket: &UnixDatagram, addr: &SocketAddr) -> PingOutcome {
     interpret_send_result(socket.send_to_addr(WATCHDOG_PING_PAYLOAD, addr))
 }
@@ -375,7 +248,11 @@ pub fn send_ping(socket: &UnixDatagram, addr: &SocketAddr) -> PingOutcome {
 mod tests {
     use super::*;
 
-    fn env(notify_socket: Option<&str>, watchdog_pid: Option<&str>, watchdog_usec: Option<&str>) -> WatchdogEnv {
+    fn env(
+        notify_socket: Option<&str>,
+        watchdog_pid: Option<&str>,
+        watchdog_usec: Option<&str>,
+    ) -> WatchdogEnv {
         WatchdogEnv {
             notify_socket: notify_socket.map(str::to_string),
             watchdog_pid: watchdog_pid.map(str::to_string),
@@ -393,8 +270,8 @@ mod tests {
 
     #[test]
     fn empty_notify_socket_is_treated_as_absent() {
-        // Defensive: an exported-but-empty value is not a real address
-        // either way, and must not be handed to socket construction as one.
+        // An exported but empty value is not an address, and must not reach
+        // socket construction as one.
         let d = resolve(&env(Some(""), None, None), 1234, 10);
         assert_eq!(d, WatchdogDecision::Inert(InertReason::NoNotifySocket));
     }
@@ -416,7 +293,10 @@ mod tests {
     fn at_prefixed_socket_resolves_to_an_abstract_address_with_the_prefix_stripped() {
         let d = resolve(&env(Some("@abstract-name"), None, None), 1234, 10);
         match d {
-            WatchdogDecision::Armed { addr: NotifySocketAddr::Abstract(name), .. } => {
+            WatchdogDecision::Armed {
+                addr: NotifySocketAddr::Abstract(name),
+                ..
+            } => {
                 assert_eq!(name, "abstract-name");
             }
             other => panic!("expected Armed/Abstract, got {other:?}"),
@@ -424,30 +304,42 @@ mod tests {
     }
 
     #[test]
-    fn matching_watchdog_pid_still_arms() {
-        let d = resolve(&env(Some("/run/systemd/notify"), Some("1234"), None), 1234, 10);
+    fn a_watchdog_pid_matching_this_process_arms() {
+        let d = resolve(
+            &env(Some("/run/systemd/notify"), Some("1234"), None),
+            1234,
+            10,
+        );
         assert!(matches!(d, WatchdogDecision::Armed { .. }), "{d:?}");
     }
 
     #[test]
-    fn mismatched_watchdog_pid_is_inert() {
-        let d = resolve(&env(Some("/run/systemd/notify"), Some("999"), None), 1234, 10);
+    fn a_watchdog_pid_naming_another_process_is_inert() {
+        let d = resolve(
+            &env(Some("/run/systemd/notify"), Some("999"), None),
+            1234,
+            10,
+        );
         assert_eq!(
             d,
             WatchdogDecision::Inert(InertReason::WatchdogPidMismatch {
-                ours: 1234,
+                dexd_pid: 1234,
                 unit: "999".to_string(),
             })
         );
     }
 
     #[test]
-    fn unparseable_watchdog_pid_is_treated_as_mismatched_not_as_absent() {
-        let d = resolve(&env(Some("/run/systemd/notify"), Some("not-a-pid"), None), 1234, 10);
+    fn a_watchdog_pid_that_does_not_parse_is_treated_as_another_process() {
+        let d = resolve(
+            &env(Some("/run/systemd/notify"), Some("not-a-pid"), None),
+            1234,
+            10,
+        );
         assert_eq!(
             d,
             WatchdogDecision::Inert(InertReason::WatchdogPidMismatch {
-                ours: 1234,
+                dexd_pid: 1234,
                 unit: "not-a-pid".to_string(),
             })
         );
@@ -455,11 +347,19 @@ mod tests {
 
     #[test]
     fn watchdog_usec_with_ample_margin_arms_with_no_warning() {
-        // 180s window (systemd's exported microseconds), 10s cadence: 18
-        // pings per window, comfortably over the 2x guidance.
-        let d = resolve(&env(Some("/run/systemd/notify"), None, Some("180000000")), 1234, 10);
+        // A 180s window (systemd exports microseconds) at a 10s cadence is
+        // 18 pings per window, over systemd's twice-per-window guidance.
+        let d = resolve(
+            &env(Some("/run/systemd/notify"), None, Some("180000000")),
+            1234,
+            10,
+        );
         match d {
-            WatchdogDecision::Armed { window_secs, warning, .. } => {
+            WatchdogDecision::Armed {
+                window_secs,
+                warning,
+                ..
+            } => {
                 assert_eq!(window_secs, Some(180));
                 assert_eq!(warning, None);
             }
@@ -469,15 +369,26 @@ mod tests {
 
     #[test]
     fn watchdog_usec_below_twice_the_cadence_warns() {
-        // 15s window, 10s cadence: only 1.5 pings per window, under
-        // systemd's own "at least twice" guidance.
-        let d = resolve(&env(Some("/run/systemd/notify"), None, Some("15000000")), 1234, 10);
+        // A 15s window at a 10s cadence is 1.5 pings per window, under
+        // systemd's twice-per-window guidance.
+        let d = resolve(
+            &env(Some("/run/systemd/notify"), None, Some("15000000")),
+            1234,
+            10,
+        );
         match d {
-            WatchdogDecision::Armed { window_secs, warning, .. } => {
+            WatchdogDecision::Armed {
+                window_secs,
+                warning,
+                ..
+            } => {
                 assert_eq!(window_secs, Some(15));
                 assert_eq!(
                     warning,
-                    Some(ArmedWarning::WindowTooShortForCadence { window_secs: 15, tick_secs: 10 })
+                    Some(ArmedWarning::WindowTooShortForCadence {
+                        window_secs: 15,
+                        tick_secs: 10
+                    })
                 );
             }
             other => panic!("expected Armed, got {other:?}"),
@@ -485,10 +396,14 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_usec_exactly_twice_the_cadence_does_not_warn() {
-        // The boundary: 20s window / 10s cadence is exactly systemd's own
-        // "at least twice" guidance, not yet "less than" it.
-        let d = resolve(&env(Some("/run/systemd/notify"), None, Some("20000000")), 1234, 10);
+    fn watchdog_usec_at_twice_the_cadence_does_not_warn() {
+        // The boundary: a 20s window at a 10s cadence meets systemd's
+        // twice-per-window guidance.
+        let d = resolve(
+            &env(Some("/run/systemd/notify"), None, Some("20000000")),
+            1234,
+            10,
+        );
         match d {
             WatchdogDecision::Armed { warning, .. } => assert_eq!(warning, None),
             other => panic!("expected Armed, got {other:?}"),
@@ -496,10 +411,18 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_watchdog_usec_arms_with_no_window_and_no_invented_warning() {
-        let d = resolve(&env(Some("/run/systemd/notify"), None, Some("soon")), 1234, 10);
+    fn a_watchdog_usec_that_does_not_parse_arms_with_no_window_and_no_warning() {
+        let d = resolve(
+            &env(Some("/run/systemd/notify"), None, Some("soon")),
+            1234,
+            10,
+        );
         match d {
-            WatchdogDecision::Armed { window_secs, warning, .. } => {
+            WatchdogDecision::Armed {
+                window_secs,
+                warning,
+                ..
+            } => {
                 assert_eq!(window_secs, None);
                 assert_eq!(warning, None);
             }
@@ -510,28 +433,27 @@ mod tests {
     // ---- the wire payload ----------------------------------------------
 
     #[test]
-    fn ping_payload_is_exactly_watchdog_1_no_trailing_newline() {
+    fn ping_payload_is_watchdog_1_with_no_trailing_newline() {
         assert_eq!(WATCHDOG_PING_PAYLOAD, b"WATCHDOG=1");
     }
 
-    // ---- interpret_send_result: pure Ok/Err -> outcome mapping --------
+    // ---- interpret_send_result: Ok/Err to outcome ----------------------
 
     #[test]
-    fn a_successful_send_is_sent() {
+    fn a_successful_send_reports_sent() {
         assert_eq!(interpret_send_result(Ok(10)), PingOutcome::Sent);
     }
 
     #[test]
-    fn would_block_is_dropped_not_an_error() {
+    fn a_send_that_would_block_reports_dropped() {
         let err = io::Error::from(io::ErrorKind::WouldBlock);
         assert_eq!(interpret_send_result(Err(err)), PingOutcome::Dropped);
     }
 
     #[test]
-    fn any_other_send_failure_also_degrades_to_dropped_never_panics() {
-        // e.g. the notify socket path vanishing mid-run (ENOENT) -- see the
-        // module doc: every failure mode is "try again next tick", none is
-        // special-cased or escalated.
+    fn any_other_send_failure_also_reports_dropped() {
+        // For example the notify socket path vanishing mid-run. Every
+        // failure is "try again next tick"; none is special-cased.
         let err = io::Error::from(io::ErrorKind::NotFound);
         assert_eq!(interpret_send_result(Err(err)), PingOutcome::Dropped);
     }
@@ -564,24 +486,25 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);
     }
 
-    // ---- send_ping(): real, unmocked sockets ---------------------------
+    // ---- send_ping(): real sockets -------------------------------------
 
-    /// `/tmp` directly, NOT `std::env::temp_dir()`: `AF_UNIX` paths are
-    /// capped at `sizeof(sockaddr_un.sun_path)` (104 bytes on macOS, 108 on
-    /// Linux), and macOS's real temp dir
-    /// (`/var/folders/.../T/`) is already close to that budget on its own --
-    /// `std::env::temp_dir()` here produced `EINVAL: path must be shorter
-    /// than SUN_LEN` in practice. A short, fixed prefix plus a process-local
-    /// atomic counter keeps every path well under the limit on both
-    /// platforms without needing to reason about `$TMPDIR`'s length.
+    /// Build a socket path under `/tmp`, unique per process and per call.
+    /// `AF_UNIX` caps a path at the size of `sockaddr_un.sun_path` (104 bytes
+    /// on macOS, 108 on Linux) and the macOS temp directory alone can
+    /// overrun that, so keep the prefix short and do not switch this to
+    /// `std::env::temp_dir()`.
+    /// See docs/design/development.md#portability-details.
     fn unique_socket_path(label: &str) -> std::path::PathBuf {
         static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::path::PathBuf::from(format!("/tmp/dwd-{:x}-{n:x}-{label}.sock", std::process::id()))
+        std::path::PathBuf::from(format!(
+            "/tmp/dwd-{:x}-{n:x}-{label}.sock",
+            std::process::id()
+        ))
     }
 
     #[test]
-    fn send_ping_delivers_the_exact_payload_to_a_real_receiver() {
+    fn send_ping_delivers_the_payload_to_a_real_receiver() {
         let path = unique_socket_path("happy");
         let _ = std::fs::remove_file(&path);
         let receiver = UnixDatagram::bind(&path).expect("bind receiver");
@@ -605,13 +528,13 @@ mod tests {
 
     #[test]
     fn send_ping_eventually_reports_dropped_once_the_receiver_queue_fills() {
-        // See the module doc's "deliberate deviation" section for why this
-        // floods the OS's UNMODIFIED default receive buffer, bounded by
-        // ATTEMPTS, rather than shrinking SO_RCVBUF first.
+        // Fills the receiver's default buffer within a bounded number of
+        // sends. Nothing shrinks SO_RCVBUF first: the crate forbids unsafe
+        // code, and std offers no safe setsockopt.
         let path = unique_socket_path("flood");
         let _ = std::fs::remove_file(&path);
         let receiver = UnixDatagram::bind(&path).expect("bind receiver");
-        // Deliberately never read from `receiver`.
+        // The receiver is never read, so its queue fills.
 
         let addr = SocketAddr::from_pathname(&path).expect("path address");
         let sender = UnixDatagram::unbound().expect("unbound sender");
@@ -631,11 +554,10 @@ mod tests {
 
         assert!(
             saw_dropped,
-            "expected send_to_addr to eventually return WouldBlock (-> Dropped) against an \
-             unread receiver within {ATTEMPTS} sends -- if this fails, either this platform's \
-             default SO_RCVBUF is unexpectedly huge, or the non-blocking guarantee broke \
-             (set_nonblocking silently not honoured would hang this loop instead of failing \
-             this assertion -- see the module doc)"
+            "send_to_addr did not report WouldBlock (-> Dropped) within {ATTEMPTS} sends against \
+             a receiver that is never read: either this platform's default SO_RCVBUF is far \
+             larger than expected, or the sender is no longer non-blocking (a socket that \
+             ignores set_nonblocking hangs this loop instead of reaching this assertion)"
         );
     }
 }

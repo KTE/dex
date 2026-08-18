@@ -1,33 +1,22 @@
-//! F3 prerequisite — one-shot SHA-256 (FIPS 180-4) for the asset<->sidecar
-//! binding, over the `sha2` crate.
+//! SHA-256 for the asset checksum: a thin wrapper over the `sha2` crate.
 //!
-//! This module was hand-rolled (185 lines, FIPS 180-4 from scratch) under the
-//! crate's former zero-dependency rule. That rule is withdrawn — SPEC §5c —
-//! so the implementation is now RustCrypto's and this file is a thin wrapper.
-//!
-//! **The wrapper is deliberate: the module keeps its API so the vectors below
-//! keep testing the thing the player actually calls.** They now pin `sha2`
-//! rather than our own compression function, which is the point — the tests
-//! were always a statement about `sha256_hex`'s output, never about who
-//! computed it.
-//!
-//! Before the swap, the hand-rolled implementation was confirmed to agree with
-//! coreutils `sha256sum` on the real bench assets (loop4k.265, loop.265). That
-//! check is why existing sidecars remain valid across this change: had it
-//! disagreed, every sidecar in the field would have encoded a wrong digest and
-//! this "refactor" would have turned the F3 startup gate into a fleet-wide
-//! boot loop. A hash change is a data-format change.
+//! The module keeps its own API so the test vectors below check the digest
+//! the player computes, whatever computes it. The digest is part of the
+//! sidecar data format, so run the vectors before changing this module. See
+//! docs/design/sidecar.md#checksum-implementation and
+//! docs/design/packaging.md#crates.
 
 use sha2::{Digest, Sha256};
 
-/// SHA-256 of `data`, one shot.
+/// SHA-256 of `data` as the 32 raw digest bytes.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&Sha256::digest(data));
     out
 }
 
-/// SHA-256 of `data` as 64 lowercase hex characters — the sidecar format.
+/// SHA-256 of `data` as 64 lowercase hex characters, the form the sidecar's
+/// `sha256` field takes.
 pub fn sha256_hex(data: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let d = sha256(data);
@@ -48,7 +37,7 @@ mod tests {
     }
 
     #[test]
-    fn nist_vectors() {
+    fn the_published_test_vectors_match() {
         assert_eq!(
             sha256_hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -63,21 +52,23 @@ mod tests {
         );
     }
 
-    // The NIST long vector: one million 'a'. Exercises many blocks and the
-    // rem == 0 padding path on a large input. Milliseconds even in debug.
+    // One million 'a' bytes, the long published test vector. Covers many blocks
+    // and a length that is an exact multiple of the 64-byte block, so the
+    // padding fills a block of its own. Runs in milliseconds.
     #[test]
-    fn nist_million_a() {
+    fn a_one_million_byte_input_matches_its_published_digest() {
         assert_eq!(
             sha256_hex(&a_times(1_000_000)),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
     }
 
-    // Padding boundaries: 55 is the last 1-padding-block length, 56 the first
-    // 2-block one; 63/64/65 straddle the block size; 112 covers a mid-size
-    // rem. Reference digests generated with `shasum -a 256` on 2026-08-15.
+    // Lengths chosen around SHA-256's 64-byte block: 55 is the last whose
+    // padding still fits one block and 56 the first that needs two, 63, 64 and
+    // 65 straddle the block, and 112 leaves a mid-size remainder. Expected
+    // digests computed with `shasum -a 256`.
     #[test]
-    fn padding_boundaries() {
+    fn lengths_around_the_padding_boundary_hash_correctly() {
         for (n, want) in [
             (
                 55,
