@@ -1,0 +1,316 @@
+/* dex colours and typography for the documentation site.
+ *
+ * The project site at packages/website carries the brand: the pair recorded in
+ * packages/branding, #8ed1de on #2922c8, a monospace body and headings in a
+ * heavy grotesque. This file puts the same treatment on Starlight, which has
+ * far more surface to colour than a one-page site: a sidebar, a header, code
+ * blocks, tables, callouts and a search dialog.
+ *
+ * Structure. Each palette sets seven dex custom properties, and one mapping
+ * block below translates those into the --sl-* properties Starlight reads. To
+ * add a palette, copy a block; nothing else needs editing.
+ *
+ * Light and dark. Starlight writes data-theme="light" or "dark" on <html> from
+ * its own toggle, so every palette states both halves. The dark half is the
+ * bare :root block, matching Starlight's own dark-first arrangement.
+ *
+ * Palette previews. ?palette=<name> copies the parameter onto
+ * <html data-palette>, before first paint, from the inline script in
+ * astro.config.mjs. The parameter is data-palette and not data-theme because
+ * Starlight already owns data-theme for the light/dark toggle.
+ */
+
+/* ── palette: brand (default) ─────────────────────────────────────────── */
+
+/* The recorded pair, used flat: one field of colour behind the whole page,
+ * the way the project site uses it. Sidebar and header sit on the same ground
+ * as the text column and are separated by a hairline.
+ *
+ * Contrast against the background, WCAG 2.1:
+ *   dark   body 5.71:1 AA   dim 4.89:1 AA   heading and link 9.74:1 AAA
+ *   light  body 5.71:1 AA   dim 5.33:1 AA   heading and link 12.33:1 AAA
+ *
+ * The dimmed colour has little room in this palette: it has to stay under the
+ * body text's 5.71:1 to read as secondary and over 4.5:1 to pass AA at the
+ * size the table of contents runs. */
+
+:root,
+:root[data-palette='brand'] {
+  --dex-bg: #2922c8;
+  --dex-surface: #241ead;
+  --dex-text: #8ed1de;
+  --dex-text-dim: #8bc0d1;
+  --dex-heading: #ffffff;
+  --dex-link: #ffffff;
+  --dex-line: #4f49d4;
+}
+
+:root[data-theme='light'],
+:root[data-palette='brand'][data-theme='light'] {
+  --dex-bg: #8ed1de;
+  --dex-surface: #a3dbe6;
+  --dex-text: #2922c8;
+  --dex-text-dim: #3f3a9e;
+  --dex-heading: #000000;
+  --dex-link: #000000;
+  --dex-line: #63b3c4;
+}
+
+/* ── palette: brand-deep ──────────────────────────────────────────────── */
+
+/* The same two hues over a darker ground, which is easier over the length of a
+ * reference page. Links take the brand indigo in light mode, so they read as
+ * brighter than the body text.
+ *
+ *   dark   body 9.60:1 AAA   dim 6.28:1 AA    heading and link 16.35:1 AAA
+ *   light  body 11.41:1 AAA  dim 7.82:1 AAA   heading 13.95:1, link 7.74:1 AAA */
+
+:root[data-palette='brand-deep'] {
+  --dex-bg: #141063;
+  --dex-surface: #1c1782;
+  --dex-text: #8ed1de;
+  --dex-text-dim: #7ba7b8;
+  --dex-heading: #ffffff;
+  --dex-link: #ffffff;
+  --dex-line: #2f2a9c;
+}
+
+:root[data-palette='brand-deep'][data-theme='light'] {
+  --dex-bg: #cfeaf1;
+  --dex-surface: #bde1eb;
+  --dex-text: #1a1580;
+  --dex-text-dim: #3b3596;
+  --dex-heading: #100c52;
+  --dex-link: #2922c8;
+  --dex-line: #8cc3d3;
+}
+
+/* ── palette: ink ─────────────────────────────────────────────────────── */
+
+/* Brand as accent only. The ground is near-black and near-white; the cyan and
+ * the indigo appear on links, headings, the sidebar's current item and code.
+ * The conventional arrangement for a documentation site, and the one that asks
+ * least of a reader working through a long page.
+ *
+ *   dark   body 11.79:1 AAA  dim 6.38:1 AA   heading 18.98:1, link 11.14:1 AAA
+ *   light  body 15.11:1 AAA  dim 6.32:1 AA   heading 21.00:1, link 9.74:1 AAA */
+
+:root[data-palette='ink'] {
+  --dex-bg: #101014;
+  --dex-surface: #17171d;
+  --dex-text: #c8ccd4;
+  --dex-text-dim: #8f96a3;
+  --dex-heading: #ffffff;
+  --dex-link: #8ed1de;
+  --dex-line: #2b2c34;
+}
+
+:root[data-palette='ink'][data-theme='light'] {
+  --dex-bg: #ffffff;
+  --dex-surface: #f4f5f7;
+  --dex-text: #24262d;
+  --dex-text-dim: #5b6069;
+  --dex-heading: #000000;
+  --dex-link: #2922c8;
+  --dex-line: #dcdee3;
+}
+
+/* ── palette: amber ───────────────────────────────────────────────────── */
+
+/* A dark room with a projector running. The first palette the project site
+ * shipped with.
+ *
+ *   dark   body 9.27:1 AAA   dim 5.37:1 AA    heading and link 18.34:1 AAA
+ *   light  body 16.11:1 AAA  dim 7.50:1 AAA   heading 18.49:1, link 7.54:1 AAA */
+
+:root[data-palette='amber'] {
+  --dex-bg: #0b0b0c;
+  --dex-surface: #141313;
+  --dex-text: #e0a852;
+  --dex-text-dim: #a67f42;
+  --dex-heading: #fff6e6;
+  --dex-link: #fff6e6;
+  --dex-line: #33291a;
+}
+
+:root[data-palette='amber'][data-theme='light'] {
+  --dex-bg: #f5f0e6;
+  --dex-surface: #ebe4d5;
+  --dex-text: #1a1408;
+  --dex-text-dim: #5c4a29;
+  --dex-heading: #000000;
+  --dex-link: #743f00;
+  --dex-line: #d3c8b0;
+}
+
+/* ── palette: brand-day ───────────────────────────────────────────────── */
+
+/* The recorded pair kept for daylight, with a deeper night behind it. Carried
+ * over from the project site so the two sites offer the same choices.
+ *
+ *   dark   body 12.39:1 AAA  dim 7.19:1 AAA  heading and link 18.52:1 AAA
+ *   light  body 5.71:1 AA    dim 5.33:1 AA   heading and link 11.17:1 AAA */
+
+:root[data-palette='brand-day'] {
+  --dex-bg: #0e0b3d;
+  --dex-surface: #161154;
+  --dex-text: #a8dce6;
+  --dex-text-dim: #7fa8b3;
+  --dex-heading: #ffffff;
+  --dex-link: #ffffff;
+  --dex-line: #272170;
+}
+
+:root[data-palette='brand-day'][data-theme='light'] {
+  --dex-bg: #8ed1de;
+  --dex-surface: #a3dbe6;
+  --dex-text: #2922c8;
+  --dex-text-dim: #3f3a9e;
+  --dex-heading: #101010;
+  --dex-link: #101010;
+  --dex-line: #63b3c4;
+}
+
+/* ── mapping to Starlight ─────────────────────────────────────────────── */
+
+/* Everything above is palette data. Everything below is the single place that
+ * knows which Starlight property takes which dex colour, and it is written
+ * once for both light and dark. */
+
+:root {
+  --sl-color-bg: var(--dex-bg);
+  --sl-color-bg-nav: var(--dex-bg);
+  --sl-color-bg-sidebar: var(--dex-bg);
+  --sl-color-black: var(--dex-bg);
+
+  --sl-color-text: var(--dex-text);
+  --sl-color-gray-1: var(--dex-heading);
+  --sl-color-gray-2: var(--dex-text);
+  --sl-color-gray-3: var(--dex-text-dim);
+  --sl-color-gray-4: var(--dex-text-dim);
+  --sl-color-gray-5: var(--dex-line);
+  --sl-color-gray-6: var(--dex-surface);
+  --sl-color-gray-7: var(--dex-surface);
+  --sl-color-white: var(--dex-heading);
+
+  --sl-color-text-accent: var(--dex-link);
+  --sl-color-accent: var(--dex-link);
+  --sl-color-accent-high: var(--dex-heading);
+  --sl-color-accent-low: var(--dex-surface);
+
+  --sl-color-hairline: var(--dex-line);
+  --sl-color-hairline-light: var(--dex-line);
+  --sl-color-hairline-shade: var(--dex-line);
+
+  --sl-color-bg-inline-code: var(--dex-surface);
+  --sl-color-bg-accent: var(--dex-link);
+  --sl-color-text-invert: var(--dex-bg);
+
+  /* Starlight draws a drop shadow under the header and the mobile menu. A
+   * saturated ground turns a black shadow into a smear, so the elevation is
+   * carried by the hairline instead. */
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: none;
+}
+
+/* ── typography ───────────────────────────────────────────────────────── */
+
+/* Body copy is monospace, as it is on the project site: it suits a page about
+ * a device, and it leaves <code> indistinguishable from prose in a way that
+ * reads as intended.
+ *
+ * --sl-font is the family Starlight uses for interface and content, so setting
+ * it to the monospace stack carries the treatment through the sidebar, the
+ * table of contents and the search dialog as well as the text column.
+ */
+
+:root {
+  --sl-font: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --sl-font-mono: var(--sl-font);
+  --sl-line-height: 1.7;
+  --sl-line-height-headings: 1.15;
+}
+
+/* Headings take a heavy grotesque, following the branding sketch. system-ui
+ * rather than a webfont: it costs no bytes and no extra files, and it resolves
+ * to SF Pro, Segoe UI or Roboto, which are all grotesques. The exact face
+ * differs by platform; the character does not.
+ *
+ * The project site treats h1 and h2 this way and leaves the rest monospace.
+ * The documentation follows it, which puts the glossary's h3 term headings in
+ * monospace — the right result, because each one is a literal a reader will
+ * meet in a file or a command.
+ *
+ * Starlight renders the page title outside .sl-markdown-content, in
+ * .content-panel, and styles both from Astro scoped rules that carry a class.
+ * The selectors below therefore name the container, because :where()
+ * contributes no specificity and loses.
+ */
+
+:root .content-panel h1,
+:root .sl-markdown-content h2,
+:root .site-title,
+:root .hero h1 {
+  font-family: system-ui, sans-serif;
+  font-weight: 800;
+  color: var(--dex-heading);
+}
+
+/* Tightened tracking is a display treatment. It earns its place on the page
+ * title and works against readability at the size the section headings run. */
+:root .content-panel h1,
+:root .hero h1 {
+  letter-spacing: -0.03em;
+}
+
+:root .site-title {
+  letter-spacing: -0.02em;
+}
+
+:root .sl-markdown-content h2 {
+  letter-spacing: 0;
+}
+
+/* Section headings below h2 stay monospace and take the heading colour, so the
+ * change of face reads as a level. */
+:root .sl-markdown-content :is(h3, h4, h5, h6) {
+  color: var(--dex-heading);
+}
+
+/* ── chrome ───────────────────────────────────────────────────────────── */
+
+/* The project site is one flat field of colour. Keep the documentation flat
+ * too: no rounded cards, no fills behind the sidebar, separation by rule. */
+
+.sl-markdown-content :is(pre, .expressive-code .frame) {
+  border-radius: 0;
+}
+
+.sl-markdown-content pre {
+  border: 1px solid var(--dex-line);
+}
+
+/* Inline code sits on the surface tint with no pill, because the body is
+ * already monospace and a pill on every second word turns the paragraph into a
+ * fence. */
+.sl-markdown-content :not(pre) > code {
+  border-radius: 0;
+  padding: 0 0.2em;
+}
+
+/* The sidebar's current page is marked by the link colour and a rule. A filled
+ * block on a saturated ground reads as a hole in the page. */
+#starlight__sidebar a[aria-current='page'] {
+  background-color: transparent;
+  color: var(--dex-link);
+  border-inline-start: 2px solid var(--dex-link);
+  font-weight: 700;
+}
+
+/* Tables get rules on both axes. The reference pages are mostly key-value
+ * material and the default single rule under the head is not enough structure
+ * at monospace widths. */
+.sl-markdown-content :is(th, td) {
+  border: 1px solid var(--dex-line);
+}

@@ -1,0 +1,86 @@
+---
+/**
+ * The colour-scheme state, replacing Starlight's light and dark provider.
+ *
+ * The site offers three steps in one cycle rather than a light/dark pair,
+ * because the palettes differ in more than lightness:
+ *
+ *   bold           the recorded pair on its full-saturation ground, always
+ *                  dark. The project site's colours, and the first thing a
+ *                  reader sees.
+ *   quiet          the same two hues over a darker ground, in the colour
+ *                  scheme the reader's system asks for.
+ *   quiet-flipped  the same palette in the other colour scheme, for a reader
+ *                  whose system setting does not match the room.
+ *
+ * Both quiet steps measure AAA for body text; bold measures AA. A reader who
+ * wants more contrast reaches it in one click, and one more click covers the
+ * case where the system setting is wrong for the room.
+ *
+ * The script is inlined and runs while the head is parsed, so the palette is
+ * set before first paint and no step flashes before the stored one.
+ */
+---
+
+<script is:inline>
+  window.dexView = (() => {
+    const KEY = 'dex-view'
+    const STEPS = ['bold', 'quiet', 'quiet-flipped']
+
+    const systemPrefersDark = () => !window.matchMedia('(prefers-color-scheme: light)').matches
+
+    const stored = () => {
+      const value = typeof localStorage !== 'undefined' && localStorage.getItem(KEY)
+      return STEPS.includes(value) ? value : STEPS[0]
+    }
+
+    const resolve = (step) => {
+      if (step === 'bold') return { palette: 'brand', theme: 'dark' }
+      const dark = step === 'quiet' ? systemPrefersDark() : !systemPrefersDark()
+      return { palette: 'brand-deep', theme: dark ? 'dark' : 'light' }
+    }
+
+    const apply = (step) => {
+      const resolved = resolve(step)
+      const root = document.documentElement
+      root.dataset.theme = resolved.theme
+      root.dataset.palette = resolved.palette
+      // A palette named in the query string previews on top of the step. It
+      // sets the colours only; the step still decides the colour scheme.
+      const preview = new URLSearchParams(location.search).get('palette')
+      if (preview && /^[a-z-]{1,20}$/.test(preview)) root.dataset.palette = preview
+      return { step: step, palette: root.dataset.palette, theme: resolved.theme }
+    }
+
+    let state = apply(stored())
+
+    // The name and the glyph the control shows for the current step. The
+    // glyphs are the text presentations of cloud, last-quarter moon and sun,
+    // so each one takes the surrounding colour instead of drawing itself in
+    // an emoji font's own palette. U+263E has no emoji presentation to
+    // suppress; the other two carry U+FE0E, the text variation selector.
+    const describe = () => {
+      if (state.step === 'bold') return { name: 'Blue', glyph: '☁︎' }
+      if (state.theme === 'dark') return { name: 'Dark', glyph: '☾' }
+      return { name: 'Light', glyph: '☀︎' }
+    }
+
+    return {
+      describe: describe,
+      advance: () => {
+        const next = STEPS[(STEPS.indexOf(state.step) + 1) % STEPS.length]
+        try {
+          localStorage.setItem(KEY, next)
+        } catch (error) {
+          // A browser that refuses storage still cycles for this page.
+        }
+        state = apply(next)
+        return state
+      },
+    }
+  })()
+
+  // Starlight calls this after a navigation to re-sync its own select. This
+  // site's control reads its label from window.dexView when it is wired.
+  window.StarlightThemeProvider = { updatePickers() {} }
+</script>
