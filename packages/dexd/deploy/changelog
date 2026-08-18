@@ -1,28 +1,18 @@
-dexd (0.1.0-2) unstable; urgency=medium
-
-  * F6: the display mode is now exhibit config, not a systemd-unit or
-    cmdline.txt hand-edit. New conffile /etc/dex/exhibit.json (binds
-    display_mode, kms_force, connector) and new privileged sibling binary
-    dex-exhibit-apply(1), which reconciles cmdline.txt's video= token with
-    it. dexd.service no longer passes --mode. Two new startup gates,
-    both before the asset is read: the exhibit config vs. running-kernel
-    cmdline.txt cross-check, and a sysfs pre-flight that refuses a
-    display_mode absent from the connector's own mode list. Fail-closed,
-    same contract as F3's sidecar: a missing or invalid exhibit config
-    refuses rather than guesses the display.
-  * postinst warns (non-fatal) if a leftover systemd drop-in still
-    overrides --mode.
-
- -- Max Albrecht <1@178.is>  Mon, 17 Aug 2026 12:00:00 +0200
-
 dexd (0.1.0-1) unstable; urgency=medium
 
-  * Initial packaged release. Gapless 4K HEVC loop player for Raspberry Pi
-    gallery installations: libmpv fed by an endless in-process byte stream so
-    the decoder never sees EOF and never seeks, which removes the seam at the
-    loop point.
-  * Frame rate is bound to the asset by an ingest sidecar (fps + sha256); the
-    player refuses to start rather than guess a rate.
-  * Tier-0 self-healing: a bounded in-place recovery before escalating to exit.
+  * Initial release. Gapless HEVC video looper for Raspberry Pi, based on
+    libmpv: dexd plays one video artwork in an endless loop with no visible
+    break at the loop point.
+  * The video, its sidecar and the exhibit config live together in /opt/dex.
+    The exhibit config says which video plays, the display mode and the
+    connector; the package installs none.
+  * The sidecar binds the frame rate and a checksum to the video. Without it
+    dexd refuses to start rather than guess the rate.
+  * dexd checks the display mode, the boot options and the start of the video
+    before it opens anything, and refuses with a message naming the fix.
+  * While playing it checks that playback advances, recovers in place, writes
+    a heartbeat to the system log, and lets the service manager restart it if
+    it stops responding.
+  * Commands: dexd(1), dex-sidecar(1), dex-exhibit-apply(1), dex-wait-hdmi(1).
 
- -- Max Albrecht <1@178.is>  Sat, 15 Aug 2026 17:30:00 +0200
+ -- Max Albrecht <1@178.is>  Tue, 18 Aug 2026 20:00:00 +0200
