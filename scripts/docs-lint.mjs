@@ -1410,11 +1410,19 @@ function parseGlossary(text) {
   };
   /** @param {string} raw */
   const addTokens = (raw) => {
-    for (const tok of raw.split(/[,;/]| or /)) {
+    // Entries separate aliases with commas, semicolons, slashes, " or " or a
+    // middle dot; a heading may wrap the term in backticks (`EOF` signal) or
+    // gloss it in words (`END_FILE` event), so every all-caps word inside a
+    // term counts as an acronym too.
+    for (const tok of raw.split(/[,;/·]| or /)) {
       const t = tok.trim().replace(/[.`*]/g, '');
       if (!t) continue;
       terms.add(t);
       if (/^[A-Z][A-Z0-9-]+$/.test(t) && t.length >= 2) acronyms.add(t);
+      for (const w of t.split(/\s+/)) {
+        const ww = w.replace(/[()]/g, '');
+        if (/^[A-Z][A-Z0-9_-]+$/.test(ww) && ww.length >= 2) acronyms.add(ww);
+      }
     }
   };
   lines.forEach((raw, idx) => {

@@ -393,6 +393,26 @@ test('allowlist: global, scoped and regex entries filter findings', () => {
 // glossary parser
 // ---------------------------------------------------------------------------
 
+test('glossary: backticked headings, glossed headings and middle-dot alias lists yield their acronyms', () => {
+  const g = [
+    '### `EOF` signal',
+    'The signal a reader gives when a file has no more bytes.',
+    '',
+    'Also written: EOF · end of file · end-of-stream',
+    '',
+    '### `END_FILE` event',
+    'The mpv event saying playback of the current file ended.',
+    '',
+    '### system log',
+    'Also written: journal · systemd journal · journalctl',
+  ].join('\n');
+  const { acronyms, terms } = parseGlossary(g);
+  assert.ok(acronyms.has('EOF'), 'EOF from a backticked heading');
+  assert.ok(acronyms.has('END_FILE'), 'END_FILE from a glossed heading');
+  assert.ok(terms.has('journalctl'), 'aliases split on the middle dot');
+  assert.ok(!acronyms.has('SIGNAL'), 'lower-case gloss words are not acronyms');
+});
+
 test('glossary: headings and "Also written" aliases become the acronym set', () => {
   const g = [
     '# Glossary',
