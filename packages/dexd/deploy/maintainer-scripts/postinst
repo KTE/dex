@@ -1,39 +1,34 @@
 #!/bin/sh
-# Create the two things dexd.service requires but cannot create itself:
-# the unprivileged `dex` user it runs as, and the asset directory it reads.
-#
-# Both were manual steps in the pre-package install recipe, which is precisely
-# why they belong here: an unattended gallery device should not depend on
-# whether whoever imaged the SD card remembered a chmod.
+# Create what dexd.service requires and cannot create itself: the unprivileged
+# `dex` user it runs as, and the asset directory it reads. Runs only on the
+# package's configure action. See docs/design/service-unit.md.
 set -e
 
 case "$1" in
 configure)
-  # A system user with no login, no home, and no password. It needs `video`
-  # and `render` only to open /dev/dri -- everything else is denied by the
-  # unit's own sandboxing (ProtectSystem=strict, ProtectHome, NoNewPrivileges).
+  # A system user with no login, no home and no password. It needs `video` and
+  # `render` only to open /dev/dri; the unit's sandboxing denies the rest.
   if ! getent passwd dex >/dev/null; then
     adduser --system --group --home /nonexistent --no-create-home \
       --shell /usr/sbin/nologin dex
   fi
-  # Idempotent: adduser to a group the user is already in is a no-op, so this
-  # also repairs an install where the groups were dropped.
+  # Add `dex` to the groups the system has; a group it lacks is skipped. Adding
+  # a user to a group it is already in is a no-op, so re-running the script
+  # repairs an install whose groups were dropped.
   for g in video render; do
     if getent group "$g" >/dev/null; then
       adduser dex "$g" >/dev/null || true
     fi
   done
 
-  # The asset directory. The package deliberately ships NO asset: the video and
-  # its sidecar are content, they change per installation, and baking one into
-  # the package would mean rebuilding the software to change the artwork.
-  # Root-owned and world-readable — the unit mounts it ReadOnlyPaths anyway,
-  # and the player only ever reads.
+  # The asset directory, root-owned and world-readable: the unit mounts it
+  # read-only and the player only reads. The package ships no video and no
+  # sidecar, because both change per installation.
   mkdir -p /opt/dex
   chmod 0755 /opt/dex
 
-  # Three files make a player: the video, its sidecar and the exhibit config,
-  # all in /opt/dex. The package ships none of them.
+  # A player needs three files in /opt/dex: the video, its sidecar and the
+  # exhibit config. The package ships none, so the install message names them.
   if [ ! -e /opt/dex/exhibit.yaml ] && [ ! -e /opt/dex/exhibit.json ]; then
     echo "dexd: installed. To play, put three files in /opt/dex and start the unit:" >&2
     echo "    the video (for example artwork.265), its sidecar (artwork.265.json)," >&2
@@ -44,22 +39,17 @@ configure)
     echo "  dexd refuses to start without the sidecar or the config, rather than guess." >&2
   fi
 
-  # A config left over from a version that read /etc/dex. It is not read any
-  # more; say so once, at install time, instead of letting the player refuse at
-  # the next power cycle with nobody watching.
+  # dexd does not read /etc/dex. Report a config found there at install time,
+  # while someone is at the console to act on it.
   if [ -e /etc/dex/exhibit.yaml ] || [ -e /etc/dex/exhibit.json ]; then
     echo "dexd: NOTE: a config exists under /etc/dex, which dexd no longer reads." >&2
     echo "  Move it next to the video: sudo mv /etc/dex/exhibit.* /opt/dex/ && sudo rmdir /etc/dex" >&2
   fi
 
-  # A systemd drop-in that still passes --mode. LOUD, non-fatal, because the
-  # package must not delete an admin-created /etc file itself -- and it need
-  # not: if the drop-in DISAGREES with the exhibit config, main.rs's own
-  # --mode cross-check refuses to start and names both values, so nothing can
-  # silently win. This warning exists for the case that still WOULD start:
-  # a drop-in that happens to agree, or one that has gone stale in some other
-  # way -- purely so the leftover gets noticed and removed rather than
-  # outliving its reason.
+  # A drop-in that still passes --mode. Report it without failing the install:
+  # the package must not delete a file an administrator created. A drop-in whose
+  # value disagrees with the exhibit config already makes dexd refuse to start
+  # and name both values; this message covers the leftover that would start.
   dropin_dir=/etc/systemd/system/dexd.service.d
   if [ -d "$dropin_dir" ] && grep -q -- '--mode' "$dropin_dir"/*.conf 2>/dev/null; then
     echo "dexd: NOTE: $dropin_dir still overrides --mode -- that setting" >&2

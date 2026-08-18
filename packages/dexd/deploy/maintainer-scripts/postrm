@@ -1,13 +1,14 @@
 #!/bin/sh
-# Removal deliberately keeps BOTH the `dex` user and /opt/dex.
+# Removal, including purge, keeps the `dex` user and /opt/dex.
 #
-# The asset in /opt/dex is the artwork -- operator content the package never
-# shipped and must not delete. And the user owns nothing but is referenced by
-# anything an operator wrote themselves; reaping it on purge would silently
-# break a hand-rolled unit or a cron job. Leaving a passwd entry behind is the
-# cheaper mistake, and Debian policy permits keeping system users.
+# /opt/dex holds the video, its sidecar and the exhibit config, none of them
+# shipped by the package. The `dex` user owns no files, but a unit or job
+# written on the device may name it, and Debian policy allows a system user to
+# stay. Add a deletion step here only after checking what on the device still
+# refers to the user or the directory. See docs/design/packaging.md.
 set -e
 
+# debhelper substitutes the systemd removal handling for dexd.service.
 #DEBHELPER#
 
 exit 0

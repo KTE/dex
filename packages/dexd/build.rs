@@ -1,26 +1,12 @@
-//! Embed the git commit into the binary so the startup line identifies the
-//! exact build. std only — zero dependencies.
+//! Build script: writes the commit into the binary as `DEX_GIT_HASH`, which
+//! `dexd --version` and the first log line print. Standard library only, no
+//! crates.
 //!
-//! Three sources, in preference order:
-//!  0. `DEX_BUILD_ID` — an environment variable. This exists because the file
-//!     in (1) is NOT cache-safe: `rerun-if-changed` on a path that did not
-//!     exist when the cached build ran is "simply never changed" (see the note
-//!     below), so a CI job that restores a `target/` cache and THEN writes the
-//!     stamp gets a stale binary reporting the old hash. Observed exactly that
-//!     on 2026-08-16: the stamp was written, the package still said `nogit`.
-//!     `rerun-if-env-changed` has no such hole — cargo compares the value.
-//!  1. `.dex-build-id` — a one-line stamp file (gitignored) written by an
-//!     external sync step. This matters because the Pi build is NOT a git
-//!     checkout: it builds from an rsync mirror (`~/bench/dex-loop`), where
-//!     `git rev-parse` fails and the shipped binary would otherwise always
-//!     say "nogit" — every production binary permanently unidentifiable,
-//!     exactly the failure F7 exists to prevent. Once the sync step writes
-//!     the source commit hash here before each rsync, the Pi build picks it
-//!     up automatically.
-//!  2. `git rev-parse` against this checkout, when one exists (the Mac side,
-//!     or any future build that IS a checkout).
+//! Sources, in order: the `DEX_BUILD_ID` environment variable, the
+//! `.dex-build-id` file, then `git rev-parse` in a checkout. With none of them
+//! the build reports `nogit`, and the package on the device names no commit.
 //!
-//! Falls back to "nogit" only when neither is available.
+//! See docs/design/packaging.md#version-and-build-identity.
 
 use std::process::Command;
 
@@ -31,46 +17,48 @@ fn main() {
         .unwrap_or_else(|| "nogit".to_string());
     println!("cargo:rustc-env=DEX_GIT_HASH={hash}");
 
-    // Cargo compares the VALUE of this variable, so it invalidates correctly
-    // even from a warm cache — unlike a rerun-if-changed path that appears
-    // where none existed.
+    // Cargo compares the value of this variable, so a build from a warm cache
+    // still picks up a new build id. CI sets this variable.
     println!("cargo:rerun-if-env-changed=DEX_BUILD_ID");
 
-    // Re-run on anything that could change the identity above. A missing
-    // path is simply never "changed" -- fine, since not every build
-    // environment has all three (the Pi mirror has no .git; a build with no
-    // stamp file has no .dex-build-id).
+    // Rebuild when the build-id file changes. A path that does not exist counts
+    // as never changed, so a file written after a cached `target/` was restored
+    // does not invalidate it; use `DEX_BUILD_ID` above where that matters.
     println!("cargo:rerun-if-changed=.dex-build-id");
-    // Source edits must invalidate the cached hash: emitting ANY
-    // rerun-if-changed replaces Cargo's default "rerun on any source
-    // change", so without this line, editing src/*.rs and rebuilding WITHOUT
-    // committing keeps reporting the previous (now stale) hash, with no
-    // +dirty -- misattributing whatever the bench measures to code that
-    // isn't in the binary.
+
+    // Emitting any rerun-if-changed replaces Cargo's default rebuild on source
+    // change; these two lines put it back. Without them an edit that is not
+    // committed keeps the previous hash. Keep them when adding another path.
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
-    // Re-run when HEAD moves (crate sits 2 levels below the repo root). The
-    // paths may not exist in a non-checkout build; that is fine.
+
+    // Rebuild when the checkout moves to another commit; the crate sits two
+    // levels below the repository root. Neither path exists in a build that is
+    // not a checkout.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs");
 }
 
+/// Reads the build id from the `DEX_BUILD_ID` environment variable.
 fn env_hash() -> Option<String> {
     let s = std::env::var("DEX_BUILD_ID").ok()?;
-    // Truncated to 12 to match the git path's --short=12: the startup line is
-    // read by a human on site, and one shape is easier to compare against a
-    // release note than "sometimes 12 chars, sometimes 40" depending on which
-    // source happened to win.
+    // Trimmed to 12 characters to match the `--short=12` of the git path below,
+    // so a technician comparing the startup line against a release note sees one
+    // shape whichever source supplied it.
     let s: String = s.trim().chars().take(12).collect();
     (!s.is_empty()).then_some(s)
 }
 
+/// Reads the build id from `.dex-build-id`, a one-line file written by an
+/// external sync step for builds that are not a git checkout.
 fn stamp_hash() -> Option<String> {
     let s = std::fs::read_to_string(".dex-build-id").ok()?;
     let s = s.trim();
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// Reads the build id from git, appending `+dirty` when the checkout has
+/// uncommitted changes.
 fn git_hash_with_dirty() -> Option<String> {
     let hash = Command::new("git")
         .args(["rev-parse", "--short=12", "HEAD"])
