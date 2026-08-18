@@ -1,5 +1,5 @@
-# coinage<TAB>replacement — approved at Gate A 2026-08-18. Whole-word phrase unless wrapped in /…/. Extends docs-lint's built-in table.
-# Only unambiguous coinages belong here; the full elimination table with nuance lives in AGENTS.md.
+# coinage<TAB>replacement. A whole-word phrase unless wrapped in /…/. Extends the built-in table of scripts/docs-lint.mjs.
+# Only unambiguous coinages belong here; the full table of retired words, with nuance, is in AGENTS.md.
 soak	long-running test / 24-hour test (name the duration)
 soak test	long-running test / 24-hour test
 soak run	long-running test run

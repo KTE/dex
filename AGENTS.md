@@ -52,6 +52,26 @@ Bad → good, from the first drafts:
 | It holds what the installation owns: the mode, the force flag and the connector | It defines the display mode, the forced mode and the connector |
 | the seek as the cause | the seek causes the pause |
 
+### Comments and configuration files
+
+A comment is a note for the next reader or editor: what this is, why it is this way, what to check before changing it. It is not a report of how the project arrived here. The same rules as above, plus:
+
+- **State what is used and why, in one sentence.** `# Debian's rustc and cargo, because the package is built for Debian and must build with the compiler the devices have.` Not a shouted header, a paragraph of history and a reference to "the paragraph above".
+- No history. `originally`, `this was`, `used to`, `we found`, `at review time`, `today` — cut, or move the fact to the design docs if it still matters. `# This was originally rustup stable, which was inconsistent…` says nothing a future editor needs.
+- **No dramatisation, no verdicts on the code's own virtue.** `the cost is real and deliberate`, `what it buys`, `only worth anything if`, `not a routine bump`, `DECLARED, not avoided`, `CHECKED rather than merely written down` — delete the judgement, keep the instruction or the fact.
+- **Give the editor an action.** `# Only raise this after confirming the target devices can still build the package.` Not `# Raising this floor is a decision about whether devices can still build their own software, not a routine bump.`
+- **Comments in configuration files are short.** One or two lines above the setting they explain; a paragraph only for a rule that is not obvious from the setting itself. A configuration file that reads like an essay is a design document in the wrong place.
+
+Bad → good, from the CI workflow and Cargo.toml:
+
+| Draft | Rewrite |
+|---|---|
+| `That guarantee is only worth anything if the build environment IS the target environment.` | That can only be guaranteed if the build environment is the target environment. |
+| `TOOLCHAIN: DEBIAN'S RUSTC, NOT RUSTUP — This was originally rustup stable, which was inconsistent with the paragraph above… What it buys: … The cost is real and deliberate` | Debian's rustc and cargo, not rustup: the package is built for Debian, so it is built with the compiler the devices have. Dependencies that need a newer compiler cannot be adopted; that is intended. |
+| `Raising this floor is a decision about whether devices can still build their own software, not a routine bump.` | Only raise this after confirming the target devices can still build the package. |
+| `Dependencies are DECLARED, not avoided — SPEC §5c. … a rule that forbade four small cargo crates while linking that was bookkeeping, not restraint.` | Dependencies: keep the set small enough to read; no procedural macros. Each entry below says what it is for. |
+| `THE POINT OF THE PACKAGE. "$auto" runs dpkg-shlibdeps over the built binary, so Depends is DERIVED … and cannot drift from reality the way a hand-written list would. Never replace this with a literal list.` | `$auto` derives Depends from the libraries the binary links, so a libmpv version mismatch fails at install time. Keep it; add explicit floors below it for behaviour that no symbol expresses. |
+
 ## Vocabulary
 
 `docs/glossary.md` is the only list of technical terms the documentation may use without explaining them. Its entries were approved one by one by the project owner. Rules for the file:
@@ -98,11 +118,11 @@ Bad → good, from the first drafts:
 | `soak` / `soak test` / `24 h soak` / `soak run` / `soak harness` / `thermal soak` | long-running test / 24-hour test / long-term test (name the duration where it matters); 'the long-running-test harness'  |
 | `seam` / `the seam` / `seamless-loop as noun` / `'no seam'` / `'a seam'` | place: 'the loop point'; property: 'gapless' or 'seamless'; defect: 'a visible pause / a held frame / a stutter at the loop point'  |
 | `the wrap` / `wrap point` / `at the wrap` / `wrap-join` / `wrap transition` / `wr` | 'the loop point' (place); 'one loop' / 'one repeat' (the pass); 'loop count' (the counter); 'loop-position arithmetic' (the code)  |
-| `hold` / `holds` / `hold at the wrap` / `held (as noun)` | 'a freeze' / 'the picture is stuck at the loop point' / 'the frame stays on screen for N ms' — describe the defect plainly (Max: freeze / stuck are mo  |
+| `hold` / `holds` / `hold at the wrap` / `held (as noun)` | 'a freeze' / 'the picture is stuck at the loop point' / 'the frame stays on screen for N ms' — describe the defect plainly  |
 | `bench asset` / `bench-ready asset` / `the card (meaning the encoded video)` | 'test video' / 'the reference test video used for measurements' (a test video made from a test card)  |
 | `gaplessness premise` / `loop-ability` | 'the requirement that the loop is gapless' / 'whether a file can loop gaplessly'  |
 | `tier 0` / `tier-0` / `tier 1` / `tier 2` / `tier 3` | 'in-place recovery' (0), 'process restart by systemd' (1), 'reboot escalation (planned)' (2), 'hardware watchdog (planned)' (3)  |
-| `fail closed (user tier)` / `fail-closed contract` / `fail-silent` | user tier: 'refuses to start rather than guess'; developer tier: 'fail-closed' allowed as a glossary term (? — needs Max)  |
+| `fail closed (user tier)` / `fail-closed contract` / `fail-silent` | user tier: 'refuses to start rather than guess'; developer tier: 'fail-closed' is a glossary term  |
 | `live-fire` / `live-fire probe` / `live-fire test` | 'against a real mpv instance' / 'on real hardware' / 'the forced-recovery test'  |
 | `wedged` / `wedge` / `core-wedge` / `display-wedged` / `'the wedge check'` | 'unresponsive' / 'hangs' / 'is hanging' / 'stopped responding while the process stays alive' — never `hung`; the flag becomes --test-rig-hang-after-se  |
 | `pinned (a behaviour is 'pinned' by a test)` | 'locked in by a test' / 'a test enforces'  |
@@ -135,26 +155,26 @@ Bad → good, from the first drafts:
 | `hello_video positive control` / `dexOS card` / `'the dexOS positive contro` | 'the known-good reference (the legacy hello_video player on its own test video)'  |
 | `mp_dispatch_lock` / `run_locked` / `mp_cond_wait` / `mp_dispatch_queue_proce` | describe the behaviour ('a synchronous property read waits with no timeout for mpv's core thread'); cite the mpv source location in a footnote if prov  |
 | `Rust identifiers used as prose nouns (HealthMonitor, ObservedCounter,` | in docs: describe the behaviour and name the module once ('the health policy in health.rs'); identifiers belong in code and API docs, not in guides  |
-| `supervisor thread (health.rs) vs event thread (heartbeat.rs, watchdog.` | 'supervisor thread' everywhere (one thread; DEC-010)  |
+| `supervisor thread (health.rs) vs event thread (heartbeat.rs, watchdog.` | 'supervisor thread' everywhere (one thread)  |
 | `gst1223` / `+rpt2 check` / `'the rpt2 criterion' as bare labels` | 'a GStreamer 1.22 attempt' / 'whether Raspberry Pi's patched ffmpeg build (+rpt2) is required on the Pi 5 — unresolved'  |
 | `USV` | 'battery backup (`UPS`)'  |
 | `starved feed` / `'signature of a starved feed'` | 'the data source not keeping up (frames held at random points, not at the loop point)'  |
 | `the linger bug` | 'the tmux session died with the last SSH login (systemd user session not lingering)' — an operations note for the private record, not dexd  |
 | `kiosk (flags` / `mode)` / `argv` / `'the working argv'` | 'fullscreen with no on-screen controls' / 'the mpv command line'  |
-| `baked` / `baked EDID` / `baked-in` / `stamped` / `stamp file` / `build stamp` | 'written into' / 'stored in' / 'saved copy of the EDID' / 'build-id file' — the words `baked` and `stamped` appear nowhere (DEC-016)  |
-| `hung` | 'hangs' / 'is hanging' / 'unresponsive' — never `hung` (DEC-013)  |
-| `--bench-no-sidecar` / `--bench-wedge-after-secs` / `--force-recovery-after` | `--test-rig-no-sidecar` / `--test-rig-hang-after-secs` / `--test-rig-force-recovery-after-secs` / `(test rig only)` (DEC-008; code rename)  |
-| `wraps=` / `WRAP_COUNT` / `wrap count` | loops= (heartbeat field, code rename) / 'loop count' / 'loop iterations' in prose (DEC-006)  |
-| `event thread` | 'supervisor thread' (DEC-010)  |
-| `gate (as the noun for a startup refusal)` / `F3 gate` / `cmdline gate` / `NA` | 'check' — the sidecar check, the asset check, the cmdline check (DEC-009; no alias)  |
-| `fail-closed` / `fail closed (user tier)` | 'refuses to start rather than guess' at user tier; developer tier keeps the glossary entry fail-closed (DEC-011)  |
+| `baked` / `baked EDID` / `baked-in` / `stamped` / `stamp file` / `build stamp` | 'written into' / 'stored in' / 'saved copy of the EDID' / 'build-id file' — the words `baked` and `stamped` appear nowhere  |
+| `hung` | 'hangs' / 'is hanging' / 'unresponsive' — never `hung`  |
+| `--bench-no-sidecar` / `--bench-wedge-after-secs` / `--force-recovery-after` | `--test-rig-no-sidecar` / `--test-rig-hang-after-secs` / `--test-rig-force-recovery-after-secs` / `(test rig only)`  |
+| `wraps=` / `WRAP_COUNT` / `wrap count` | loops= (heartbeat field, code rename) / 'loop count' / 'loop iterations' in prose  |
+| `event thread` | 'supervisor thread'  |
+| `gate (as the noun for a startup refusal)` / `F3 gate` / `cmdline gate` / `NA` | 'check' — the sidecar check, the asset check, the cmdline check  |
+| `fail-closed` / `fail closed (user tier)` | 'refuses to start rather than guess' at user tier; developer tier keeps the glossary entry fail-closed  |
 | `kms_force (in prose)` | 'forced display mode' in prose; `kms_force` only as the literal config key  |
 | `journal` / `the journal (in prose)` | 'system log' in prose; `journalctl` in commands  |
 | `dwell` / `dwell histogram` / `dwell counts` | 'frame duration' / 'frame-duration histogram'  |
-| `player card` | 'dex card' (flagged: Max suggested 'dex card or something')  |
+| `player card` | 'dex card'  |
 | `container (alone)` | 'video container'  |
-| `re-ingest the asset (shipped message)` | 'prepare the video again with dex-sidecar write' (DEC-007; code change)  |
-| `ingest (user tier)` | 'prepare the video' / 'preparing a video' (DEC-007); developer tier may say ingest  |
+| `re-ingest the asset (shipped message)` | 'prepare the video again with dex-sidecar write'  |
+| `ingest (user tier)` | 'prepare the video' / 'preparing a video'; developer tier may say ingest  |
 
 ### Names of people, places and things
 
