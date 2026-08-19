@@ -99,7 +99,7 @@ jobs:
           fi
           # The documentation check covers the public docs, the writing rules, the glossary
           # and the lint tool.
-          if echo "$changed" | grep -qE '^(docs/|AGENTS\.md$|CLAUDE\.md$|scripts/docs-lint|\.github/workflows/dexd\.yml$)'; then
+          if echo "$changed" | grep -qE '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$|scripts/docs-lint|packages/dexd/|\.github/workflows/dexd\.yml$)'; then
             docs=true; reason="${reason:+$reason; }docs, rules or the docs lint changed"
           fi
           echo "crate=$crate" >> "$GITHUB_OUTPUT"
@@ -481,10 +481,11 @@ jobs:
           fi
           echo "lifecycle OK — install, remove and purge all behave as designed"
 
-  # The writing check: docs/, the glossary and AGENTS.md must pass
+  # The writing check: every file an outsider reads must pass
   # scripts/docs-lint.mjs (plan codes, private references, coinages, caps emphasis,
-  # first person, dates as structure — see AGENTS.md). Widen the scope to
-  # packages/dexd once its comments pass the lint.
+  # first person, dates as structure — see AGENTS.md). The crate's comments,
+  # messages and man pages are in scope, so a new comment is checked like a new
+  # page. An exception needs an entry with a reason in docs/lint-allow.txt.
   docs-lint:
     needs: changes
     if: needs.changes.outputs.docs == 'true'
@@ -497,7 +498,7 @@ jobs:
       - name: Lint tool self-test
         run: node --test scripts/docs-lint.test.mjs
       - name: Lint the public docs and the rules
-        run: node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md
+        run: node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md README.md packages/dexd
 
   # The one check to mark required in branch protection. It runs with
   # `if: always()`, so it always reports: a check that can be skipped can never be
