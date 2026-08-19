@@ -1,215 +1,376 @@
-.TH DEX\-EXHIBIT\-APPLY 1 "2026-08-17" "dexd 0.1.0" "dex"
+.TH DEX\-EXHIBIT\-APPLY 1 "August 19, 2026" "dexd 0.1.0" "dexd manual"
 .SH NAME
-dex\-exhibit\-apply \- reconcile the kernel cmdline with the F6 exhibit config
+dex\-exhibit\-apply \- write the exhibit config's forced display mode into the
+kernel command line
 .SH SYNOPSIS
 .B sudo dex\-exhibit\-apply
 .RB [ \-\-exhibit\-config
-.IR PATH ]
+.IR path ]
 .RB [ \-\-cmdline\-path
-.IR PATH ]
+.IR path ]
 .SH DESCRIPTION
-Rewrites
-.IR /boot/firmware/cmdline.txt 's
-.B video=<connector>:<mode>
-token to match
-.IR /opt/dex/exhibit.json 's
-.B kms_force
-\(em idempotently: every other token, its order, and every OTHER connector's
+A forced display mode is a
 .B video=
-token are preserved untouched. Writes one timestamped backup before any
-change.
+option on the kernel command line, in
+.IR /boot/firmware/cmdline.txt .
+.B dex\-exhibit\-apply
+reads
+.BR kms_force ,
+.B connector
+and
+.B display_mode
+from the exhibit config and writes that option there. Run it as root after
+every edit to
+.B kms_force
+or
+.BR connector .
 .PP
-.B dexd (1)
-itself never writes boot config \(em it runs as an unprivileged user under
-.B ProtectSystem=strict
-and that sandbox is a design feature, not an oversight to route around here.
-This tool is the deliberate, separate, privileged step an operator runs by
-hand after editing the exhibit config. Deploys in this project are manual
-throughout (see README.md); this is no exception.
-.SH WHY BOTH A KERNEL FORCE AND AN EXHIBIT CONFIG
-Some sinks advertise a mode in their own EDID and the DRM driver still
-declines to build it unforced \(em measured on an Elgato Cam Link 4K, which
-lists 3840x2160@30 as its
-.I preferred
-detailed timing, yet
-.B vc4
-built zero 3840x2160 modes from it unforced; forced, the identical timing
-works. Other sinks (a 2560x1440 desktop monitor, in this project's own field
-record) must
-.B NOT
-carry the force, because transmitting a mode the panel cannot show reads as a
-player fault, not a config problem. The same
-.I cmdline.txt
-line is therefore correct for one venue and wrong for another, which is why it
-is exhibit config \(em stated explicitly per install \(em rather than something
-to remember in a comment.
+.B dex\-exhibit\-apply
+rewrites only the
+.B video=
+option naming the configured connector. Every other option keeps its value and
+its position, and so does every other connector's
+.B video=
+option. A
+.B kms_force
+of
+.B none
+removes the option for that connector instead of writing one. A second run over
+an already matching file changes nothing and reports
+.BR "no change" .
+.PP
+Before any change it copies the current line to a timestamped backup beside it.
+It writes the new line to a temporary file and renames that over
+.IR cmdline.txt ,
+so a power cut during the write cannot leave a Raspberry Pi that will not boot.
+.PP
+.B dex\-exhibit\-apply
+prints
+.B REBOOT REQUIRED
+only when the file changed. dexd binds the display from the running kernel's
+.IR /proc/cmdline ,
+so the new option takes effect at the next boot.
 .SH OPTIONS
 .TP
-.BI \-\-exhibit\-config " PATH"
-Default: whichever of
+.BI \-\-exhibit\-config " path"
+The exhibit config to read. Default: whichever of
 .I /opt/dex/exhibit.yaml
 and
 .I /opt/dex/exhibit.json
-exists \(em exactly one may, and both present is refused. This is deliberately
-the same discovery
-.BR dexd (1)
-does, and shares its implementation: a tool whose job is to make the boot
-cmdline agree with the config the player reads would be a drift GENERATOR if
-it could read a different file.
-.TP
-.BI \-\-cmdline\-path " PATH"
-Default:
-.IR /boot/firmware/cmdline.txt .
-Override exists for testing on a bench without touching real boot config.
-.SH EXHIBIT CONFIG SCHEMA
-The exhibit config comes in two formats and
-.B the file extension decides which:
+exists. At most one may exist.
+.B dex\-exhibit\-apply
+refuses when both exist and names both files: keep exactly one, or name the
+file with
+.BR \-\-exhibit\-config .
+The file extension selects the parser:
 .B .json
-is strict JSON (what the package ships, as a dpkg conffile so a hand edit
-survives an upgrade),
-.BR .yaml / .yml
-is YAML (for hand editing on site \(em it takes comments). The schema is
-identical; only the parser differs. YAML is a superset of JSON, so a
-.B .json
-file containing YAML is REFUSED rather than quietly accepted: the extension is
-a promise to
-.BR jq (1)
-and every other consumer about what the bytes are. Strict JSON inside a
+is strict JSON,
 .B .yaml
-file is fine, since it is valid YAML.
-.PP
-Either way the schema is STRICT \(em unlike the F3 asset sidecar, an unknown
-key is refused rather than
-ignored, because this file has no independent producer to stay compatible
-with: a typo here (\fBkms_forse\fR for \fBkms_force\fR) must be a startup
-refusal, not a silently dropped force.
+and
+.B .yml
+are YAML. This is the same search
+.BR dexd (1)
+makes, so the boot options and dexd always read the same file.
+.TP
+.BI \-\-cmdline\-path " path"
+The file to rewrite. Default
+.IR /boot/firmware/cmdline.txt .
+Test rig only: it points the rewrite at a copy, leaving the real boot options
+alone.
+.TP
+.BR \-h ", " \-\-help
+Print the usage text and exit with status 2.
+.SH CONFIG KEYS
 .TP
 .B asset
-Absolute path to the file to play, e.g.
-.IR /opt/dex/loop.265 .
-This is the key that makes the file an EXHIBIT config rather than a display
-config: an exhibit pairs a venue with an artwork, and several assets can sit in
-.I /opt/dex
-with this choosing one.
+The video to play: a file name beside the config, such as
+.BR artwork.265 ,
+or an absolute path.
 .B dex\-exhibit\-apply
-itself does not use it \(em it reconciles the boot cmdline, which is a display
-concern \(em but it is listed here because this page documents the whole schema.
-Optional in the file; something must supply it, or
-.BR dexd (1)
-refuses to start rather than guess an artwork.
+does not use it. You may leave it out, but then nothing names a video and dexd
+refuses to start rather than guess one.
 .TP
 .B display_mode
-(required) \fBauto\fR, or \fBWxH@R\fR with an INTEGER refresh, e.g.
-\fB3840x2160@30\fR. What
-.B dexd
-asks mpv for via
-.BR \-\-drm\-mode .
-Non\-integer refresh forms are refused at config parse: bench\-verified
-(2026\-08\-17), mpv rejects a rational refresh (\fB@30000/1001\fR) at option
-parsing \(em a guaranteed restart loop \(em and silently rounds a decimal
-(\fB@29.97\fR) to the integer vrefresh it names anyway.
+Required.
+.BR auto ,
+or
+.B WxH@R
+with a whole\-number rate, such as
+.BR 3840x2160@30 .
+It is what dexd asks mpv for.
 .TP
 .B kms_force
-(default \fBnone\fR) \fBnone\fR, or \fBWxH@R\fR/\fBWxH@RD\fR with an INTEGER
-refresh (the kernel's
-.B video=
-grammar has no fractional refresh \(em and since 2026\-08\-17 neither does
-\fBdisplay_mode\fR, see above). The trailing
-.B D
-forces the connector to read \fBconnected\fR even before a sink is actually
-attached \(em the boot\-order insurance for a projector that presents EDID
-late. What
-.B dex\-exhibit\-apply
-writes into
+Default
+.BR none .
+.BR none ,
+or
+.B WxH@R
+with an optional trailing
+.BR D ,
+such as
+.BR 3840x2160@30D .
+This is the value written into
 .IR cmdline.txt .
+The
+.B D
+makes the connector count as connected before a display is attached, for a
+projector that presents its EDID late.
 .TP
 .B connector
-(default \fBHDMI\-A\-1\fR) e.g. \fBHDMI\-A\-2\fR.
+Default
+.BR HDMI\-A\-1 .
+The HDMI port the display is plugged into, and the connector whose
+.B video=
+option
+.B dex\-exhibit\-apply
+rewrites.
 .TP
 .BR display ", " venue ", " note
-Informational only, logged verbatim by
-.B dexd
-at every start \(em this is where the WHY that used to live in a
-.I config.txt
-comment block belongs now, since it travels with the config that is actually
-enforced instead of a comment nobody updates.
-.SH THE CMDLINE GATE
-.B dexd
-refuses to start (exit 2) if the exhibit config's
+Free text recording what this installation is. dexd type\-checks them and reads
+them nowhere else.
+.PP
+dexd refuses an unrecognised key instead of ignoring it, so a misspelled
+.B kms_forse
+stops the next start rather than dropping a forced display mode. The extension
+decides the format, and dexd refuses YAML in a file named
+.BR .json .
+Name the file for what is in it.
+.SH STARTUP CHECKS
+Two checks at the player's next start rest on these values. Both exit 2 rather
+than start on a display mode nobody set.
+.PP
+The cmdline check compares
 .B kms_force
-disagrees with the token actually present in the RUNNING kernel's
+with the
+.B video=
+option in the running kernel's
 .IR /proc/cmdline .
-An edit to
-.I exhibit.json
-with no matching
-.B dex\-exhibit\-apply
-+ reboot is exactly this disagreement \(em caught at the next start rather
-than black\-screening the venue for the run of the exhibition. The error names
-both values and BOTH possible repairs: the gate cannot know whether the
-config is the stale side or the cmdline is. In particular, on a machine whose
-cmdline already carries a force the venue deliberately needs (some displays
-build no 4K mode unforced), the repair is to update
-.IR exhibit.json ,
-NOT to run this command \(em running it would delete the needed force.
-.SH WHAT THE PRE\-FLIGHT DOES AND DOES NOT VALIDATE
-.B dexd
-checks the RESOLUTION half of
+Each refusal names both repairs, because either side may be the stale one: the
+boot options may carry a leftover force, or a force this venue needs that a
+newly written config omits.
+.PP
+The resolution pre\-flight compares the
+.B WxH
+half of
 .B display_mode
-against the connector's
-.I /sys/class/drm/card*\-<connector>/modes
-list before opening the asset. The
+with the modes the connector lists in
+.IR /sys/class/drm/card*\-<connector>/modes ,
+before the video is opened. That list has no rate column, so the
 .B @R
-refresh half is validated by GRAMMAR ONLY \(em the kernel's
-.I modes
-file has no refresh column, so no sysfs pre\-flight for it is possible. A
-syntactically valid refresh the connector does not actually offer is settled
-by mpv's
-.B \-\-drm\-mode
-matching at VO init instead: expect an mpv\-voiced VO error (and a restart
-loop) in the journal rather than a message from this gate. If the mode you
-configure came from EDID or
-.B modetest
-data, double\-check the refresh against what the connector really builds.
-.SH EXAMPLE: SWAPPING THE PANEL
-.nf
-sudoedit /opt/dex/exhibit.json     # display_mode/kms_force for the new panel
+half is checked for grammar alone. A rate the connector does not offer fails
+later: mpv reports
+.B "Could not find mode matching 3840x2160@60"
+when the video output starts, and the player restarts instead of playing. Set
+.B display_mode
+to a rate the display offers, or to
+.BR auto .
+.SH EXAMPLES
+Swapping the display on an installed player:
+.PP
+.EX
+# set display_mode and kms_force for the new display
+sudoedit /opt/dex/exhibit.yaml
 sudo dex\-exhibit\-apply
-sudo reboot                        # only if it printed REBOOT REQUIRED
-.fi
-.SH MIGRATION FROM THE PRE\-F6 ARRANGEMENT
-Before F6, the display mode lived in three places at once, none of them a
-config file: a hand\-edited
-.IR cmdline.txt ,
-a systemd drop\-in overriding
-.B \-\-mode
-in
-.IR dexd.service ,
-and a comment block in
-.I config.txt
-carrying the reasoning \(em which drifted out of sync with the other two
-within days of being written (see PLAN.md's F6 entry for the exact incident).
-.B dexd.service
-no longer passes
-.BR \-\-mode ,
-so a leftover drop-in either agrees with the exhibit config (harmless until
-removed; \fBdexd\fR's postinst warns if one still mentions
-\fB\-\-mode\fR) or disagrees (refused loudly at the next start, naming both).
-Remove it either way:
-.nf
-sudo rm /etc/systemd/system/dexd.service.d/*.conf
-sudo systemctl daemon\-reload
-.fi
+.EE
+.PP
+The last command prints one of two lines. After
+.B REBOOT REQUIRED
+run
+.BR "sudo reboot" .
+After
+.B "no change"
+the edit touched no boot option, and
+.B "sudo systemctl restart dexd"
+picks it up at the next player start.
+.PP
+A display that needs the force: a 4K capture device announces 3840x2160 at
+30 Hz as its preferred mode, and the graphics driver builds no 4K mode from
+that announcement. Forced, the same mode works (measured; see
+.IR docs/design/measurements.md ).
+Set
+.B display_mode
+to
+.B 3840x2160@30
+and
+.B kms_force
+to
+.BR 3840x2160@30D .
+.PP
+A display that must not be forced: a 2560x1440 monitor whose EDID never
+mentions 2160 shows its preferred mode correctly. Set
+.B display_mode
+to
+.B 2560x1440@60
+or
+.BR auto ,
+and leave
+.B kms_force
+at
+.BR none .
+Forcing 4K here transmits a picture the monitor cannot show, and the screen
+stays black.
+.SH FILES
+.TP
+.IR /opt/dex/exhibit.yaml ", " /opt/dex/exhibit.json
+The exhibit config, next to the video it names. At most one of the two.
+.TP
+.I /boot/firmware/cmdline.txt
+The kernel command line, one line of space\-separated options.
+.TP
+.I /boot/firmware/cmdline.txt.bak\-<seconds>
+The backup, named for the second it was written.
+.B dex\-exhibit\-apply
+keeps the five most recent and names each older one it removes on standard
+output.
+.TP
+.I /boot/firmware/cmdline.txt.new
+The temporary file the new line goes to before the rename.
+.B dex\-exhibit\-apply
+removes it when the rename fails, and the original stays as it was.
+.TP
+.I /proc/cmdline
+The running kernel's command line, which the cmdline check compares the exhibit
+config against.
 .SH EXIT STATUS
 .TP
 .B 0
-cmdline.txt reconciled, or already correct ("no change").
+.I cmdline.txt
+now matches the exhibit config, either because
+.B dex\-exhibit\-apply
+rewrote it or because it already matched.
 .TP
 .B 1
-An I/O failure (cannot read or write a file) \(em not a bad config.
+A file could not be read or written.
+.I cmdline.txt
+is either untouched or fully replaced, never half\-written.
 .TP
 .B 2
-Refused: not running as root, an invalid exhibit config, or a rewrite that
-would produce an empty or multi\-line cmdline.txt.
+.B dex\-exhibit\-apply
+refused and wrote nothing: the command was not run as root, no exhibit config
+was found or the one found is invalid, the command line was not understood, or
+the rewrite would produce an empty or multi\-line
+.IR cmdline.txt .
+.SH DIAGNOSTICS
+.TP
+.B dex\-exhibit\-apply: applying <path> (connector <C>, kms_force <F>)
+The first line of a run that got as far as reading the config. Check this line
+first when the display mode is wrong: it names the file this run read and the
+two values it acts on.
+.TP
+.B "dex\-exhibit\-apply: <path> already matches the exhibit config \-\- no change"
+Status 0, nothing written and no reboot needed. An edit that touched only
+.B asset
+or
+.B display_mode
+takes effect at the next player start:
+.BR "sudo systemctl restart dexd" .
+.TP
+.B "REBOOT REQUIRED \-\- dexd binds the display from the running kernel's /proc/cmdline"
+Status 0, after the lines naming the old line, the new line and the backup. The
+forced display mode takes effect at the next boot.
+.TP
+.B "error: dex\-exhibit\-apply must run as root (sudo dex\-exhibit\-apply)"
+Status 2, checked before any file is opened, so a run without
+.BR sudo (8)
+stops with every file as it was.
+.TP
+.B error: no exhibit config found (looked for <paths>)
+Status 2. Create
+.I /opt/dex/exhibit.yaml
+next to the video, or name a config with
+.BR \-\-exhibit\-config .
+.TP
+.B error: <n> exhibit configs exist at once (<paths>)
+Status 2. Keep exactly one file, or name the intended one with
+.BR \-\-exhibit\-config .
+Switching from JSON to YAML leaves the older file in place, and the message
+gives the
+.BR rm (1)
+line for it.
+.PP
+Every message dexd and its tools print, with the repair for each, is listed in
+.IR docs/guides/reference.md .
+.SH UPGRADES
+A player set up before the display mode moved into the exhibit config may still
+carry a service override file (a drop\-in under
+.IR /etc/systemd/system/dexd.service.d/ )
+that passes
+.BR \-\-mode .
+The packaged unit passes no arguments, and installing the package prints a note
+when such a file is present. A drop\-in whose value agrees with the config
+changes nothing until it is removed; one that disagrees makes dexd refuse to
+start, naming both values. Check the directory first, because this removes every
+override, not only the
+.B \-\-mode
+one:
+.PP
+.EX
+ls /etc/systemd/system/dexd.service.d/
+sudo rm /etc/systemd/system/dexd.service.d/*.conf
+sudo systemctl daemon\-reload
+.EE
+.PP
+dexd does not read a config left under
+.I /etc/dex
+either. Move it next to the video, but only if
+.I /opt/dex
+has no config yet, since two configs refuse:
+.PP
+.EX
+sudo mv /etc/dex/exhibit.* /opt/dex/ && sudo rmdir /etc/dex
+.EE
+.PP
+If
+.I /opt/dex
+already holds a config, copy the values across by hand and delete the old file.
+.SH NOTES
+Writing boot options is a separate step, run by hand.
+.BR dexd (1)
+runs as an unprivileged user and cannot write to the boot partition;
+.B dex\-exhibit\-apply
+is the privileged half, and it changes one option in one file.
+.PP
+Write refresh rates as whole numbers in both
+.B display_mode
+and
+.BR kms_force .
+The kernel's
+.B video=
+grammar has no fractional rate, and dexd refuses a fraction such as
+.B @30000/1001
+or a decimal such as
+.B @29.97
+in either key. mpv rejects the fraction while it parses its options, and rounds
+.B @29.97
+to 29 (measured on a Raspberry Pi 4; see
+.IR docs/design/measurements.md ).
+.PP
+Do not edit
+.I cmdline.txt
+by hand. State the display mode in the exhibit config: a hand edit the config
+does not match stops the player at its next start.
+.PP
+Where
+.B kms_force
+is
+.BR none ,
+.BR dex\-wait\-hdmi (1)
+is the fallback. It runs before dexd and waits until an HDMI connector reads
+.BR connected .
 .SH SEE ALSO
 .BR dexd (1),
-.BR dex-wait-hdmi (1)
+.BR dex\-sidecar (1),
+.BR dex\-wait\-hdmi (1),
+.BR systemd.service (5)
+.PP
+Guides in the repository:
+.IR docs/guides/configure\-exhibit.md ,
+.IR docs/guides/build\-player\-card.md ,
+.IR docs/guides/run\-check\-troubleshoot.md ,
+.IR docs/guides/reference.md ,
+.IR docs/guides/what\-dexd\-is.md .
+Design notes:
+.IR docs/design/exhibit\-config.md ,
+.IR docs/design/startup\-checks.md ,
+.IR docs/design/service\-unit.md ,
+.IR docs/design/measurements.md .

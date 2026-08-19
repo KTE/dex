@@ -1,30 +1,164 @@
-.TH DEX\-WAIT\-HDMI 1 "2026-08-15" "dexd 0.1.0" "dex"
+.TH DEX\-WAIT\-HDMI 1 "August 19, 2026" "dexd 0.1.0" "dexd manual"
 .SH NAME
-dex\-wait\-hdmi \- block until a DRM connector reports a display
+dex\-wait\-hdmi \- wait for a connected display before the player starts
 .SH SYNOPSIS
 .B dex\-wait\-hdmi
+.PP
+.BI DEX_HDMI_TIMEOUT= seconds
+.B dex\-wait\-hdmi
 .SH DESCRIPTION
-Waits for an HDMI connector to become connected before returning. Run as
+.B dex\-wait\-hdmi
+polls
+.I /sys/class/drm/card*\-HDMI\-A\-*/status
+once a second and exits 0 as soon as one connector reads
+.BR connected .
+The
+.B dexd.service
+unit runs it before the player
+.RB ( ExecStartPre
+in the unit), so the player starts only after the wait succeeds.
+.PP
+A projector can take 30 to 90 seconds to present its EDID while a Raspberry Pi
+boots in about 15. With no EDID to read, the Raspberry Pi picks a fallback mode,
+typically 1024x768. It does not change mode when the EDID arrives later, so the
+installation shows the wrong resolution until someone notices.
+.SH OPTIONS
+.B dex\-wait\-hdmi
+takes no options and no arguments.
+.SH FILES
+.TP
+.I /usr/bin/dex\-wait\-hdmi
+The script, installed by the dexd package, mode 755.
+.TP
+.I /sys/class/drm/card*\-HDMI\-A\-*/status
+The connector state the script reads. A connector with a display attached reads
+.BR connected .
+.TP
+.I /lib/systemd/system/dexd.service
+The unit that runs the script, in its
 .B ExecStartPre
-of
-.BR dexd (1).
-.PP
-A projector can take 30\-90 seconds to present EDID while a Pi boots in about
-15. Without this wait the player starts into a fallback mode that never
-corrects itself, and the installation shows the wrong resolution until someone
-notices.
-.PP
-The primary fix for boot ordering is at the KMS layer rather than here: bake
-the display's EDID into
-.I cmdline.txt
-so the Pi always believes the intended mode is attached. This wait is the
-fallback for devices where that has not been done.
+line.
+.TP
+.I /boot/firmware/cmdline.txt
+The kernel command line that carries the forced display mode and, if one is
+stored, the name of the saved EDID file.
+.TP
+.I /lib/firmware/edid/dex.bin
+The saved copy of the display's EDID, when the installation uses one.
 .SH EXIT STATUS
 .TP
 .B 0
-A connector reported a display.
+A connector read
+.BR connected ,
+either on the first poll or within the wait. The player starts.
 .TP
 .B 1
-Timed out. The service still starts; the player will use whatever mode exists.
+No connector reported a display within the wait. The unit fails, so the service
+manager restarts it
+.RB ( Restart=always
+in the unit) and the whole sequence runs again, rather than starting the player
+into a display that is not there.
+.SH DIAGNOSTICS
+.TP
+.B dex\-wait\-hdmi: no connected HDMI connector after 120s
+.B dex\-wait\-hdmi
+prints this to standard error and exits 1. The number is the wait in seconds,
+from
+.BR DEX_HDMI_TIMEOUT .
+Check the cable, the display's power and its input. If the display needs longer
+than the wait allows, raise
+.B DEX_HDMI_TIMEOUT
+and
+.B TimeoutStartSec=
+together, as described under ENVIRONMENT below.
+.SH ENVIRONMENT
+.TP
+.B DEX_HDMI_TIMEOUT
+Seconds to wait. Default 120. The unit sets
+.BR TimeoutStartSec=150 ,
+above Debian's 90\-second default, so the full wait can finish. Raise
+.B TimeoutStartSec=
+whenever this value is raised.
+.PP
+Setting
+.B DEX_HDMI_TIMEOUT
+on the command line, as in the synopsis, changes one run only. The service reads
+it from an override file. Run
+.B "sudo systemctl edit dexd"
+and put these lines in the editor:
+.PP
+.EX
+[Service]
+Environment=DEX_HDMI_TIMEOUT=180
+TimeoutStartSec=210
+.EE
+.PP
+.B systemctl edit
+reloads the unit, so
+.B "systemctl daemon\-reload"
+is not needed.
+.SH NOTES
+The wait is the second safeguard. The first is a forced display mode. A
+.B kms_force
+value ending in
+.B D
+makes the connector read
+.B connected
+before a display is attached. The Raspberry Pi then sets the intended mode at
+boot, and the projector locks on when it finishes warming up.
+.BR dex\-exhibit\-apply (1)
+writes that value into
+.IR /boot/firmware/cmdline.txt .
+.PP
+The wait is the fallback where no forced display mode is set. It also covers a
+swapped cable or a replaced projector where one is set.
+.PP
+A saved copy of the display's EDID is an optional step at install time. Capture
+it once while the display is awake:
+.PP
+.EX
+sudo mkdir \-p /lib/firmware/edid
+cat /sys/class/drm/card*\-HDMI\-A\-1/edid \e
+  | sudo tee /lib/firmware/edid/dex.bin > /dev/null
+.EE
+.PP
+Then open
+.I /boot/firmware/cmdline.txt
+in an editor
+.RB ( "sudo nano /boot/firmware/cmdline.txt" )
+and add this to its single line, separated by a space:
+.PP
+.EX
+drm.edid_firmware=HDMI\-A\-1:edid/dex.bin
+.EE
+.PP
+Reboot, then check the line took effect with
+.BR "cat /proc/cmdline" .
+Use the connector the display is plugged into:
+.B HDMI\-A\-2
+in both places if it is the second port.
+.PP
+.BR dex\-exhibit\-apply (1)
+leaves
+.B drm.edid_firmware
+as it is.
+.PP
+Any HDMI connector satisfies the wait, not only the one the exhibit config
+names. The card number is a wildcard
+.RB ( card* )
+because
+.B card0
+and
+.B card1
+swap between kernel versions.
 .SH SEE ALSO
-.BR dexd (1)
+.BR dexd (1),
+.BR dex\-exhibit\-apply (1),
+.BR dex\-sidecar (1)
+.PP
+In the repository:
+.IR docs/guides/build-player-card.md ,
+.IR docs/guides/configure-exhibit.md ,
+.IR docs/guides/run-check-troubleshoot.md ,
+.IR docs/guides/reference.md ,
+.IR docs/design/service-unit.md .
