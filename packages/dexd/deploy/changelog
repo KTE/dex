@@ -1,0 +1,18 @@
+dexd (0.1.0-1) unstable; urgency=medium
+
+  * Initial release. Gapless HEVC video looper for Raspberry Pi, based on
+    libmpv: dexd plays one video artwork in an endless loop with no visible
+    break at the loop point.
+  * The video, its sidecar and the exhibit config live together in /opt/dex.
+    The exhibit config says which video plays, the display mode and the
+    connector; the package installs none.
+  * The sidecar binds the frame rate and a checksum to the video. Without it
+    dexd refuses to start rather than guess the rate.
+  * dexd checks the display mode, the boot options and the start of the video
+    before it opens anything, and refuses with a message naming the fix.
+  * While playing it checks that playback advances, recovers in place, writes
+    a heartbeat to the system log, and lets the service manager restart it if
+    it stops responding.
+  * Commands: dexd(1), dex-sidecar(1), dex-exhibit-apply(1), dex-wait-hdmi(1).
+
+ -- Max Albrecht <1@178.is>  Tue, 18 Aug 2026 20:00:00 +0200

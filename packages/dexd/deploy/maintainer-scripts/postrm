@@ -1,0 +1,14 @@
+#!/bin/sh
+# Removal, including purge, keeps the `dex` user and /opt/dex.
+#
+# /opt/dex holds the video, its sidecar and the exhibit config, none of them
+# shipped by the package. The `dex` user owns no files, but a unit or job
+# written on the device may name it, and Debian policy allows a system user to
+# stay. Add a deletion step here only after checking what on the device still
+# refers to the user or the directory. See docs/design/packaging.md.
+set -e
+
+# debhelper substitutes the systemd removal handling for dexd.service.
+#DEBHELPER#
+
+exit 0

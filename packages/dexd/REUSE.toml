@@ -1,0 +1,23 @@
+# REUSE (reuse.software) — machine-readable licensing for dexd.
+#
+# Why bother: dex should eventually be installable from all the usual repos, and
+# distro packagers are the people who have to answer "what is this licensed
+# under, exactly, per file". REUSE makes that answer machine-checkable instead
+# of a prose paragraph someone has to read and trust. `reuse lint` runs in CI.
+#
+# Why REUSE.toml rather than per-file SPDX headers: the whole crate is one
+# author under one licence, so 28 headers would state the same fact 28 times
+# above module docs that are already dense. A single declaration is easier to
+# keep true — and being true is the entire value. Per-file headers become the
+# better choice if this ever mixes licences or gains third-party code.
+version = 1
+
+SPDX-PackageName = "dexd"
+SPDX-PackageSupplier = "Max Albrecht <1@178.is>"
+SPDX-PackageDownloadLocation = "https://github.com/KTE/dex"
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Max Albrecht"
+SPDX-License-Identifier = "MIT-0"

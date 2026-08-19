@@ -1,0 +1,124 @@
+[package]
+name = "dexd"
+version = "0.1.0"
+edition = "2021"
+description = "Gapless HEVC video looper for Raspberry Pi, based on libmpv"
+# Source, packaging and documentation are MIT-0; content is CC0-1.0. Per-file
+# licensing is machine-readable through REUSE.toml (reuse.software).
+#
+# The shipped binary links Debian's libmpv, which links GPL-3+ libsmbclient, so
+# the .deb is a GPL-3+ combined work. MIT-0 is GPL-compatible; the package's
+# copyright file states both. See docs/design/packaging.md.
+license = "MIT-0"
+# The compiler Debian trixie ships, which is the one the devices have; a device
+# is also a development host, so the crate stays buildable there. Only raise
+# this after confirming the target devices can still build the package.
+rust-version = "1.85"
+
+# Dependencies: keep the set small enough to read; no procedural macros. Each
+# entry says what it is for. The alternatives weighed against them, with their
+# crate counts, are in docs/design/packaging.md.
+#
+#   serde_json  Parses the sidecar. Its \uXXXX and UTF-16 surrogate-pair
+#               handling is required: a sidecar or config file may contain
+#               any Unicode character, for example in a file name.
+#   serde       The map visitor only, with no `derive` feature and so no
+#               procedural macros. The sidecar grammar makes a duplicate key
+#               an error, which serde_json's last-wins map cannot express.
+#   sha2        SHA-256 for the asset checksum. A hash change is a change to
+#               the sidecar format: every sidecar already written stops
+#               validating.
+#   yaml-rust2  Parses the `.yaml` exhibit config, so the file a technician
+#               edits can carry comments, and errors on a duplicate mapping
+#               key. `default-features = false` drops the `encoding` feature;
+#               the config is read with fs::read_to_string, which requires
+#               UTF-8.
+[dependencies]
+serde = "1.0.229"
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+yaml-rust2 = { version = "0.11.0", default-features = false }
+
+# --- Debian package ---------------------------------------------------------
+# `cargo deb` builds dexd_<version>_arm64.deb. apt checks the declared libmpv
+# version when the package is installed. See docs/design/packaging.md.
+#
+# Build:   cargo deb            (on arm64; CI does it in a debian:trixie container)
+# Install: sudo apt install ./dexd_0.1.0_arm64.deb
+[package.metadata.deb]
+maintainer = "Max Albrecht <1@178.is>"
+copyright = "Max Albrecht"
+# Ship the project's licence text as the package's copyright file. Without it
+# cargo-deb records the source licence alone, which understates the shipped
+# binary's GPL-3+ obligations.
+license-file = "LICENSE"
+extended-description = """
+Gapless HEVC video looper for Raspberry Pi, based on libmpv. dexd plays one
+video artwork in an endless loop with no visible break at the loop point, on
+a player that runs unattended and is switched off at the mains."""
+section = "video"
+priority = "optional"
+
+# `$auto` derives Depends from the shared libraries the binary links, so a
+# libmpv version mismatch fails when the package is installed. Keep it; the
+# entries beside it state what no symbol expresses.
+#
+# libmpv2 (>= 0.40.0): dexd relies on mpv behaviour that dpkg-shlibdeps cannot
+# see — the option `--gpu-hwdec-interop=drmprime-overlay`, and the
+# `END_FILE(reason=stop)` event after a `loadfile replace`, which in-place
+# recovery expects after its own `loadfile replace`. Both hold in 0.40, the
+# version trixie ships; with 0.19 the package installs and the player then
+# fails at runtime. Raise this floor
+# whenever a fix is verified against a newer mpv.
+#
+# adduser: postinst calls it, and lintian fails a maintainer script that uses a
+# tool the package does not depend on.
+depends = "$auto, libmpv2 (>= 0.40.0), adduser"
+
+assets = [
+    # /usr/bin: Debian policy reserves /usr/local for the local administrator,
+    # so a package may not install there.
+    ["target/release/dexd", "usr/bin/", "755"],
+    # Applies a changed exhibit config on the device, as root, which is why it
+    # ships. See src/bin/dex-exhibit-apply.rs and man dex-exhibit-apply.
+    ["target/release/dex-exhibit-apply", "usr/bin/", "755"],
+    ["deploy/dex-wait-hdmi", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/dexd/", "644"],
+    ["deploy/man/dexd.1", "usr/share/man/man1/", "644"],
+    ["deploy/man/dex-wait-hdmi.1", "usr/share/man/man1/", "644"],
+    ["deploy/man/dex-exhibit-apply.1", "usr/share/man/man1/", "644"],
+    ["deploy/lintian-overrides", "usr/share/lintian/overrides/dexd", "644"],
+]
+
+# dex-sidecar stays off this list: it writes a sidecar and validates it against
+# the asset, and a video is prepared on a workstation, never on the device.
+
+# The package installs no exhibit config and creates no /etc/dex. The config
+# lives beside the video in /opt/dex, the mount point of the dex card's data
+# partition, so a technician edits it from any computer that reads the card. A missing
+# config makes dexd refuse to start and name the file to create — see
+# src/exhibit.rs.
+
+maintainer-scripts = "deploy/maintainer-scripts"
+# A non-native package without a Debian changelog is a lintian error, and the
+# changelog is where a technician sees what shipped.
+changelog = "deploy/changelog"
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "deploy"
+# Enable at install so a device that is only power-cycled comes back playing.
+# Leave it stopped at install: the unit takes DRM master, and a technician
+# installing over SSH from a console session chooses the moment.
+enable = true
+start = false
+
+# Abort on panic in both profiles: unwinding across the FFI boundary, or out of
+# main while mpv threads are live, is undefined behaviour. The dev profile
+# matches the release profile so a panic behaves the same way in testing.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = 2
+lto = true
+panic = "abort"

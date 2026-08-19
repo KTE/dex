@@ -1,72 +1,80 @@
-# `dex` project
+# dex
 
-packages:
+dexd plays the video of an installation on a Raspberry Pi, unattended, for weeks. This repository
+holds dexd and the parts around it.
 
-* [dex OS](./packages/dex-os/README.md)
-* [example content](./packages/example-content/README.md)
-* [branding](./packages/branding/README.md)
+If you are setting up a player, start with [What dexd is](docs/guides/what-dexd-is.md).
 
-## getting started
+## Packages
 
-Build a dex player by flashing the image to an SD card,
-using the official [Raspberry Pi Imager](https://www.raspberrypi.org/software/).
+| Path | What it is |
+|---|---|
+| [`packages/dexd`](packages/dexd/README.md) | The player: gapless 4K HEVC looper for Raspberry Pi 4, shipped as a Debian package. Documentation in `docs/guides/` and `docs/design/`. |
+| `packages/dex-os` | dexOS, dex's own Raspberry Pi OS image; it currently plays videos with pi_video_looper, not dexd. |
+| `packages/example-content` | The test cards: short videos with a frame counter, colour bars and a checkerboard border. They show whether a player displays the picture correctly and loops gaplessly. |
+| `packages/branding` | The project's colour palette and design sketches. |
+| `packages/website` | The project site, <https://dex.ars.is>. |
+| `packages/pi-gen` | Raspberry Pi's official tool for building OS images in stages; dexOS is a pi-gen build. |
+| `packages/pi_video_looper` | Adafruit's Python video-looping framework. |
 
-Then boot the Raspberry Pi with the SD card.
-It it worked, it will show a 2-second demo video loop.
-
-### advanced
-
-For customizing the player/operating system,
-ssh access needs to be enabled.
-
-This can be done using the "customization" feature of the Raspberry Pi Imager,
-choosing "Enable SSH" in the "Advanced Options". It is recommended to use key-based authentication.
-The user name in the image is `dex` should not be changed, the default password is also `dex` and should be changed if SSH login is enabled and password authentication is used.
-  
-Then, after booting the Raspberry Pi, ssh into it:
-  
-```sh
-ssh dex@dexpi # or another hostname if you changed it in the customization
-```
-
-## development
-
-### creating patches
-
-Upstream repos like `pi-gen` are not forked directly,
-rather a series of patches is maintained.
-This makes the list of changes we make self-documenting,
-and over time should be easier than maintaining a regular fork using `git`.
-
-Good tutorials on using `quilt`:
-
-* <https://raphaelhertzog.com/2012/08/08/how-to-use-quilt-to-manage-patches-in-debian-packages/>
-* <https://wiki.debian.org/UsingQuilt>
+The player, the OS image and the website live in this repository, so one commit changes the player,
+its packaging and the OS image together. The other four — `branding`, `example-content`, `pi-gen`
+and `pi_video_looper` — are git submodules, pointers to separate repositories. Clone the
+repository, then fill the submodules in:
 
 ```sh
-quilt new "99-name-of-my-patch"
-quilt add ./packages/some-upstream-code/some-file
-# edit ./packages/some-upstream-code/some-file
-quilt refresh # patchfile is added to ./patches and patch name is added to ./patches/series 
-quilt rename "99-better-name-of-my-patch"
+git clone https://github.com/KTE/dex.git
+cd dex
+git submodule update --init
 ```
 
-editing existing patches:
+## Guides
 
-```sh
-PATCH_NAME="project/99-name-of-my-patch"
-quilt add -P "$PATCH_NAME" ./packages/some-upstream-code/some-file
-# edit ./packages/some-upstream-code/some-file
-quilt refresh "$PATCH_NAME" # patchfile is updated in ./patches
-```
+Read these to build a player and keep it running. They assume you can use a terminal, and nothing
+about video or Linux.
 
-## housekeeping
+1. [What dexd is](docs/guides/what-dexd-is.md) — what the player does and what it needs.
+2. [Build a dex card](docs/guides/build-player-card.md) — from a blank SD card to a booted player.
+3. [Prepare your video](docs/guides/prepare-video.md) — turning the video you exported into the `.265` file and sidecar dexd accepts.
+4. [Configure the exhibit](docs/guides/configure-exhibit.md) — the one file that names the video, the display mode and the connector.
+5. [Run, check, troubleshoot](docs/guides/run-check-troubleshoot.md) — starting the player, reading the system log, and going from a symptom to a fix.
+6. [Reference](docs/guides/reference.md) — config keys, sidecar keys, exit codes, file paths and every refusal message with its fix.
 
-### update pi-gen repo
+The package installs man pages for `dexd`, `dex-exhibit-apply` and `dex-wait-hdmi`. Build
+`dex-sidecar` from source on the computer where you prepare the video; from the repository root,
+read its page with `man ./packages/dexd/deploy/man/dex-sidecar.1`.
 
-```sh
-cd packages/pi-gen
-git remote add upstream https://github.com/RPi-Distro/pi-gen
-git fetch upstream
-git push --mirror origin
-```
+## Design documents
+
+Read these to change the player. They assume a Linux or Rust developer who has not seen the
+project.
+
+| Page | Subject |
+|---|---|
+| [Architecture](docs/design/architecture.md) | The layers from Rust down to the display. |
+| [The endless stream](docs/design/endless-stream.md) | How playback repeats without reaching the end of the file. |
+| [Startup checks](docs/design/startup-checks.md) | What dexd verifies before it plays, and the exit codes. |
+| [Failure handling](docs/design/failure-handling.md) | How a running player detects that it stopped showing pictures, and what it does then. |
+| [The systemd unit](docs/design/service-unit.md) | Every setting in `dexd.service` and the scripts around it. |
+| [Asset binding](docs/design/sidecar.md) | The sidecar file that records the video's frame rate and checksum, and the check that reads it. |
+| [Exhibit config](docs/design/exhibit-config.md) | The per-installation file: grammar, refusals and the kernel command line `dex-exhibit-apply` derives from it. |
+| [Packaging](docs/design/packaging.md) | What the `.deb` contains, and where it installs. |
+| [Continuous integration](docs/design/ci.md) | What the workflow builds and asserts. |
+| [Building and testing dexd](docs/design/development.md) | Build commands, test layers and their safety rules. |
+| [Raspberry Pi media capability](docs/design/pi-capability.md) | What each Raspberry Pi generation can decode and display. |
+| [Roadmap](docs/design/roadmap.md) | What is decided but not built, and what is out of scope. |
+| [Measurement record](docs/design/measurements.md) | Every number the documentation relies on, and how it was established. |
+
+## Vocabulary
+
+[docs/glossary.md](docs/glossary.md) is the term list for this repository. Entries marked *user*
+are the technical words the guides use without explaining them; entries marked *developer* are used
+only in the pages under `docs/design/`. A word in neither list is plain English or is explained
+where it is used. The writing rules are in [AGENTS.md](AGENTS.md).
+
+## Licence
+
+dexd's source, packaging and documentation are under the MIT-0 licence. The project's content —
+test cards, video masters, branding — is under CC0-1.0. Both allow any use, with no attribution and no
+conditions. Because the installed package links Debian's mpv library, the binary you install ships
+under GPL-3+ — see [Packaging](docs/design/packaging.md).

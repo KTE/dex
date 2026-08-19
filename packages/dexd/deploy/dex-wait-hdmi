@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Waits for an HDMI connector to report `connected`, then exits 0. The dexd unit
+# runs it as ExecStartPre, so the player starts only after the wait succeeds.
+# Without EDID, KMS picks a fallback mode, typically 1024×768, and keeps it.
+#
+# Installed as /usr/bin/dex-wait-hdmi. The wait is the second safeguard; the
+# first is a forced display mode in cmdline.txt whose `video=` token ends in
+# `D`, which makes the connector read `connected` before a display is attached.
+# Keep the wait even with a forced mode: it covers a swapped cable and a
+# replaced projector. See docs/design/service-unit.md and dex-wait-hdmi(1).
+#
+# No `-e`: `grep` exits non-zero on every iteration until a connector reports
+# `connected`.
+set -uo pipefail
+
+# Seconds to wait. TimeoutStartSec= in dexd.service must stay above this; raise
+# both together.
+TIMEOUT="${DEX_HDMI_TIMEOUT:-120}"
+
+for _ in $(seq "$TIMEOUT"); do
+  # Glob the card number: vc4 and v3d probe in either order, so card0 and card1
+  # swap between kernel versions. Do not hardcode one.
+  if grep -qx 'connected' /sys/class/drm/card*-HDMI-A-*/status 2>/dev/null; then
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "dex-wait-hdmi: no connected HDMI connector after ${TIMEOUT}s" >&2
+# Exit non-zero so the unit fails and Restart=always retries the whole sequence
+# instead of starting the player into a display that is not there.
+exit 1

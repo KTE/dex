@@ -1,0 +1,49 @@
+# docs-lint allowlist — every entry needs a reason after #
+# Universal acronyms: allowed in caps everywhere; not glossary entries.
+caps HDMI # universal acronym
+caps USB # universal acronym
+caps SD # universal acronym
+caps SSH # universal acronym
+caps CPU # universal acronym
+caps GPU # universal acronym
+caps RAM # universal acronym
+caps JSON # universal acronym
+caps YAML # universal acronym
+caps CI # universal acronym
+caps OS # universal acronym
+caps PR # universal acronym
+caps URL # universal acronym
+caps API # universal acronym
+caps GPL # universal acronym
+caps TIFF # universal acronym
+caps MP4 # universal acronym
+caps RGB # universal acronym
+caps YUV # universal acronym
+caps FAT32 # universal acronym
+caps SAND # Broadcom tile format name, a glossary term spelled in caps
+caps path=**/*.rs MAX # i64::MAX etc. — constants, not emphasis
+caps path=**/*.rs MIN # i64::MIN etc. — constants, not emphasis
+caps path=**/deny.toml RUSTSEC # advisory ids
+caps VLC # product name (the VLC player), a proper noun spelled in caps — not emphasis; `cvlc` is its CLI binary
+caps path=**/maintainer-scripts/* DEBHELPER # debhelper substitution token `#DEBHELPER#`, required literally in a maintainer script
+caps path=**/man/*.1 REBOOT # the shipped line `REBOOT REQUIRED`, quoted by the man page as the reader sees it
+caps path=**/man/*.1 REQUIRED # the second word of that same shipped line
+caps path=**/src/bin/dex-exhibit-apply.rs REBOOT # the shipped line `REBOOT REQUIRED`, printed verbatim by the tool
+caps path=**/src/bin/dex-exhibit-apply.rs REQUIRED # the second word of that same shipped line
+coinages path=**/*.1 /player\s+card/ # the guide file name docs/guides/build-player-card.md, cited as a path in a man page SEE ALSO, where a path is read as prose
+caps JPEG # universal acronym (image and codec format name)
+caps MJPEG # universal acronym (Motion JPEG codec name)
+caps UDP # universal acronym (transport protocol name)
+caps path=**/src/exhibit.rs HDMI-A # connector-name prefix under test in connector_grammar, a literal not emphasis
+caps path=**/src/exhibit.rs FALSE # a YAML boolean spelling under test, the literal the parser must reject
+caps path=**/src/exhibit.rs NULL # a YAML null spelling under test; the test is about its case-sensitivity
+caps path=**/*.rs HEAD # git ref name: the .git/HEAD path and the rev-parse argument, not emphasis
+caps path=**/src/**/*.rs PATH # the `--exhibit-config PATH` usage placeholder, spelled as in docs/guides/reference.md and man dexd — a metavariable, not emphasis
+caps path=**/tests/*.rs PATH # the environment variable name, set literally through Command::env in these tests
+caps path=**/src/exhibit.rs EXHIBIT # an all-caps config file name under test in extension_match_is_case_insensitive, a literal not emphasis
+caps path=**/man/*.1 FRAME # the section heading `FRAME RATE`; roff spells every section heading in caps
+caps path=**/man/*.1 RATE # the second word of that same heading
+caps path=**/man/*.1 PATH # the environment variable PATH, named in the ENVIRONMENT section
+caps path=**/src/main.rs SIGABRT # POSIX signal name in the shipped watchdog refusal — a constant an operator greps for, not emphasis
+caps NIST # the standards body's name, a proper noun cited as the source of the SHA-256 test vectors
+caps FIPS # the standard's name, cited as `FIPS 180-4` — a document id, not emphasis
