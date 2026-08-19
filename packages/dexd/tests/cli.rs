@@ -122,7 +122,7 @@ fn stub_annexb() -> Vec<u8> {
 }
 
 /// Write the sidecar `<asset>.json` binding `bytes` at `fps`, as a normal
-/// start requires. See docs/design/sidecar.md#what-the-sidecar-binds.
+/// start requires. See docs/design/sidecar.md#rate-and-identity.
 fn write_sidecar(asset: &Path, bytes: &[u8], fps: &str) {
     let sha = dexd::sha256::sha256_hex(bytes);
     std::fs::write(

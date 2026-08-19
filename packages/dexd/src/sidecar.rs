@@ -2,7 +2,7 @@
 //!
 //! A raw Annex-B stream has no frame rate in it, so the rate is stored beside
 //! the asset in a sidecar file and bound to it by a sha256 that startup
-//! re-checks. See docs/design/sidecar.md#asset-binding-the-sidecar-and-the-asset-check.
+//! re-checks. See docs/design/sidecar.md#asset-binding.
 //!
 //! Format — `<asset>.json` next to the asset (`loop.265` -> `loop.265.json`):
 //!   {"fps":"30","sha256":"<64 hex>","width":3840,"height":2160,

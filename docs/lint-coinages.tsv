@@ -86,3 +86,5 @@ tier-3	hardware watchdog (planned)
 tier 3	hardware watchdog (planned)
 the pass bar	the pass criteria
 pre-registered bar	the pass criteria set beforehand
+/\bpinned by\s+(\w+\s+){0,3}tests?\b/	locked in by a test / a test enforces
+bench override	test rig override, unbound (the shipped display and fps source string)
