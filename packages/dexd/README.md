@@ -21,7 +21,7 @@ frames through 25 hours 30 minutes unattended (measured; see the
 Prepare the video and its sidecar on a workstation
 ([Prepare your video](../../docs/guides/prepare-video.md)) and download the package
 ([Releases](#releases)). Copy all of it to the player, at the hostname from
-[Build a dex card](../../docs/guides/build-player-card.md):
+[Install dexOS](../../docs/guides/install-dexos.md):
 
 ```bash
 scp artwork.265 artwork.265.json dexd_*_arm64.deb <user>@<host>.local:/tmp/
@@ -92,7 +92,7 @@ An apt repository for `apt install dexd` is planned — see
 [The documentation index](../../docs/README.md) maps both sets of pages.
 
 1. [What dexd is](../../docs/guides/what-dexd-is.md)
-2. [Build a dex card](../../docs/guides/build-player-card.md)
+2. [Install dexOS](../../docs/guides/install-dexos.md)
 3. [Prepare your video](../../docs/guides/prepare-video.md)
 4. [Configure the exhibit](../../docs/guides/configure-exhibit.md)
 5. [Run, check, troubleshoot](../../docs/guides/run-check-troubleshoot.md)

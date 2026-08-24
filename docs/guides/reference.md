@@ -297,7 +297,7 @@ dexd exits 1 after every `fatal:` line, and the service manager restarts it.
 
 ## Related pages
 
-- [What dexd is](what-dexd-is.md), [Build a dex card](build-player-card.md), [Prepare your video](prepare-video.md), [Configure the exhibit](configure-exhibit.md), [Run, check, troubleshoot](run-check-troubleshoot.md).
+- [What dexd is](what-dexd-is.md), [Install dexOS](install-dexos.md), [Prepare your video](prepare-video.md), [Configure the exhibit](configure-exhibit.md), [Run, check, troubleshoot](run-check-troubleshoot.md).
 - dexd(1), dex-exhibit-apply(1), dex-wait-hdmi(1).
 - [Startup checks](../design/startup-checks.md) and [Failure handling at runtime](../design/failure-handling.md) — the order of the checks and what recovery does.
 - [Measurement record](../design/measurements.md) — how the playback numbers in the other guides were measured.

@@ -42,7 +42,7 @@ Three files make a player, all in `/opt/dex`:
 
 The package installs none of them; if one is missing, dexd refuses to start rather than guess and names the file to create.
 
-`/opt/dex` is the assets directory on the player. Copy the three files there over the network and edit the exhibit config in place — [Build a dex card](build-player-card.md) gives the commands. A card whose assets sit on their own partition, editable with the card in a laptop, is planned and not built; see [Roadmap](../design/roadmap.md). See [Configure the exhibit](configure-exhibit.md).
+`/opt/dex` is the assets directory on the player. Copy the three files there over the network and edit the exhibit config in place — [Install dexOS](install-dexos.md) gives the commands. A card whose assets sit on their own partition, editable with the card in a laptop, is planned and not built; see [Roadmap](../design/roadmap.md). See [Configure the exhibit](configure-exhibit.md).
 
 ## Hardware
 
@@ -57,7 +57,7 @@ Use a Raspberry Pi 4 with a display or projector on one of its micro-HDMI ports.
 
 ## Operating system and package
 
-Flash Raspberry Pi OS Lite, 64-bit, the Debian 13 release — Lite, not Desktop. See [Build a dex card](build-player-card.md).
+Flash Raspberry Pi OS Lite, 64-bit, the Debian 13 release — Lite, not Desktop. See [Install dexOS](install-dexos.md).
 
 dexd ships as one `.deb` package installed with `apt`, which pulls in the mpv library it needs (`libmpv2` 0.40 or newer) and installs the service. The package, the command and the service all carry the name `dexd`. Install the package; do not build it on the player.
 
@@ -82,7 +82,7 @@ The installed package links the mpv library. Debian builds that library against 
 
 ## Next steps
 
-- [Build a dex card](build-player-card.md) goes from a blank SD card to a running player.
+- [Install dexOS](install-dexos.md) goes from a blank SD card to a running player.
 - [Prepare your video](prepare-video.md) makes the `.265` file and the sidecar beside it.
 - [Configure the exhibit](configure-exhibit.md) writes the file naming the video and the display mode.
 - [Run, check, troubleshoot](run-check-troubleshoot.md) goes from a symptom to a fix.

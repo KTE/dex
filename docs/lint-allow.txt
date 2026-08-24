@@ -30,7 +30,6 @@ caps path=**/man/*.1 REBOOT # the shipped line `REBOOT REQUIRED`, quoted by the 
 caps path=**/man/*.1 REQUIRED # the second word of that same shipped line
 caps path=**/src/bin/dex-exhibit-apply.rs REBOOT # the shipped line `REBOOT REQUIRED`, printed verbatim by the tool
 caps path=**/src/bin/dex-exhibit-apply.rs REQUIRED # the second word of that same shipped line
-coinages path=**/*.1 /player\s+card/ # the guide file name docs/guides/build-player-card.md, cited as a path in a man page SEE ALSO, where a path is read as prose
 caps JPEG # universal acronym (image and codec format name)
 caps MJPEG # universal acronym (Motion JPEG codec name)
 caps UDP # universal acronym (transport protocol name)

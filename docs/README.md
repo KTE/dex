@@ -16,7 +16,7 @@ English, marked by which reader it is for.
 ## Guides, in order
 
 1. [What dexd is](guides/what-dexd-is.md) — what the player does, what it needs, and what it does not do.
-2. [Build a dex card](guides/build-player-card.md) — from a blank SD card to a booted player.
+2. [Install dexOS](guides/install-dexos.md) — from a blank SD card to a booted player.
 3. [Prepare your video](guides/prepare-video.md) — turning the file the artist gave you into the `.265` and its sidecar.
 4. [Configure the exhibit](guides/configure-exhibit.md) — the one file naming the video, the display mode and the connector.
 5. [Run, check, troubleshoot](guides/run-check-troubleshoot.md) — starting the player, reading the system log, and going from a symptom to a fix.

@@ -72,9 +72,17 @@ Tier: user
 
 ### dex card
 
-An SD card holding Raspberry Pi OS, dexd, the exhibit config and the video, which turns a Raspberry Pi into a player the moment it boots. Building one is the setup task; a spare card is the fastest repair at a venue.
+An SD card that turns a Raspberry Pi into a player the moment it boots, holding the operating system, dexd, the exhibit config and the video. Preparing one is the setup task; a spare card is the fastest repair at a venue. One built from the dexOS image is a dexOS card (see dexOS card); one assembled by hand on Raspberry Pi OS, DietPi or another Debian runs the same dexd and is not.
 
-Also written: player card · card · SD card · exhibition card
+Also written: card · SD card · exhibition card · player card (retired wording)
+
+Tier: user
+
+### dexOS card
+
+A dex card (see dex card) built by installing dexOS rather than assembled by hand, chosen in Raspberry Pi Imager the way any other operating system is. dexOS ships in two lines: the buster one, which drives HD on older boards and plays with the legacy player, and a trixie one carrying dexd for 4K on a Raspberry Pi 4 or later, which is being built. Assembling a card by hand stays supported for anyone running dexd on a system they chose themselves.
+
+Also written: dexOS install · dex image
 
 Tier: user
 
@@ -264,7 +272,7 @@ Tier: user
 
 ### test card
 
-A short synthetic video with a frame counter, rotating hands, colour bars and a checkerboard border, made to check that a player shows the picture correctly and loops gaplessly. The example-content package provides them; play one to check a new player card.
+A short synthetic video with a frame counter, rotating hands, colour bars and a checkerboard border, made to check that a player shows the picture correctly and loops gaplessly. The example-content package provides them; play one to check a new dex card.
 
 Also written: dex test card · test-card video · test video (user prose) · test content (user prose)
 
@@ -474,7 +482,7 @@ Tier: developer
 
 ### dexOS
 
-dex's own Raspberry Pi OS image, built with pi-gen (see pi-gen), which boots straight into the legacy hello_video player; still pinned to buster (see buster). "dexOS" is the brand, `dex-os` the repository name and lowercase id. The roadmap moves it to trixie with dexd as the player.
+dex's own Raspberry Pi OS image, built with pi-gen (see pi-gen). It ships in two lines: the buster one (see buster), which boots straight into the legacy hello_video player and drives HD on older boards, and a trixie one carrying dexd for 4K on a Raspberry Pi 4 or later, which is being built. "dexOS" is the brand, `dex-os` the repository name and lowercase id.
 
 Also written: dex-os · packages/dex-os · Dexbian (old image name) · stage-dex (its custom build stage)
 

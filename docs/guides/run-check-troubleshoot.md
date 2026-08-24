@@ -86,7 +86,7 @@ A player that exits 2 and restarts every two seconds with the same message has a
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Picture at the wrong resolution, often 1024x768, after a power cut | The display or projector was still asleep when the Raspberry Pi booted, so the system picked a fallback size and kept it | Set `display_mode` and `kms_force` in the exhibit config, run `sudo dex-exhibit-apply`, reboot — see [configure-exhibit.md](configure-exhibit.md). Where the display lists no whole-number refresh, no forced mode can be written for it at all: use `display_mode: auto`, leave `kms_force: none`, and give the connector a saved copy of the display's EDID so its modes are known before the display wakes — see [build-player-card.md](build-player-card.md) |
+| Picture at the wrong resolution, often 1024x768, after a power cut | The display or projector was still asleep when the Raspberry Pi booted, so the system picked a fallback size and kept it | Set `display_mode` and `kms_force` in the exhibit config, run `sudo dex-exhibit-apply`, reboot — see [configure-exhibit.md](configure-exhibit.md). Where the display lists no whole-number refresh, no forced mode can be written for it at all: use `display_mode: auto`, leave `kms_force: none`, and give the connector a saved copy of the display's EDID so its modes are known before the display wakes — see [install-dexos.md](install-dexos.md) |
 | dexd refuses right after you edit the config, naming the config and the boot options file | The forced display mode in the config disagrees with the boot options the machine started with. dexd keeps refusing until you apply the change and reboot | The message names both repairs. Run `sudo dex-exhibit-apply` and reboot if the config is right; edit the config instead if the venue needs the mode already in `cmdline.txt` |
 | Refuses with `display_mode ... is not among the modes ... offers` | The display cannot show the mode, or a forced mode has not taken effect yet | Check which display is connected; if you have just applied a forced mode, reboot |
 | Restart loop with `Could not find mode matching 3840x2160@60` from mpv | The size exists on this display but that refresh rate does not | Set a refresh rate the connector lists, checked against the `modetest` output below. When the list shows only a fractional rate such as 59.95, no whole number will match it and `display_mode: auto` is the answer |
@@ -106,7 +106,7 @@ edid-decode /sys/class/drm/card*-HDMI-A-1/edid | grep -i "Display Product Name"
 modetest -M vc4 -c | grep -m3 "^  #"
 ```
 
-The first prints the display's own name, the second the sizes and refresh rates it lists. Neither command is part of a default Raspberry Pi OS install; [build-player-card.md](build-player-card.md) names the two packages. The card number changes between kernel versions, so the `card*` pattern matches whichever one this player has.
+The first prints the display's own name, the second the sizes and refresh rates it lists. Neither command is part of a default Raspberry Pi OS install; [install-dexos.md](install-dexos.md) names the two packages. The card number changes between kernel versions, so the `card*` pattern matches whichever one this player has.
 
 dexd checks the picture size against the connector and leaves the refresh rate to mpv. A refresh rate the connector does not list therefore reaches mpv, which reports the error when it brings the picture up, and the player restarts.
 

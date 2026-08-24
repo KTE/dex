@@ -1,6 +1,8 @@
-# Build a dex card
+# Install dexOS
 
-A dex card is an SD card that turns a Raspberry Pi 4 into a player: the Pi boots from it, takes the display and loops one video. This page takes you from a blank card to a running player.
+A dexOS card is an SD card that turns a Raspberry Pi into a player: the Pi boots from it, takes the display and loops one video. Installing dexOS is meant to be one choice in Raspberry Pi Imager, the way any other operating system is.
+
+**Note:** the trixie image, the one that carries dexd and drives 4K, is still being built (planned). The steps below reach the same card by hand in the meantime: Raspberry Pi OS Lite, then the dexd package on top. They keep their value once the image ships, because running dexd on a system you chose yourself — Raspberry Pi OS, DietPi, or another Debian — stays a supported way to use it, and these are those steps.
 
 The recipe covers one Raspberry Pi 4 showing one artwork on one display, unattended, with the mains switch as the only control.
 

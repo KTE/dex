@@ -172,7 +172,7 @@ The package prints each of these as a `NOTE` if it finds one when you install it
 
 - [Reference](reference.md) — every config key, message and exit code in one place.
 - [Prepare your video](prepare-video.md) — making the .265 file and its sidecar.
-- [Build a dex card](build-player-card.md) — the recipe that ends where this file is written.
+- [Install dexOS](install-dexos.md) — the recipe that ends where this file is written.
 - [Run, check, troubleshoot](run-check-troubleshoot.md) — starting the player and reading the system log.
 - [Exhibit config](../design/exhibit-config.md) — how the checks and the reconciliation work.
 - Man pages: `man dexd`, `man dex-exhibit-apply`, `man dex-wait-hdmi`.

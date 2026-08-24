@@ -34,7 +34,7 @@ Read these to build a player and keep it running. They assume you can use a term
 about video or Linux.
 
 1. [What dexd is](docs/guides/what-dexd-is.md) — what the player does and what it needs.
-2. [Build a dex card](docs/guides/build-player-card.md) — from a blank SD card to a booted player.
+2. [Install dexOS](docs/guides/install-dexos.md) — from a blank SD card to a booted player.
 3. [Prepare your video](docs/guides/prepare-video.md) — turning the video you exported into the `.265` file and sidecar dexd accepts.
 4. [Configure the exhibit](docs/guides/configure-exhibit.md) — the one file that names the video, the display mode and the connector.
 5. [Run, check, troubleshoot](docs/guides/run-check-troubleshoot.md) — starting the player, reading the system log, and going from a symptom to a fix.

@@ -19,7 +19,7 @@ Two further requirements are decided. The player must survive having mains power
 | Gapless 4K playback: 3840×2160 at 30 fps, repeating with no visible pause | Built and packaged |
 | A pi_video_looper backend for dexd | Decided, not started |
 | Ingest on the player: transcode during USB copy | Decided, not started |
-| An exhibition format: playlist, per-video timing, transforms | Decided, not started |
+| A playlist format: several videos, per-video timing, transforms | Decided, not started |
 
 See [exhibit-config.md](exhibit-config.md) and [packaging.md](packaging.md) for what the first stage consists of; the other three are not specified in detail.
 
@@ -47,7 +47,7 @@ The planned stage moves preparation onto the player: during USB copy, the player
 
 That step normalises GOP structure and keyframe placement, which decides whether a file can loop gaplessly. It also records the frame rate, because an elementary stream carries no timestamps (see [sidecar.md](sidecar.md)).
 
-## Exhibition format
+## Playlist format
 
 The playlist stage plays several videos, each with its own timing and transforms such as rotation and mirroring. Both transforms are cheap in mpv (`--video-rotate`, `--vf=hflip`) and cheaper on a KMS plane. The sidecar's flat JSON shape is a plausible starting point. This stage changes which process starts and stops playback, so the answer under [Player integration](#player-integration) should not foreclose it.
 
@@ -92,6 +92,8 @@ The on-site fault signal is decided and not built. Refusals go to the system log
 A privileged `ExecStopPost=` line in the unit will write the last refusal to `/dev/tty1`, because the text console has DRM master back exactly when dexd has refused (see [DRM master](../glossary.md#drm-master)). The escape sequence and which process has the display depend on the kernel and the hardware, so the line is not added until it has been checked on a Raspberry Pi with a projector attached. The troubleshooting guide carries a `journalctl -u dexd -n 20` line in the meantime (see [../guides/run-check-troubleshoot.md](../guides/run-check-troubleshoot.md)).
 
 ## Distribution
+
+Setting a player up should be choosing dexOS in Raspberry Pi Imager, the way any other operating system is chosen, so a technician writes one card and has a player. That is the trixie line carrying dexd (see [Two bases](#operating-system-images)); until the image exists, [Install dexOS](../guides/install-dexos.md) reaches the same card by hand. Assembling one by hand stays supported afterwards, for anyone running dexd on a system they chose themselves.
 
 An apt repository on GitHub Pages will serve the package, so a device runs `apt update && apt install dexd` and upgrades work; GitHub Packages carries no Debian format.
 

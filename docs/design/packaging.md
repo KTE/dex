@@ -8,7 +8,7 @@ Terms are defined in [the glossary](../glossary.md). The workflow that builds an
 
 The player installs a built artifact and compiles nothing on the device.
 
-The package states the library requirement, so a device whose libmpv is too old for dexd fails at install, in front of whoever runs apt, instead of showing a black screen at the venue. The package also sets the install paths and creates the `dex` user and `/opt/dex`, so no install depends on the person who imaged the [dex card](../guides/build-player-card.md) remembering them.
+The package states the library requirement, so a device whose libmpv is too old for dexd fails at install, in front of whoever runs apt, instead of showing a black screen at the venue. The package also sets the install paths and creates the `dex` user and `/opt/dex`, so no install depends on the person who imaged the [dex card](../guides/install-dexos.md) remembering them.
 
 CI builds on an arm64 runner inside a `debian:trixie` container, so the binary links the same libmpv the devices carry; another distribution's libmpv would produce the mismatch the package exists to catch.
 
