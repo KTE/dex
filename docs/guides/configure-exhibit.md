@@ -85,7 +85,7 @@ Rules for YAML:
 
 The display mode belongs to the installation, not to the video: one player drives a 4K panel, another a 2560×1440 monitor, and the two need opposite settings. Set the display mode for each player when you install that player.
 
-Write the refresh rate as a whole number — `3840x2160@30`, never `@29.97` or `@30000/1001`. dexd refuses both forms: mpv rejects a fraction and rounds a decimal to the nearest whole number (measured on a Raspberry Pi 4; see [Exhibit config](../design/exhibit-config.md#display-mode)).
+Write the refresh rate as a whole number — `3840x2160@30`, never `@29.97` or `@30000/1001`. dexd refuses both forms: mpv rejects a fraction outright, and a decimal names the whole-number mode it is nearest to, because a display mode carries a whole-number refresh and nothing else (see [Exhibit config](../design/exhibit-config.md#display-mode)).
 
 A whole number must also be a refresh the display offers, and a display may list only a fractional one: one deployed monitor lists its 2560×1440 at 59.95 Hz alone, so `2560x1440@60` matches nothing there and the player restarts over and over, with no forced mode involved. Write `auto` unless the display needs a forced mode: `auto` asks the connector what it offers instead of naming a number that has to match.
 

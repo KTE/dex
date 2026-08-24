@@ -345,12 +345,14 @@ grammar has no fractional rate, and dexd refuses a fraction such as
 .B @30000/1001
 or a decimal such as
 .B @29.97
-in either key. mpv rejects the fraction while it parses its options, and rounds
+in either key. mpv rejects the fraction while it parses its options, and
 .B @29.97
-to the nearest whole number, so it asks for the same 30 Hz mode that
+names the same 30 Hz mode that
 .B @30
-names (measured on a Raspberry Pi 4; see
-.IR docs/design/measurements.md ).
+does, because a display mode carries a whole-number refresh and nothing else
+(see
+.IR docs/glossary.md ,
+vrefresh).
 .PP
 Do not edit
 .I cmdline.txt
