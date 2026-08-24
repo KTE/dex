@@ -8,7 +8,7 @@ A raw HEVC elementary stream carries no timestamps, so the file does not record 
 
 The sidecar is `<asset>.json` next to the video: `artwork.265` gets `artwork.265.json`. Two keys are required. `fps` carries the rate as text, and `sha256` the checksum over the video's exact bytes. dexd reads the video into memory, parses the sidecar, takes the rate from it, and refuses to start when the checksum does not match.
 
-The sidecar records no display mode. The same 4K video plays scaled on a 1080p monitor, so the display mode is a property of the installation and lives in the exhibit config (decided) — see [exhibit-config.md](exhibit-config.md).
+The sidecar records no display mode. One video plays on several displays over its life, so the display mode is a property of the installation and lives in the exhibit config (decided) — see [exhibit-config.md](exhibit-config.md).
 
 The checksum and the asset check test different properties, and neither covers the other. The checksum proves the bytes are the ones that were prepared; the asset check proves those bytes have the shape a gapless loop needs. A truncated copy still carries intact leading NAL units, and an open-GOP video hashes correctly.
 

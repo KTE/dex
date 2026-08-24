@@ -210,19 +210,19 @@ Loop count times loop length reconciles with uptime to 100.08% — 2355 × 39.01
 
 The media clock finished 90 s ahead of the wall clock: the final heartbeat reads uptime 91803 s and position 91892.9 s, a ratio of 1.00098 — the 1001/1000 factor between 29.97 and 30 Hz, to within measurement. The video is tagged 30000/1001 against a nominal integer 30 Hz forced display mode, so presenting one frame per display refresh runs 29.97 content 0.1% fast. That accumulates as slow clock skew, which is why both drop counters read 0 while the clocks diverge.
 
-Nine conditions were set for the run, and seven hold: no restarts, one boot record, unbroken heartbeats, no dropped frames, no late frames, 2217 loops at 24 h against a threshold of 2190, and `pos-age=0s` on every line. Two do not:
+The project set nine pass criteria before the run, and seven are met: no restarts, one boot record, unbroken heartbeats, no dropped frames, no late frames, 2217 loops at 24 h against a threshold of 2190, and `pos-age=0s` on every line. Two do not:
 
 | Criterion | Status |
 |---|---|
-| Resident memory: slope below 0.5 MB/h from t+1h to t+24h, growth under 25 MB | Telemetry started 1 h 56 min after the service did, covering 23 h 37 min — 92.6%, unbroken, largest sample gap 61 s — and the value is bit-identical across all 1416 samples, showing no growth. The condition's telemetry clause voids the reading, because the gap exceeds ten minutes: the evidence shows no growth and the condition is not met as written. |
+| Resident memory: slope below 0.5 MB/h from t+1h to t+24h, growth under 25 MB | Telemetry started 1 h 56 min after the service did, covering 23 h 37 min — 92.6%, unbroken, largest sample gap 61 s — and the value is bit-identical across all 1416 samples, showing no growth. The criterion's telemetry clause voids the reading, because the gap exceeds ten minutes: the evidence shows no growth and the criterion is not met as written. |
 | A human watching at start, middle and end | No observation recorded. |
 
 The run departs from the criteria in two ways, and leaves one measurement out:
 
 | Departure | What it means |
 |---|---|
-| Asset and sink | It played the 4K30 video into the capture device; the criteria named a 45 Mbps 1440p60 video on a 2560×1440 monitor. 4K30 is 248.6 Mpix/s against 221.0, so the run subsumes the lighter one on pixel rate by 12.5% — but not on bitstream load, at 25.3 Mbps against a 45 Mbps cap. |
-| Build identity | The criteria pinned a build whose `--version` reported `0.1.0 (nogit)`; the build that ran is three commits later and self-reports its commit. |
+| Asset and sink | The run was planned for a 45 Mbps 1440p60 video on a 2560×1440 monitor, and played the 4K30 video into the capture device instead. 4K30 is 248.6 Mpix/s against 221.0, so the run subsumes the lighter one on pixel rate by 12.5% — but not on bitstream load, at 25.3 Mbps against a 45 Mbps cap. |
+| Build identity | The planned build's `--version` reported `0.1.0 (nogit)`; the build that ran is three commits later and self-reports its commit. |
 | Capture omitted | The capture device cannot resolve a held frame at 4K, so every number above is the player reporting on itself, cross-checked against capture during the loop-point measurements. |
 
 ### Sealed-enclosure thermal test

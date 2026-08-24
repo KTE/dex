@@ -1074,14 +1074,14 @@ fn main() -> ExitCode {
                              KMS drives some other mode, and this ends one of two ways: the \
                              video plays at the wrong resolution with every metric nominal, or \
                              it does not present at all and the player restarts on a clock that \
-                             never advances -- the zero-copy path has no downscale step, so an \
-                             asset larger than every mode the connector offers cannot be shown. \
-                             Which fix applies is a property of the display. If it can build \
+                             never advances -- the player cannot shrink a frame to fit a \
+                             smaller mode, so an asset larger than every mode the connector \
+                             offers cannot be shown. Which fix applies depends on the display. \
+                             If it can build \
                              {want} once forced (some capture devices build no 4K mode unforced), \
                              set display_mode and kms_force in the exhibit config, run \
                              'sudo dex-exhibit-apply', and reboot. If it cannot build {want} at \
-                             all, {want} is the wrong geometry for this display: prepare the \
-                             asset at a resolution the connector offers",
+                             all, prepare the asset at a resolution the connector offers",
                             display.connector
                         );
                     }

@@ -1,6 +1,6 @@
 # dex
 
-dexd plays the video of an installation on a Raspberry Pi, unattended, for weeks. This repository
+dexd is built to play the video of an installation on a Raspberry Pi, unattended, for weeks. This repository
 holds dexd and the parts around it.
 
 If you are setting up a player, start with [What dexd is](docs/guides/what-dexd-is.md).
@@ -77,4 +77,6 @@ where it is used. The writing rules are in [AGENTS.md](AGENTS.md).
 dexd's source, packaging and documentation are under the MIT-0 licence. The project's content —
 test cards, video masters, branding — is under CC0-1.0. Both allow any use, with no attribution and no
 conditions. Because the installed package links Debian's mpv library, the binary you install ships
-under GPL-3+ — see [Packaging](docs/design/packaging.md).
+under GPL-3+ — see [Packaging](docs/design/packaging.md). The submodules that point at other
+projects, `pi-gen` and `pi_video_looper`, carry their own upstream licences, which the lines above
+do not cover.

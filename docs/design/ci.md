@@ -157,7 +157,7 @@ Snapshots go under `/tmp`, because a snapshot written to `/` shows up in the nex
 
 ## Documentation lint
 
-`docs-lint` runs on the plain runner with Node 20: first the lint tool's own tests, then the tool over everything a reader outside the project sees — the documentation, the glossary, the writing rules, the crate's comments, man pages, packaging and changelog, and this workflow.
+`docs-lint` runs on the plain runner with Node 20: first the lint tool's own tests, then the tool over everything a reader outside the project sees — the documentation, the writing rules, the crate's comments, man pages, packaging and changelog, and this workflow. The glossary is the tool's own input, the set of terms it accepts, and is not itself linted.
 
 ```sh
 node --test scripts/docs-lint.test.mjs

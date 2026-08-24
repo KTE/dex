@@ -133,7 +133,7 @@ Bad → good, from the CI workflow and Cargo.toml:
 | `tier 0` / `tier-0` / `tier 1` / `tier 2` / `tier 3` | 'in-place recovery' (0), 'process restart by systemd' (1), 'reboot escalation (planned)' (2), 'hardware watchdog (planned)' (3)  |
 | `fail closed (user tier)` / `fail-closed contract` / `fail-silent` | user tier: 'refuses to start rather than guess'; developer tier: 'fail-closed' is a glossary term  |
 | `live-fire` / `live-fire probe` / `live-fire test` | 'against a real mpv instance' / 'on real hardware' / 'the forced-recovery test'  |
-| `wedged` / `wedge` / `core-wedge` / `display-wedged` / `'the wedge check'` | 'unresponsive' / 'hangs' / 'is hanging' / 'stopped responding while the process stays alive' — never `hung`; the flag becomes --test-rig-hang-after-se  |
+| `wedged` / `wedge` / `core-wedge` / `display-wedged` / `'the wedge check'` | 'unresponsive' / 'hangs' / 'is hanging' / 'stopped responding while the process stays alive' — never `hung`; the flag is --test-rig-hang-after-secs |
 | `pinned (a behaviour is 'pinned' by a test)` | 'locked in by a test' / 'a test enforces'  |
 | `the loser` / `delete the loser` | 'the unwanted config file' / 'delete the one you do not mean'  |
 | `drift generator` | 'would make the boot config and the player's config diverge'  |
@@ -151,20 +151,20 @@ Bad → good, from the CI workflow and Cargo.toml:
 | `the wrong-panel case` | 'a resolution the connected display cannot show'  |
 | `venue truth, not asset truth` | 'the display mode belongs to the installation, not to the video file'  |
 | `the mains switch is the shutdown path` | 'there is no graceful shutdown; power is simply cut, and the player is built to survive that'  |
-| `field journal` / `field failure` / `in the field` / `on site` / `gallery devic` | 'the log' / 'a failure at the venue' / 'at the venue' / 'deployed players'  |
+| `field journal` / `field failure` / `in the field` / `on site` / `gallery device` | 'the log' / 'a failure at the venue' / 'at the venue' / 'deployed players'  |
 | `deploy path` / `bench escape hatch` | 'normal startup (sidecar required)' / 'the test-rig-only override (`--test-rig-no-sidecar --fps`)'  |
-| `the binding` / `asset+fps binding` / `F3 gate` / `sidecar gate` / `NAL gate` / `` | 'the sidecar's checksum match' / 'the sidecar check' / 'the asset check' / 'the cmdline check' — 'check' in prose; 'gate' allowed as alias (? — needs   |
-| `THE EXTENSION DECIDES THE PARSER (all caps)` / `BENCH ONLY` / `ARMED (shou` | sentence case: 'the file extension selects the parser'; the literal warning line stays as shipped  |
+| `the binding` / `asset+fps binding` / `F3 gate` / `sidecar gate` / `NAL gate` / `cmdline gate` | 'the sidecar's checksum match' / 'the sidecar check' / 'the asset check' / 'the cmdline check' — 'check' in prose |
+| `THE EXTENSION DECIDES THE PARSER (all caps)` / `BENCH ONLY` / `ARMED` | sentence case: 'the file extension selects the parser'; the literal warning line stays as shipped  |
 | `escalation ladder` / `'escalate per the fixed ladder'` | 'the pre-committed fallback order (pivid, then GStreamer, then a custom player)'  |
-| `annulus` / `fps honesty` / `matched wrap` / `'the wrap is matched by constru` | 'ring-shaped region' / 'how far a detected frame rate can be trusted' / plain description  |
+| `annulus` / `fps honesty` / `matched wrap` / `'the wrap is matched by construction'` | 'ring-shaped region' / 'how far a detected frame rate can be trusted' / plain description  |
 | `cleanroom extraction` / `cleanroom` | 'rewritten from scratch for publication'  |
 | `buster ceiling` | 'the buster limitation' / describe: 'gapless hardware playback only on buster (32-bit), so no upgrades and no Pi 5'  |
 | `the rotation trap` | 'sideways video from phone footage: the container's rotation flag is lost on extraction' (see elementary stream)  |
 | `(nogit)` / `+dirty as prose` | 'an unidentified build' / 'a build from uncommitted changes' — the literal version-string markers stay  |
 | `hello_video positive control` / `dexOS card` / `'the dexOS positive contro` | 'the known-good reference (the legacy hello_video player on its own test video)'  |
-| `mp_dispatch_lock` / `run_locked` / `mp_cond_wait` / `mp_dispatch_queue_proce` | describe the behaviour ('a synchronous property read waits with no timeout for mpv's core thread'); cite the mpv source location in a footnote if prov  |
-| `Rust identifiers used as prose nouns (HealthMonitor, ObservedCounter,` | in docs: describe the behaviour and name the module once ('the health policy in health.rs'); identifiers belong in code and API docs, not in guides  |
-| `supervisor thread (health.rs) vs event thread (heartbeat.rs, watchdog.` | 'supervisor thread' everywhere (one thread)  |
+| `mp_dispatch_lock` / `run_locked` / `mp_cond_wait` / `mp_dispatch_queue_process` | describe the behaviour ('a synchronous property read waits with no timeout for mpv's core thread'); cite the mpv source location in a footnote where the provenance matters |
+| `Rust identifiers used as prose nouns (HealthMonitor, ObservedCounter and the like)` | in docs: describe the behaviour and name the module once ('the health policy in health.rs'); identifiers belong in code and API docs, not in guides  |
+| `supervisor thread (health.rs) vs event thread (heartbeat.rs, watchdog.rs)` | 'supervisor thread' everywhere (one thread)  |
 | `gst1223` / `+rpt2 check` / `'the rpt2 criterion' as bare labels` | 'a GStreamer 1.22 attempt' / 'whether Raspberry Pi's patched ffmpeg build (+rpt2) is required on the Pi 5 — unresolved'  |
 | `USV` | 'battery backup (`UPS`)'  |
 | `starved feed` / `'signature of a starved feed'` | 'the data source not keeping up (frames held at random points, not at the loop point)'  |
@@ -172,7 +172,7 @@ Bad → good, from the CI workflow and Cargo.toml:
 | `kiosk (flags` / `mode)` / `argv` / `'the working argv'` | 'fullscreen with no on-screen controls' / 'the mpv command line'  |
 | `baked` / `baked EDID` / `baked-in` / `stamped` / `stamp file` / `build stamp` | 'written into' / 'stored in' / 'saved copy of the EDID' / 'build-id file' — the words `baked` and `stamped` appear nowhere  |
 | `hung` | 'hangs' / 'is hanging' / 'unresponsive' — never `hung`  |
-| `--bench-no-sidecar` / `--bench-wedge-after-secs` / `--force-recovery-after` | `--test-rig-no-sidecar` / `--test-rig-hang-after-secs` / `--test-rig-force-recovery-after-secs` / `(test rig only)`  |
+| `--bench-no-sidecar` / `--bench-wedge-after-secs` / `--force-recovery-after-secs` | `--test-rig-no-sidecar` / `--test-rig-hang-after-secs` / `--test-rig-force-recovery-after-secs` / `(test rig only)`  |
 | `wraps=` / `WRAP_COUNT` / `wrap count` | loops= (heartbeat field, code rename) / 'loop count' / 'loop iterations' in prose  |
 | `event thread` | 'supervisor thread'  |
 | `gate (as the noun for a startup refusal)` / `F3 gate` / `cmdline gate` / `NA` | 'check' — the sidecar check, the asset check, the cmdline check  |

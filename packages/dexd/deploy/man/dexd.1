@@ -68,9 +68,9 @@ Cross\-check the frame rate, written as
 .B 29.97
 or
 .BR 30000/1001 .
-A raw stream carries no timestamps, so the rate cannot be read from the video:
-it comes from the sidecar, and dexd exits where the value here differs from
-the sidecar's. The two are compared as written, so
+A raw stream carries no timestamps, so dexd does not time the pictures from
+the video: the rate comes from the sidecar, and dexd exits where the value here
+differs from the sidecar's. The two are compared as written, so
 .B 30
 and
 .B 30/1

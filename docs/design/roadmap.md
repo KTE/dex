@@ -6,7 +6,7 @@ This page is for a developer choosing where to contribute: what dexd is planned 
 
 dex plays video artworks on Raspberry Pi players in galleries. Its proven gapless loop was hello_video, which needs the legacy Broadcom graphics stack, which ships only on buster and caps output at 1080p.
 
-Output at 3840×2160 is a requirement (decided), and resolution alone disqualifies buster. Players are not networked, so missing security updates cost nothing, and buster's inability to run on a Raspberry Pi 5 is a hardware-purchasing question, not a reason for the move.
+Output at 3840×2160 is a requirement (decided), and resolution alone disqualifies buster. A buster image can never be security-updated, which suits only a player kept off every network — and the card the guides build joins the venue's network for SSH. buster's inability to run on a Raspberry Pi 5 is a hardware-purchasing question, not a reason for the move.
 
 No published work offered a gapless 4K loop on the current Raspberry Pi graphics stack, so dexd was written. It feeds libmpv an endless byte stream, so the decoder never reaches the end of the file and never seeks (see [endless-stream.md](endless-stream.md)).
 
