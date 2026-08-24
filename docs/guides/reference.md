@@ -217,7 +217,7 @@ dexd prints one of these and exits 2.
 | `display_mode "…" is not among the modes … offers` | the message prints the sizes the display does offer. Connect the display the config was written for, or reboot if a forced display mode has not taken effect |
 | `display_mode "…" requested for connector …, but no … modes list was found` | no such connector on this device; check the `connector` key |
 | `cannot read /proc/cmdline` / `cannot read /sys/class/drm/…` | the boot options or the display's mode list could not be read |
-| `warning: display_mode is "auto" and the asset is …` | the display cannot offer the video's own size, so the picture plays at whatever mode the display and the Raspberry Pi settle on; set `display_mode` and `kms_force`, run `sudo dex-exhibit-apply`, reboot |
+| `warning: display_mode is "auto" and the asset is …` | the display cannot offer the video's own size. Either the picture plays at whatever mode the display and the Raspberry Pi settle on, or it never appears and the player restarts. If the display can show that size once forced, set `display_mode` and `kms_force`, run `sudo dex-exhibit-apply`, reboot; if it cannot, prepare the video at a size the display lists |
 
 The warning is the only line here that lets the player start.
 

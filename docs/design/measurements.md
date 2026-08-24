@@ -313,6 +313,10 @@ Enumerated at USB 2.0 — behind a hub that itself came up as a USB 2.0 device �
 
 The capture device lists 3840×2160@30 as its preferred detailed timing, and the vc4 driver builds no 3840×2160 mode from it unforced; forced, the identical timing works. A 2560×1440 monitor must not be given a forced display mode, because transmitting a mode the panel cannot show reads as a player fault. Both cases, and the integer-only refresh grammar that follows from mpv matching modes on [vrefresh](../glossary.md#vrefresh), belong to [exhibit-config.md](exhibit-config.md).
 
+A third sink, observed once on a deployed player and not on the instrument: a Dell U2719DC offers exactly one 2560×1440 timing, at 59.95 Hz. `display_mode: 2560x1440@60` matches no mode there — mpv reports `Could not find mode matching 2560x1440@60` — and the player restarts on it, with `kms_force` already `none`, so this is mpv's own mode matching and not a forced-mode failure. `auto` resolves the connector's preferred timing and plays. A connector whose only timing is fractional therefore has no working integer `display_mode`, and `auto` is the sole value that reaches a picture.
+
+On the same card the 3840×2160 video did not present at all: the clock never advanced and recovery escalated to a restart, while the native 2560×1440 video played. The plane path hands each decoded frame to a KMS plane untouched (see [architecture.md](architecture.md)), which offers no step at which a 3840×2160 frame could be reduced to fit a 2560×1440 mode. This does not contradict the 4K-file-into-a-2560×1440-monitor row under [Bitrate and sink](#bitrate-and-sink): that reading was taken on the detiling path, which converts each frame and can resize it, and which this design replaced for the frame rate it costs. Observed once, on a deployed card.
+
 ## Not measured
 
 | Item | Status |
