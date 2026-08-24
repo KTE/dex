@@ -61,7 +61,13 @@ sudo apt-get install -y --no-install-recommends edid-decode libdrm-tests
 
 Install a package the project built, never one you built yourself: that package is the one every check ran against.
 
-Every change to dexd builds a package, and the build run keeps it as a download. Under Actions in the [dex repository](https://github.com/KTE/dex), open the `dexd deb` workflow, pick the newest successful run on `main`, and download and unzip its `dexd-deb` artifact; it holds `dexd_<version>_arm64.deb`. Downloading it needs a GitHub account, and GitHub keeps an artifact only for the repository's retention period, 90 days unless that was changed; where the newest run's artifact has expired, ask someone with write access to run the workflow again. A releases page and an apt repository that serve the package are planned — see [Roadmap](../design/roadmap.md). Copy the file to the player and install it with apt:
+Released packages are attached to their release on the project's [releases page](https://github.com/KTE/dex/releases).
+
+**Note:** dexd has no release of its own yet (planned), so take the package from the build that made it instead: under Actions in the [dex repository](https://github.com/KTE/dex), open the `dexd deb` workflow, pick the newest successful run on `main`, and download and unzip its `dexd-deb` artifact; it holds `dexd_<version>_arm64.deb`.
+
+Downloading an artifact needs a GitHub account, and GitHub keeps one only for the repository's retention period, 90 days unless that was changed; where the newest run's artifact has expired, ask someone with write access to run the workflow again. Neither applies to a release, which is why a release is where the package will go. An apt repository that serves it is planned — see [Roadmap](../design/roadmap.md).
+
+Copy the file to the player and install it with apt:
 
 ```bash
 scp dexd_*_arm64.deb <user>@<host>.local:/tmp/

@@ -72,15 +72,19 @@ appears over the picture.
 
 ## Releases
 
-Every change to dexd builds one package,
-`dexd_<version>-<build>+g<commit>_arm64.deb`; CI attaches it to that build's run as the
+Released packages are attached to their release on the project's
+[releases page](https://github.com/KTE/dex/releases). dexd has no release of its own yet
+(planned).
+
+Until it has, every change to dexd builds one package,
+`dexd_<version>-<build>+g<commit>_arm64.deb`, and CI attaches it to that build's run as the
 `dexd-deb` artifact. Under Actions in the [dex repository](https://github.com/KTE/dex),
 open the `dexd deb` workflow, pick the newest successful run on `main`, and download and
 unzip its `dexd-deb` artifact. Downloading one needs a GitHub account, and GitHub keeps it
 only for the repository's retention period, 90 days unless that was changed; where the
 newest run's artifact has expired, someone with write access can run the workflow again.
 
-A releases page and an apt repository for `apt install dexd` are planned — see
+An apt repository for `apt install dexd` is planned — see
 [Roadmap](../../docs/design/roadmap.md).
 
 ## Documentation

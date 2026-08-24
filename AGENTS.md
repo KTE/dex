@@ -28,6 +28,7 @@ Agents: read this file and `docs/glossary.md` before writing or editing any of t
 14. Structure by subject; status in words. Headings name what, never when; no emoji as status; no "(later)" splits. *(lint)*
 15. A rule, not an aphorism; a mechanism, not a metaphor. If a sentence could be printed on a poster, replace it with the instruction it stands for. *(reader)*
 16. Every cross-reference resolves. A link to a page, and the `#anchor` naming a section of it, must both exist — in Markdown links and in the `docs/…md#section` references doc-comments use. Rename a heading and the links into it are part of the rename. *(lint)*
+17. What is not built is said, and marked. The project is unfinished, so a page may name something that does not work yet; that is better than silence, and far better than a promise. Mark it `(planned)` in the sentence, or as a `**Note:**` where it needs more than a word. Never write an intended arrangement in the present tense — a reader who plans around it loses the time twice. *(reader)*
 
 Numbers carry their unit and conditions ("29.1 fps at 3840×2160, 30 fps, Raspberry Pi 4"). Measured values say so briefly and link `docs/design/measurements.md` for the full conditions rather than repeating them.
 

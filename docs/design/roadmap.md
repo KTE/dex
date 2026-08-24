@@ -97,7 +97,7 @@ An apt repository on GitHub Pages will serve the package, so a device runs `apt 
 
 The documentation goes to `dex.ars.is/docs`, built with Starlight, a documentation-site generator for Astro, so it deploys with the site already on that domain and needs no subdomain of its own.
 
-Neither exists yet: the package changelog records `0.1.0-1`, and no git tag has been taken.
+Neither exists yet (planned). The project has taken one tag, the 2024 pre-release `v1.0.0-rc.1`, which carries a dexOS image and its build logs; dexd has had no release of its own, and its changelog records `0.1.0-1`.
 
 ## Names
 
