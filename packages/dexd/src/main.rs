@@ -1046,11 +1046,19 @@ fn main() -> ExitCode {
 
     // A display_mode of "auto" names no mode, so it skips the sysfs pre-flight
     // above. The sidecar is bound to the asset and names its resolution, so
-    // warn when the connector cannot offer that resolution: an unedited exhibit
-    // config on hardware that builds no 4K mode unforced otherwise plays the
-    // artwork at whatever the connector negotiates, for weeks, with every
-    // metric nominal. A warning and not a refusal, because whether "auto"
-    // should stay the default is unresolved.
+    // warn when the connector cannot offer it. Two different things follow,
+    // and both are bad in a way that is hard to read from the outside: on
+    // hardware that builds no 4K mode unforced the artwork plays at whatever
+    // the connector negotiates, for weeks, with every metric nominal; on a
+    // connector whose modes are all smaller than the asset it does not play at
+    // all, because this player's zero-copy path hands the decoded frame
+    // straight to a plane and has no downscale step, so the clock never
+    // advances and recovery escalates to a restart.
+    //
+    // A warning and not a refusal, because "auto" is also the only correct
+    // answer for a panel whose one refresh is fractional -- there any integer
+    // force fails mpv's mode match outright -- and a refusal here would reject
+    // that configuration too. Whether "auto" should stay the default is open.
     // See docs/design/exhibit-config.md#exhibit-config and
     // docs/design/roadmap.md#open-questions.
     if display.display_mode == "auto" {
@@ -1062,12 +1070,18 @@ fn main() -> ExitCode {
                         let offered: Vec<&str> = modes_text.lines().map(str::trim).collect();
                         eprintln!(
                             "warning: display_mode is \"auto\" and the asset is {want} (per its \
-                             sidecar), but connector {} offers only {offered:?} ({modes_path}) \
-                             -- KMS will drive whatever fallback it negotiates and the artwork \
-                             will play at the wrong resolution with every metric nominal. If this \
-                             display needs a forced mode to build {want} (some capture devices \
-                             build no 4K mode unforced), set display_mode and kms_force in \
-                             the exhibit config, run 'sudo dex-exhibit-apply', and reboot",
+                             sidecar), but connector {} offers only {offered:?} ({modes_path}). \
+                             KMS drives some other mode, and this ends one of two ways: the \
+                             artwork plays at the wrong resolution with every metric nominal, or \
+                             it does not present at all and the player restarts on a clock that \
+                             never advances -- the zero-copy path has no downscale step, so an \
+                             asset larger than every mode the connector offers cannot be shown. \
+                             Which fix applies is a property of the display. If it can build \
+                             {want} once forced (some capture devices build no 4K mode unforced), \
+                             set display_mode and kms_force in the exhibit config, run \
+                             'sudo dex-exhibit-apply', and reboot. If it cannot build {want} at \
+                             all, {want} is the wrong geometry for this display: prepare the \
+                             asset at a resolution the connector offers",
                             display.connector
                         );
                     }
