@@ -639,28 +639,28 @@ mod tests {
     #[test]
     fn a_missing_flag_value_is_a_malformed_command_line() {
         let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(parse_write_args(&args(&["loop.265", "--fps"])).is_none());
-        assert!(parse_write_args(&args(&["loop.265", "--out"])).is_none());
+        assert!(parse_write_args(&args(&["artwork.265", "--fps"])).is_none());
+        assert!(parse_write_args(&args(&["artwork.265", "--out"])).is_none());
         assert!(parse_write_args(&args(&[])).is_none());
         assert!(parse_write_args(&args(&["--fps", "30"])).is_none());
         assert!(parse_write_args(&args(&["a.265", "b.265"])).is_none());
-        assert!(parse_write_args(&args(&["loop.265", "--nope"])).is_none());
+        assert!(parse_write_args(&args(&["artwork.265", "--nope"])).is_none());
     }
 
     #[test]
     fn flags_are_read_in_any_order() {
         let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let a = parse_write_args(&args(&[
-            "--force", "--fps", "30", "loop.265", "--out", "s.json",
+            "--force", "--fps", "30", "artwork.265", "--out", "s.json",
         ]))
         .unwrap();
-        assert_eq!(a.stream, "loop.265");
+        assert_eq!(a.stream, "artwork.265");
         assert_eq!(a.fps.as_deref(), Some("30"));
         assert_eq!(a.out.as_deref(), Some("s.json"));
         assert!(a.force);
 
-        let a = parse_write_args(&args(&["loop.265"])).unwrap();
-        assert_eq!(a.stream, "loop.265");
+        let a = parse_write_args(&args(&["artwork.265"])).unwrap();
+        assert_eq!(a.stream, "artwork.265");
         assert!(a.fps.is_none());
         assert!(a.out.is_none());
         assert!(!a.force);

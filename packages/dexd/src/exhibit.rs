@@ -5,7 +5,7 @@
 //! extension picks the parser: `exhibit.json` is strict JSON, `exhibit.yaml` (or `.yml`) is YAML.
 //!
 //! ```yaml
-//! asset: loop.265               # the video, beside this file
+//! asset: artwork.265               # the video, beside this file
 //! display_mode: 3840x2160@30    # required; what mpv is asked for
 //! kms_force: 3840x2160@30       # what the kernel cmdline must carry; optional, default none
 //! connector: HDMI-A-1           # optional, and the default
@@ -144,8 +144,8 @@ pub fn is_valid_kms_force(s: &str) -> bool {
 /// slash and no control characters.
 ///
 /// A relative path is resolved against the directory the config file is in
-/// (see [`asset_in_config_dir`]), so `asset: loop.265` beside
-/// `/opt/dex/exhibit.yaml` names `/opt/dex/loop.265`; the service's working
+/// (see [`asset_in_config_dir`]), so `asset: artwork.265` beside
+/// `/opt/dex/exhibit.yaml` names `/opt/dex/artwork.265`; the service's working
 /// directory never enters into it. Control characters are refused because this
 /// string is printed into the system log at every start, where a newline would
 /// forge a second log line.
@@ -601,7 +601,7 @@ impl ExhibitConfig {
             if !is_valid_asset(a) {
                 return Err(format!(
                     "exhibit config: invalid asset {a:?} (expect the path to the file to \
-                     play, e.g. \"loop.265\" beside this config or \"/opt/dex/loop.265\" -- \
+                     play, e.g. \"artwork.265\" beside this config or \"/opt/dex/artwork.265\" -- \
                      no trailing slash, no control characters)"
                 ));
             }
@@ -683,7 +683,7 @@ pub fn resolve_display(
         None => Err(format!(
             "no exhibit config: dexd refuses to guess the display. The package installs none. \
              Create {DEFAULT_EXHIBIT_CONFIG_PATH} next to the video, with at least these two \
-             lines:\n\n    asset: loop.265\n    display_mode: auto\n\nOr pass \
+             lines:\n\n    asset: artwork.265\n    display_mode: auto\n\nOr pass \
              --test-rig-no-sidecar on a test rig."
         )),
         Some(cfg) => match cli_mode {
@@ -739,11 +739,11 @@ pub struct ResolvedAsset {
 /// | any | present | yes | the command line binds; config ignored |
 /// | any | absent | yes | refuse: the test rig must be explicit |
 ///
-/// Nothing defaults to `/opt/dex/loop.265`: a mistyped `asset` key would
+/// Nothing defaults to `/opt/dex/artwork.265`: a mistyped `asset` key would
 /// otherwise play last season's video with every metric healthy, so the row
 /// where nothing names a video refuses and prints the line to add. The
 /// config's `asset` is resolved against the config file's directory first, so
-/// a bare `loop.265` beside `/opt/dex/exhibit.yaml` and `/opt/dex/loop.265` on
+/// a bare `artwork.265` beside `/opt/dex/exhibit.yaml` and `/opt/dex/artwork.265` on
 /// the command line are one file to the cross-check.
 /// See docs/design/exhibit-config.md#asset-resolution.
 pub fn resolve_asset(
@@ -790,8 +790,8 @@ pub fn resolve_asset(
         }),
         (None, None) => Err(
             "no asset: the exhibit config does not name one and none was given on the command \
-             line. Add it to the exhibit config -- `asset: loop.265` (YAML) or \
-             `\"asset\": \"loop.265\"` (JSON), a file next to the config or an absolute path -- \
+             line. Add it to the exhibit config -- `asset: artwork.265` (YAML) or \
+             `\"asset\": \"artwork.265\"` (JSON), a file next to the config or an absolute path -- \
              which is what lets several videos sit in /opt/dex with the config choosing one"
                 .into(),
         ),
@@ -1792,8 +1792,8 @@ mod tests {
         let e = resolve_asset(Some(&c), "/opt/dex", None, false).unwrap_err();
         assert!(e.contains("no asset"), "{e}");
         // ...and it names the exact line to add, in both formats.
-        assert!(e.contains("asset: loop.265"), "{e}");
-        assert!(e.contains(r#""asset": "loop.265""#), "{e}");
+        assert!(e.contains("asset: artwork.265"), "{e}");
+        assert!(e.contains(r#""asset": "artwork.265""#), "{e}");
         // Also with no config at all: that case refuses earlier, in
         // resolve_display, but this function invents no path either.
         assert!(resolve_asset(None, "/opt/dex", None, false).is_err());
@@ -1894,11 +1894,11 @@ mod tests {
 
     #[test]
     fn asset_accepts_absolute_and_relative_paths() {
-        assert!(is_valid_asset("/opt/dex/loop.265"));
+        assert!(is_valid_asset("/opt/dex/artwork.265"));
         assert!(is_valid_asset("/srv/art/Karte–Süd.265")); // non-ASCII is fine
-        assert!(is_valid_asset("loop.265")); // beside the config
-        assert!(is_valid_asset("./loop.265"));
-        assert!(is_valid_asset("../media/loop.265"));
+        assert!(is_valid_asset("artwork.265")); // beside the config
+        assert!(is_valid_asset("./artwork.265"));
+        assert!(is_valid_asset("../media/artwork.265"));
         assert!(!is_valid_asset(""));
         assert!(!is_valid_asset("/opt/dex/")); // a directory, not a file
     }
@@ -1908,7 +1908,7 @@ mod tests {
     /// newline in it would forge a second log line.
     #[test]
     fn asset_with_a_control_character_is_refused() {
-        assert!(!is_valid_asset("/opt/dex/loop.265\ndexd: all fine here"));
+        assert!(!is_valid_asset("/opt/dex/artwork.265\ndexd: all fine here"));
         assert!(!is_valid_asset("/opt/dex/loop\t.265"));
     }
 
@@ -1923,8 +1923,8 @@ mod tests {
         assert_eq!(j.asset.as_deref(), Some("/opt/dex/spring.265"));
 
         // A bare file name is valid -- it names the file beside the config.
-        let rel = ExhibitConfig::from_yaml("asset: loop.265\ndisplay_mode: auto\n").unwrap();
-        assert_eq!(rel.asset.as_deref(), Some("loop.265"));
+        let rel = ExhibitConfig::from_yaml("asset: artwork.265\ndisplay_mode: auto\n").unwrap();
+        assert_eq!(rel.asset.as_deref(), Some("artwork.265"));
         let e = ExhibitConfig::from_yaml("asset: /opt/dex/\ndisplay_mode: auto\n").unwrap_err();
         assert!(e.contains("invalid asset"), "{e}");
     }

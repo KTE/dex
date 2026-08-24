@@ -1134,7 +1134,7 @@ fn no_asset_named_anywhere_refused_rather_than_guessed() {
     assert!(r.stderr.contains("no asset"), "stderr: {}", r.stderr);
     // The negative: no fixed path is tried when the config names none.
     assert!(
-        !r.stderr.contains("cannot read /opt/dex/loop.265"),
+        !r.stderr.contains("cannot read /opt/dex/artwork.265"),
         "a missing asset must never fall back to a fixed path: {}",
         r.stderr
     );

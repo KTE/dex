@@ -92,7 +92,7 @@ A config that is absent, one that is present but unreadable, and one whose path 
 
 ### The line to add
 
-When no config names an asset, dexd prints the key in both formats, `asset: loop.265` for YAML and `"asset": "loop.265"` for JSON. The package installs no config, and its postinst prints the minimal file to create, so the operator sees the missing config during the install rather than at the next power cycle.
+When no config names an asset, dexd prints the key in both formats, `asset: artwork.265` for YAML and `"asset": "artwork.265"` for JSON. The package installs no config, and its postinst prints the minimal file to create, so the operator sees the missing config during the install rather than at the next power cycle.
 
 ## Test-rig-only override
 

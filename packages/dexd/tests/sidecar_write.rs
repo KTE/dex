@@ -141,7 +141,7 @@ fn flip_a_byte(path: &Path) {
 fn a_written_sidecar_passes_check() {
     needs_ffmpeg!();
     let dir = work_dir("roundtrip");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_with_timing(&stream);
     let stream = stream.to_str().unwrap();
 
@@ -172,7 +172,7 @@ fn a_written_sidecar_passes_check() {
 fn check_fails_once_the_stream_changes() {
     needs_ffmpeg!();
     let dir = work_dir("corrupt");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_with_timing(&stream);
     let stream_str = stream.to_str().unwrap().to_string();
     let sidecar = format!("{stream_str}.json");
@@ -200,7 +200,7 @@ fn check_fails_once_the_stream_changes() {
 fn an_existing_sidecar_is_not_replaced_without_force() {
     needs_ffmpeg!();
     let dir = work_dir("overwrite");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_with_timing(&stream);
     let stream = stream.to_str().unwrap();
 
@@ -233,7 +233,7 @@ fn an_existing_sidecar_is_not_replaced_without_force() {
 fn an_fps_that_contradicts_the_stream_is_refused() {
     needs_ffmpeg!();
     let dir = work_dir("wrongfps");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_with_timing(&stream);
     let stream = stream.to_str().unwrap();
     let out = dir.join("wrongfps.json");
@@ -272,7 +272,7 @@ fn an_fps_that_contradicts_the_stream_is_refused() {
 fn an_fps_that_agrees_with_the_stream_needs_no_force() {
     needs_ffmpeg!();
     let dir = work_dir("agreeingfps");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_with_timing(&stream);
     let stream = stream.to_str().unwrap();
 
@@ -291,7 +291,7 @@ fn an_fps_that_agrees_with_the_stream_needs_no_force() {
 fn fps_is_required_when_the_stream_carries_no_timing() {
     needs_ffmpeg!();
     let dir = work_dir("notiming");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_without_timing(&stream);
     let stream = stream.to_str().unwrap();
 
@@ -389,7 +389,7 @@ fn an_empty_stream_is_refused() {
 #[test]
 fn a_command_line_without_a_subcommand_gets_usage() {
     // Two paths with no subcommand in front of them.
-    let out = dex_sidecar(&["loop.265.json", "loop.265"]);
+    let out = dex_sidecar(&["artwork.265.json", "artwork.265"]);
     assert_eq!(exit_code(&out), EXIT_REFUSED, "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("usage:"), "stderr: {}", stderr(&out));
 }
@@ -403,7 +403,7 @@ fn no_arguments_at_all_gets_usage() {
 
 #[test]
 fn an_unknown_subcommand_gets_usage() {
-    let out = dex_sidecar(&["generate", "loop.265"]);
+    let out = dex_sidecar(&["generate", "artwork.265"]);
     assert_eq!(exit_code(&out), EXIT_REFUSED, "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("usage:"), "stderr: {}", stderr(&out));
 }
@@ -414,7 +414,7 @@ fn an_unknown_subcommand_gets_usage() {
 fn a_trailing_fps_with_no_value_gets_usage() {
     needs_ffmpeg!();
     let dir = work_dir("danglingfps");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_with_timing(&stream);
 
     let out = dex_sidecar(&["write", stream.to_str().unwrap(), "--fps"]);
@@ -428,7 +428,7 @@ fn a_trailing_fps_with_no_value_gets_usage() {
 
 #[test]
 fn a_trailing_out_with_no_value_gets_usage() {
-    let out = dex_sidecar(&["write", "loop.265", "--out"]);
+    let out = dex_sidecar(&["write", "artwork.265", "--out"]);
     assert_eq!(exit_code(&out), EXIT_REFUSED, "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("usage:"), "stderr: {}", stderr(&out));
 }
@@ -437,7 +437,7 @@ fn a_trailing_out_with_no_value_gets_usage() {
 fn an_fps_that_is_not_a_frame_rate_is_refused() {
     needs_ffmpeg!();
     let dir = work_dir("badfps");
-    let stream = dir.join("loop.265");
+    let stream = dir.join("artwork.265");
     stream_with_timing(&stream);
     let stream = stream.to_str().unwrap();
 
