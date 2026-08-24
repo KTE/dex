@@ -114,7 +114,7 @@ dexd targets 30 fps at 3840×2160. Higher rates are out of scope, not ruled out:
 - Audio. dexd plays silent, and mpv is not silent-only, so audio stays possible — one reason hello_video could not be the long-term player. A projected drift of about 90 s per day between playback position and system uptime (assumed) is invisible in a silent loop but would be an audio-sync defect.
 - Frame rates above 30 fps, as under [Frame rate](#frame-rate).
 - Hardware other than the Raspberry Pi, such as a small x86 board or a commercial signage player: surviving a power cut is a property of the Pi's design and a firmware setting elsewhere. Revisit only if no Pi-based player works.
-- A read-only root filesystem, closed rather than planned (decided). Installations have survived being switched off at the socket on the current arrangement. That evidence comes from dexOS cards, and the card that ships first is plain trixie with the package, so a card that comes back corrupt reopens the question.
+- A read-only root filesystem, closed as something the project ships (decided): installations have survived being switched off at the socket without one. That evidence comes from dexOS cards while the card that ships first is plain trixie with the package, so a card that comes back corrupt reopens it. One deployed card now runs with the overlay filesystem switched on by hand and its boot partition write-protected, which is one operator's hardening rather than an arrangement dexd sets up or needs. It is safe there because that card's video never changes; see [Configure the exhibit](../guides/configure-exhibit.md#applying-a-change) for what a read-only root does to an edit.
 
 ## Open questions
 

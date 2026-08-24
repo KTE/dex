@@ -117,6 +117,8 @@ sudo reboot   # only if it printed REBOOT REQUIRED
 sudo systemctl restart dexd   # only if it printed no change
 ```
 
+**Important:** on a player whose root filesystem is read-only — a card set up with an overlay filesystem, which some installations use so that a power cut cannot corrupt them — an edit here is written to the overlay and disappears at the next boot. The player keeps running the config it had. Turn the overlay off, edit, turn it back on; on Raspberry Pi OS that is `sudo raspi-config`, Performance Options, Overlay File System.
+
 dex-exhibit-apply writes the forced display mode into the `video=` option of `cmdline.txt`.
 
 - It leaves every other option in place, including every other connector's `video=` option.
