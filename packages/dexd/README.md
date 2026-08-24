@@ -76,9 +76,11 @@ Every change to dexd builds one package,
 `dexd_<version>-<build>+g<commit>_arm64.deb`; CI attaches it to that build's run as the
 `dexd-deb` artifact. Under Actions in the [dex repository](https://github.com/KTE/dex),
 open the `dexd deb` workflow, pick the newest successful run on `main`, and download and
-unzip its `dexd-deb` artifact.
+unzip its `dexd-deb` artifact. Downloading one needs a GitHub account, and GitHub keeps it
+only for the repository's retention period, 90 days unless that was changed; where the
+newest run's artifact has expired, someone with write access can run the workflow again.
 
-An apt repository for `apt install dexd` is planned — see
+A releases page and an apt repository for `apt install dexd` are planned — see
 [Roadmap](../../docs/design/roadmap.md).
 
 ## Documentation

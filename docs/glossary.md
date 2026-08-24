@@ -434,7 +434,7 @@ Tier: developer
 
 ### data partition
 
-A FAT-formatted partition that any computer can open without extra software, holding the video, its sidecar and the exhibit config where dexd reads them, at `/opt/dex`, so a technician edits the config with the card in a laptop. Intended and not built: the card the guides build keeps `/opt/dex` on its root filesystem, reachable over the network. The dexOS image had the same idea.
+A FAT-formatted partition that any computer can open without extra software, holding the video, its sidecar and the exhibit config together, so a technician edits them with the card in a laptop. The dexOS image ships one, mounted at `/dexdata`, on an image that plays with pi_video_looper. A dexd card has none yet: the card the guides build keeps `/opt/dex` on its root filesystem, reachable over the network, and giving that directory its own partition is the intended arrangement.
 
 Also written: dexdata · /dexdata · FAT partition · media partition
 

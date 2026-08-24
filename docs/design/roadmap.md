@@ -41,7 +41,7 @@ Other options:
 
 ## Ingest on the player
 
-A technician prepares the video on a workstation and copies it to the dex card over the network. The video, its sidecar and the exhibit config sit together in `/opt/dex`. Giving that directory its own FAT partition, so any computer mounts it and a technician edits the files with the card in a laptop, is the intended arrangement and is not built (see [data partition](../glossary.md#data-partition)); the card the guides build keeps the assets on its root filesystem.
+A technician prepares the video on a workstation and copies it to the dex card over the network. The video, its sidecar and the exhibit config sit together in `/opt/dex`. Giving that directory its own FAT partition, so any computer mounts it and a technician edits the files with the card in a laptop, is the intended arrangement and is not built for a dexd card (see [data partition](../glossary.md#data-partition)); the card the guides build keeps the assets on its root filesystem. dexOS already carries such a partition at `/dexdata`, on an image that plays with pi_video_looper, so what is missing is the arrangement on a dexd card rather than the idea.
 
 The planned stage moves preparation onto the player: during USB copy, the player converts with ffmpeg every file on the stick that has no converted counterpart yet.
 
