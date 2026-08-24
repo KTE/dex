@@ -1048,7 +1048,7 @@ fn main() -> ExitCode {
     // above. The sidecar is bound to the asset and names its resolution, so
     // warn when the connector cannot offer it. Two different things follow,
     // and both are bad in a way that is hard to read from the outside: on
-    // hardware that builds no 4K mode unforced the artwork plays at whatever
+    // hardware that builds no 4K mode unforced the video plays at whatever
     // the connector negotiates, for weeks, with every metric nominal; on a
     // connector whose modes are all smaller than the asset it does not play at
     // all, because this player's zero-copy path hands the decoded frame
@@ -1072,7 +1072,7 @@ fn main() -> ExitCode {
                             "warning: display_mode is \"auto\" and the asset is {want} (per its \
                              sidecar), but connector {} offers only {offered:?} ({modes_path}). \
                              KMS drives some other mode, and this ends one of two ways: the \
-                             artwork plays at the wrong resolution with every metric nominal, or \
+                             video plays at the wrong resolution with every metric nominal, or \
                              it does not present at all and the player restarts on a clock that \
                              never advances -- the zero-copy path has no downscale step, so an \
                              asset larger than every mode the connector offers cannot be shown. \
