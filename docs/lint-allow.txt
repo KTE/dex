@@ -47,3 +47,4 @@ caps path=**/man/*.1 PATH # the environment variable PATH, named in the ENVIRONM
 caps path=**/src/main.rs SIGABRT # POSIX signal name in the shipped watchdog refusal — a constant an operator greps for, not emphasis
 caps NIST # the standards body's name, a proper noun cited as the source of the SHA-256 test vectors
 caps FIPS # the standard's name, cited as `FIPS 180-4` — a document id, not emphasis
+coinages path=**/Cargo.toml dex-loop # the package dexd supersedes, named literally in the Conflicts and Replaces fields, where dpkg reads a package name and not prose

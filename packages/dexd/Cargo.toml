@@ -75,6 +75,19 @@ priority = "optional"
 # tool the package does not depend on.
 depends = "$auto, libmpv2 (>= 0.40.0), adduser"
 
+# dexd is dex-loop under its public name. The two ship four of the same files
+# -- the dex-exhibit-apply and dex-wait-hdmi commands and their man pages --
+# so undeclared, dpkg stops on the first of them and leaves the card with a
+# half-installed player. Conflicts states the pair cannot be co-installed;
+# Replaces lets apt do the rename in one step on a card already running
+# dex-loop, instead of requiring a purge by hand first.
+#
+# dex-loop also ships /etc/dex/exhibit.json as a conffile. dexd reads its
+# config from beside the video in /opt/dex and installs none, so the swap
+# leaves that file behind; postinst prints a NOTE naming it and the move.
+conflicts = "dex-loop"
+replaces = "dex-loop"
+
 assets = [
     # /usr/bin: Debian policy reserves /usr/local for the local administrator,
     # so a package may not install there.
