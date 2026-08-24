@@ -36,7 +36,7 @@ display_mode: 3840x2160@30
 # D: the connector counts as connected before the display is on — for a player switched on at the mains.
 kms_force: 3840x2160@30D
 connector: HDMI-A-1
-display: 4K capture device
+display: gallery panel
 venue: main hall
 note: prepared at 30 fps
 ```
@@ -96,7 +96,7 @@ That rule has a trap on the other side of it. A whole number is the only thing y
 Two worked examples:
 
 - A 2560×1440 monitor whose EDID never mentions 2160 shows its own preferred mode correctly: set `display_mode` to `auto` and leave `kms_force: none`. Forcing 4K here transmits a picture the monitor cannot show. Prefer `auto` here to spelling the mode out: one such monitor, a Dell U2719DC, offers its 2560×1440 at 59.95 Hz only, and `2560x1440@60` matched no mode and restarted the player (see [Measurement record](../design/measurements.md#mode-behaviour-by-sink)). Give this monitor a video prepared at 2560×1440; the 4K video never reaches the screen on it.
-- A 4K capture device announces 3840×2160 at 30 Hz as its preferred mode, and the graphics driver builds no 4K mode from that announcement. Set `display_mode` to `3840x2160@30` and `kms_force` to `3840x2160@30`. Forced, the same mode works (measured on a Raspberry Pi 4; see [Measurement record](../design/measurements.md#mode-behaviour-by-sink)).
+- A 4K capture device announces 3840×2160 at 30 Hz as its preferred mode, and the graphics driver builds no 4K mode from that announcement. Set `display_mode` to `3840x2160@30` and `kms_force` to `3840x2160@30D` — the `D` for a player switched on at the mains, as below. Forced, the same mode works (measured on a Raspberry Pi 4; see [Measurement record](../design/measurements.md#mode-behaviour-by-sink)).
 
 ## Forced display mode
 
@@ -147,10 +147,11 @@ dexd checks the display settings before it opens the video, so dexd reports a wr
 
 ## Older installs
 
-dexd does not read a config under `/etc/dex`. Move it next to the video:
+dexd does not read a config under `/etc/dex`. Move it next to the video — but only when `/opt/dex` holds no config yet, since two of them at once make dexd refuse to start:
 
 ```
-sudo mv /etc/dex/exhibit.* /opt/dex/ && sudo rmdir /etc/dex
+ls /opt/dex/exhibit.* 2>/dev/null || sudo mv /etc/dex/exhibit.* /opt/dex/
+sudo rmdir /etc/dex
 ```
 
 Set the display mode in `display_mode`, not in a service override file (a drop-in under `/etc/systemd/system/dexd.service.d/`) that passes `--mode`. Remove the drop-in:

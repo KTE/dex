@@ -49,3 +49,4 @@ caps NIST # the standards body's name, a proper noun cited as the source of the 
 caps FIPS # the standard's name, cited as `FIPS 180-4` — a document id, not emphasis
 coinages path=**/Cargo.toml dex-loop # the package dexd supersedes, named literally in the Conflicts and Replaces fields, where dpkg reads a package name and not prose
 coinages path=**/workflows/dexd.yml dex-loop # the same package name, in the check that the Conflicts and Replaces fields survived the build
+coinages path=**/design/packaging.md dex-loop # the package name in the paragraph explaining the Conflicts and Replaces fields, which exist precisely to name it

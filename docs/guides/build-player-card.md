@@ -152,7 +152,7 @@ Install the newer `.deb` the same way you installed the first one. Each released
 
 **Important:** apt skips a package whose version equals the installed one and prints no warning. To install a package that carries the version already on the card, add `--reinstall`.
 
-`dexd 2>&1 | head -1` works only while the card has no config; with a config present, dexd goes on and tries to take the display. On a player that has one, restart the service and read the log:
+`dexd --version 2>&1 | head -1` reports the version on any card, config or not: dexd writes that line before it reads anything, then prints the usage text and exits 2 without taking the display. For the package version rather than the source one, run `dpkg-query -W dexd`. To see a running player's own startup lines instead, read the log:
 
 ```bash
 sudo systemctl restart dexd && sudo journalctl -u dexd -n 20

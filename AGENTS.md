@@ -96,7 +96,7 @@ Bad → good, from the CI workflow and Cargo.toml:
 | `dexd` — the package, the binary, the service; the player | `dex-loop`, `dex_loop`, "the looper" |
 | `dex-sidecar write` / `dex-sidecar check` | `make-sidecar.sh`, `sidecar-check` |
 | `dex-exhibit-apply`, `dex-wait-hdmi` | — |
-| **exhibit config** — the file `/etc/dex/exhibit.json` or `.yaml` | "the exhibit" on its own |
+| **exhibit config** — the file `/opt/dex/exhibit.json` or `.yaml` | "the exhibit" on its own |
 | **asset** / **video asset** — the video file; the **artwork** is the whole installation it plays in | "the artwork" for the file |
 | **forced display mode** in prose; `kms_force` only as the literal config key | "kms force", "KMS forcing" |
 | **system log** in prose; `journalctl -u dexd` in commands | "the journal" |

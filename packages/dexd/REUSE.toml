@@ -1,15 +1,10 @@
-# REUSE (reuse.software) — machine-readable licensing for dexd.
+# REUSE (reuse.software): machine-readable licensing for the crate, so a distro
+# packager can check the licence per file instead of reading prose. `reuse lint`
+# runs in CI.
 #
-# Why bother: dex should eventually be installable from all the usual repos, and
-# distro packagers are the people who have to answer "what is this licensed
-# under, exactly, per file". REUSE makes that answer machine-checkable instead
-# of a prose paragraph someone has to read and trust. `reuse lint` runs in CI.
-#
-# Why REUSE.toml rather than per-file SPDX headers: the whole crate is one
-# author under one licence, so 28 headers would state the same fact 28 times
-# above module docs that are already dense. A single declaration is easier to
-# keep true — and being true is the entire value. Per-file headers become the
-# better choice if this ever mixes licences or gains third-party code.
+# One declaration for the whole crate, because it is one author under one
+# licence. Give the files their own SPDX headers if this ever mixes licences or
+# takes third-party code. See docs/design/packaging.md.
 version = 1
 
 SPDX-PackageName = "dexd"

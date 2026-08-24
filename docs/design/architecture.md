@@ -115,7 +115,7 @@ For the same reason the dex card is built on Raspberry Pi OS Lite. The desktop i
 
 ## Language and bindings
 
-dexd is written in Rust. The player runs unattended for weeks at 3840×2160, 30 fps with a hard per-frame budget. Two failure classes common in C are costly under that load: a slow leak that appears only after days of uptime, and a use-after-free in buffer handling that shows as corrupt frames rather than a clean crash. Rust's ownership rules make the use-after-free a compile error, and its allocation discipline removes the ad-hoc buffer lifetimes that produce the slow leak.
+dexd is written in Rust. The player runs unattended for weeks at 3840×2160, 30 fps with a hard per-frame budget. Two failure classes common in C are costly under that load: a slow leak that appears only after days of uptime, and a use-after-free in buffer handling that shows as corrupt frames rather than a clean crash. Rust's ownership rules make the use-after-free a compile error, and free each buffer at the end of its scope, so no buffer's lifetime rests on a convention someone has to remember.
 
 libmpv's `stream_cb` is a C API, so the Rust side of it is one `copy_nonoverlapping` against a per-frame deadline — no interpreter and no allocation between the bytes and mpv.
 

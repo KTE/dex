@@ -4,7 +4,7 @@ This page is for a developer with a checkout: which machine runs which command, 
 
 ## Two machines
 
-Development uses a macOS workstation and a Raspberry Pi, and neither alone is enough. The Raspberry Pi has what the player needs: DRM and KMS, the Broadcom HEVC decoder, and Debian's libmpv. The workstation has none of them, so a checkout there cannot link the binary and `cargo test` fails at link time.
+Development uses a workstation and a Raspberry Pi, and neither alone is enough. The Raspberry Pi has what the player needs: DRM and KMS, the Broadcom HEVC decoder, and Debian's libmpv. A workstation without libmpv cannot link the `dexd` binary, so `cargo test` fails there while linking; `dex-sidecar` links neither libmpv nor a DRM device and builds anywhere.
 
 Pure-logic tests run on either machine; anything that links libmpv runs on the Raspberry Pi or in CI. The workstation carries the capture and analysis side — see [Measurement record](measurements.md).
 
@@ -48,7 +48,9 @@ Run every command below in `packages/dexd`; there is no workspace root.
 | Machine | Command | What it covers |
 |---|---|---|
 | workstation | `cargo check --all-targets` | type-checks every target, including unlinkable ones |
-| workstation | `cargo test --lib` | the library's tests, all the workstation can run |
+| workstation | `cargo test --lib` | the library's tests |
+| workstation | `cargo test --bin dex-sidecar` | the sidecar writer's own tests; it links no libmpv |
+| workstation | `cargo build --release --bin dex-sidecar` | the tool that prepares a video, which the package does not install |
 | Raspberry Pi | `cargo test` | library, binary target and the three integration targets |
 | Raspberry Pi | `nice -n 19 cargo test` | the same, kept off the CPU of a long-running test |
 | Raspberry Pi | `cargo build --release` | the release binaries, including the two the package installs |

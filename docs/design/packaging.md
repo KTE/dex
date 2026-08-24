@@ -48,6 +48,15 @@ The release profile sets `opt-level = 2`, `lto = true` and `panic = "abort"`; th
 depends = "$auto, libmpv2 (>= 0.40.0), adduser"
 ```
 
+Two more fields state a relationship no symbol expresses:
+
+```toml
+conflicts = "dex-loop"
+replaces = "dex-loop"
+```
+
+dexd and dex-loop ship four of the same files — the `dex-exhibit-apply` and `dex-wait-hdmi` commands and their man pages — so undeclared, dpkg stops on the first of them and leaves a half-installed player. `Conflicts` states the pair is exclusive and `Replaces` lets apt do the rename in one step on a card already running the older package. CI reads both fields back out of the built package, because a manifest key cargo-deb does not support is dropped without a word.
+
 `$auto` runs dpkg-shlibdeps over the built binary, so the shared-library half of `Depends` follows the sonames the binary links and nobody writes it by hand. `ldd` reports 228 shared objects for the binary (measured); linking libmpv accounts for that count. dpkg-shlibdeps names only the packages providing the sonames the binary links itself, so a build resolves the derived half to a line such as `Depends: libc6 (>= 2.34), libmpv2 (>= 0.40.0)`.
 
 From symbols alone the floor is `libmpv2 (>= 0.19.0)`, the oldest libmpv exporting the symbols dexd calls. Two things dexd relies on are behaviour, which dpkg-shlibdeps cannot see:

@@ -6,7 +6,7 @@ This page records which Raspberry Pi hardware decodes and displays what, for a d
 
 Every factual claim carries a source marker `[n]` into the list at the end, or a provenance label. A claim established by this project carries *measured* with the board named and is never merged into a vendor or community figure; [the measurement record](measurements.md) states the conditions. An unsourced or contradicted claim becomes an item on the measurement to-do list below, with the project's own test setup as the intended source (decided).
 
-Vendor product briefs exist for only three boards before the Pi 4: the Pi 1 Model B+, the Pi 3 Model B+ and the Zero 2 W [9][10][11]. Sources gives each brief cited for a capability row with its document number and publish date [10][11][12][13][14].
+Vendor product briefs exist for only three boards before the Pi 4: the Pi 1 Model B+, the Pi 3 Model B+ and the Zero 2 W [9][10][11]. The Sources section below gives each cited brief its document number and publish date [10][11][12][13][14].
 
 ## Chips and boards
 
@@ -211,7 +211,7 @@ A Pi 4 soft-throttles at 80 °C, and throttling presents as intermittent frame d
 
 The board reserves 512 MB of CMA for decoder frame buffers, unavailable to the player [1]. The player adds about 190 MB: a 123 MB video gave 314 MB of resident memory [1]. On a 1 GB board that leaves roughly 170 MB for the video: 1024 − 512 (CMA) − about 150 (kernel and userland) − 190 (overhead) [1].
 
-Every figure comes from a 4 GB board: [the twenty-five-hour run](measurements.md) showed no leak but says nothing about fit on a smaller board, so dexd's first release limits supported video size (decided).
+Every figure comes from a 4 GB board: [the twenty-five-hour run](measurements.md) showed no leak but says nothing about fit on a smaller board. dexd sets no maximum video size; the board's memory is the bound, because the whole video is held in it.
 
 ## Pi 5 status
 

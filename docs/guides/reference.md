@@ -156,7 +156,7 @@ dexd: heartbeat loops=143 uptime=3600s temp=48.2C frame-drops=0 vo-delayed=2 pos
 | `pos-age` | seconds since that position was read |
 | `watchdog` | `armed pings-dropped=N` under the service, `inert` elsewhere |
 
-`n/a` is a value that has not arrived yet, `off` a counter the player never asked for. [Run, check, troubleshoot](run-check-troubleshoot.md) reads a healthy line field by field.
+`n/a` is a value that has not arrived yet, `off` a counter mpv would not report on for this run — dexd asks for both on every start, so `off` is worth reporting. [Run, check, troubleshoot](run-check-troubleshoot.md) reads a healthy line field by field.
 
 ## Files and paths
 
@@ -230,6 +230,8 @@ The warning is the only line here that lets the player start.
 | `cannot read sidecar ….json` / `no sidecar found; refusing to guess the frame rate` | run `dex-sidecar write` and copy both files |
 | `asset does not match its sidecar: sha256 …` | the two are not a pair: one is old, wrong or half-copied |
 | `--fps … contradicts sidecar fps …` | drop `--fps`; the sidecar decides |
+| `corrupt NAL header (forbidden_zero_bit set)` | the file is damaged, or is not a raw HEVC stream at all; copy it again, then encode from the master |
+| `parameter sets but no slice found in the asset` | the file carries its header and no picture; encode again from the master |
 | `sidecar: missing required key "fps"` / `"sha256"` | write the sidecar again |
 | `sidecar: fps must be a JSON string` | quote the rate, as in `"fps":"30"`, so `30000/1001` survives |
 | `sidecar: invalid fps` | write `30`, `29.97` or `30000/1001` |
@@ -248,6 +250,7 @@ dexd exits 1 after every `fatal:` line, and the service manager restarts it.
 | Message begins | Meaning and what follows |
 |---|---|
 | `dexd: health check: … attempting in-place recovery 1/3` | the health check — dexd's ten-second test that playback is still advancing — found it stopped, so dexd reloads the video inside the running process; three attempts, then exit 1 |
+| `WatchdogSec window (…s) gives the …s ping cadence little margin` | the unit's watchdog window leaves fewer than two pings inside it, so one slow ping restarts a healthy player; widen `WatchdogSec=` |
 | `dexd: health check: in-place recovery's loadfile replaced the stream; absorbing the expected END_FILE(reason=stop) …` | the reload ended the file it replaced; dexd expects that event and playback carries on |
 | `dexd: fatal: in-place recovery exhausted its budget` | the three attempts changed nothing |
 | `dexd: fatal: playback ended (reason=…, error=…)` | playback reached an end, which an endless loop never does |

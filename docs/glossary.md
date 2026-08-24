@@ -781,7 +781,7 @@ Tier: developer
 
 ### mpv_wait_event
 
-The libmpv call that waits, with a caller-supplied timeout, for the next event; dexd's event thread (see event thread) loops on it. Because it always returns by the timeout, the loop cannot block indefinitely inside mpv and safely hosts the health tick and watchdog ping.
+The libmpv call that waits, with a caller-supplied timeout, for the next event; dexd's supervisor thread (see supervisor thread) loops on it. Because it always returns by the timeout, the loop cannot block indefinitely inside mpv and safely hosts the health tick and watchdog ping.
 
 Also written: event loop · mpv_terminate_destroy (the teardown call, avoided on the escape path)
 

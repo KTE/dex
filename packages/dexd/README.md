@@ -2,8 +2,8 @@
 
 Gapless HEVC video looper for Raspberry Pi, based on [mpv](https://mpv.io/). dexd plays one
 .265 video file in an endless loop with no visible break at the loop point: no black frame,
-no held frame, no stutter. A short video then runs for weeks in a gallery and looks like a
-still image.
+no held frame, no stutter. A short video then runs for weeks in a gallery as one unbroken
+picture.
 
 On a Raspberry Pi 4 at 3840×2160, dexd played at frame rate and dropped no frames through
 25 hours 30 minutes unattended (measured; see the

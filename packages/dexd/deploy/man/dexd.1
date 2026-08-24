@@ -148,7 +148,7 @@ with margin over it to exercise steady playback rather than startup.
 Hang the supervisor thread \(em dexd's one thread, which waits on mpv and runs
 its own checks \(em forever,
 .I N
-seconds after startup. Neither the progress check nor the heartbeat reports a
+seconds after startup. Neither the health check nor the heartbeat reports a
 hang there, so this option shows whether a systemd watchdog
 .RB ( WatchdogSec= )
 fires and restarts the process. dexd does not recover from it; systemd, or the
