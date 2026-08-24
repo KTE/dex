@@ -210,11 +210,11 @@ Loop count times loop length reconciles with uptime to 100.08% — 2355 × 39.01
 
 The media clock finished 90 s ahead of the wall clock: the final heartbeat reads uptime 91803 s and position 91892.9 s, a ratio of 1.00098 — the 1001/1000 factor between 29.97 and 30 Hz, to within measurement. The video is tagged 30000/1001 against a nominal integer 30 Hz forced display mode, so presenting one frame per display refresh runs 29.97 content 0.1% fast. That accumulates as slow clock skew, which is why both drop counters read 0 while the clocks diverge.
 
-The project registered nine criteria before the run. Seven are met outright: restarts, boot count, heartbeat continuity, dropped frames, late frames, loop count (2217 at 24 h against a threshold of 2190) and playback-position freshness, `pos-age=0s` on every line. Two are open — resident memory, met on the evidence but open on the letter, and the human observation:
+Nine conditions were set for the run, and seven hold: no restarts, one boot record, unbroken heartbeats, no dropped frames, no late frames, 2217 loops at 24 h against a threshold of 2190, and `pos-age=0s` on every line. Two do not:
 
 | Criterion | Status |
 |---|---|
-| Resident memory: slope below 0.5 MB/h from t+1h to t+24h, growth under 25 MB | Telemetry started 1 h 56 min after the service did, covering 23 h 37 min — 92.6%, unbroken, largest sample gap 61 s — and the value is bit-identical across all 1416 samples, showing no growth. The criteria's telemetry clause voids the verdict because the gap exceeds ten minutes, and the disagreement is unresolved. |
+| Resident memory: slope below 0.5 MB/h from t+1h to t+24h, growth under 25 MB | Telemetry started 1 h 56 min after the service did, covering 23 h 37 min — 92.6%, unbroken, largest sample gap 61 s — and the value is bit-identical across all 1416 samples, showing no growth. The condition's telemetry clause voids the reading, because the gap exceeds ten minutes: the evidence shows no growth and the condition is not met as written. |
 | A human watching at start, middle and end | No observation recorded. |
 
 The run departs from the criteria in two ways, and leaves one measurement out:
@@ -287,7 +287,7 @@ The test suite runs on a development workstation and on a Pi before a change lan
 
 4K delivery is about 27 fps, not 30. Measured over 600 frames in 22.43 s, scaling linearly from 300 frames in 11.04 s, so it is not startup skew. Inter-frame intervals cluster at 0.0358–0.0373 s with no doubled intervals, which is pacing; dropping would show 0.0333 s with occasional 0.0667 s. A different pixel format changes the timing not at all.
 
-The best-fitting explanation (assumed) is that the device transmits 4:2:2 over USB whatever is requested, two-thirds the data of 4:4:4. 4K30 then needs about 497 MB/s against USB 3.0 Gen 1's practical ceiling of about 450 MB/s, and 450/497 = 0.905 against a measured 27/30 = 0.90.
+The device transmits 4:2:2 over USB whatever is requested, two-thirds the data of 4:4:4 (assumed). 4K30 then needs about 497 MB/s against USB 3.0 Gen 1's practical ceiling of about 450 MB/s, and 450/497 = 0.905 against a measured 27/30 = 0.90.
 
 The [capture deficit](../glossary.md#capture-deficit) is about 10% at 4K and belongs to the instrument, not the player; index analysis tolerates gaps by construction, so the deficit is a design input rather than a fault to chase.
 

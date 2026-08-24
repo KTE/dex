@@ -82,6 +82,9 @@ The installed package links the mpv library. Debian builds that library against 
 
 ## Next steps
 
+- [Build a dex card](build-player-card.md) goes from a blank SD card to a running player.
+- [Prepare your video](prepare-video.md) makes the `.265` file and the sidecar beside it.
+- [Configure the exhibit](configure-exhibit.md) writes the file naming the video and the display mode.
 - [Run, check, troubleshoot](run-check-troubleshoot.md) goes from a symptom to a fix.
 - [Reference](reference.md) lists the config keys, exit codes and messages.
 - The [glossary](../glossary.md) defines every term used here.

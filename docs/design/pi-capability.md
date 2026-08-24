@@ -177,7 +177,7 @@ Decode throughput on BCM2711 tracks megapixels per second, not the resolution la
 
 At 4K60 the player stays close to realtime by discarding frames, which is why [the pass criteria](measurements.md) require a drop count beside the ratio. Only the display path blocks 4K40: the capture device used for the measurements advertises an HDMI 1.4 EDID, so it offers no mode above 2160p30.
 
-The vendor specification for BCM2711 says "H.265 (4Kp60 decode)" [7][12][15]. That figure plausibly describes the decode block in isolation, and a complete decode-and-present pipeline does not reach it: 0.753× realtime on a Raspberry Pi 4 [1]. An independent Kodi user reports 45 to 55 fps on a real 4K60 file, dropping to 25 fps, in a thread that reaches no resolution [45]. Do not plan a 4K60 artwork on a Pi 4.
+The vendor specification for BCM2711 says "H.265 (4Kp60 decode)" [7][12][15]. That figure describes the decode block in isolation (assumed); a complete decode-and-present pipeline does not reach it: 0.753× realtime on a Raspberry Pi 4 [1]. An independent Kodi user reports 45 to 55 fps on a real 4K60 file, dropping to 25 fps, in a thread that reaches no resolution [45]. Do not plan a 4K60 artwork on a Pi 4.
 
 ### Display output
 
@@ -217,7 +217,7 @@ Every figure comes from a 4 GB board: [the twenty-five-hour run](measurements.md
 
 Everything about BCM2712 here is vendor- or community-sourced; this project has taken no Pi 5 measurements, and a Pi 4 result does not transfer to a Pi 5 (decided).
 
-A Pi 5 almost certainly decodes HEVC in hardware (assumed); the presentation path is unknown. Expect the failure already seen on a Pi 4: throughput looks realtime while each frame takes the slower, non-zero-copy route [1]. The mpv output and hardware-decode settings depend on what a Pi 5's mpv reports, so the Pi 5 test chooses them there.
+A Pi 5 decodes HEVC in hardware (assumed); the presentation path is unknown. Expect the failure already seen on a Pi 4: throughput looks realtime while each frame takes the slower, non-zero-copy route [1]. The mpv output and hardware-decode settings depend on what a Pi 5's mpv reports, so the Pi 5 test chooses them there.
 
 Raspberry Pi's patched ffmpeg builds are suffixed `+rpt1` and `+rpt2`; trixie ships `+rpt1`, and whether a Pi 5 needs the `+rpt2` HEVC patches is unresolved. Settle it before a Pi 5 measurement.
 
@@ -229,7 +229,7 @@ Pinning an image to buster pins it to a 2019 Debian that can never be security-u
 
 A buster image boots on the Pi 4, the Zero 2 W and the original Zero, and not on the Pi 5. On the Pi 1 Model B it does not boot either, for reasons unresolved (measured on the project's buster image); Raspberry Pi Imager offers that board bullseye 32-bit as its newest release.
 
-dexd needs a Pi 4 or later, so the cheaper boards drop out: about 18 Swiss francs for a Zero W and about 20 for a Zero 2 W, against about 66 for a Pi 5 (prices compared in 2024; assumed, no price source recorded).
+dexd needs a Pi 4 or later, so the cheaper boards drop out: about 18 Swiss francs for a Zero W and about 20 for a Zero 2 W, against about 66 for a Pi 5 (assumed: compared in 2024, no price source recorded).
 
 ## Board choice
 

@@ -136,6 +136,19 @@ Miri is a follow-up: it cannot cross the FFI boundary, so its scope is the libra
 
 Documentation and commit conventions, and the `scripts/docs-lint.mjs` gate that enforces them, are in [`AGENTS.md`](../../AGENTS.md).
 
+## Before a change lands
+
+```sh
+cargo clippy --all-targets -- -D warnings
+cargo test                   # on a Raspberry Pi; cargo test --lib on a workstation without libmpv
+cargo deny check
+node scripts/docs-lint.mjs   # from the top of the repository
+```
+
+A pull request runs these and the rest of the workflow, and one required check
+reads their results; [Continuous integration](ci.md) says which jobs run when
+and what each proves.
+
 ## Regression proof
 
 Prove a regression test bites: re-introduce the defect, watch the test fail, then revert:

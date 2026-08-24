@@ -45,7 +45,7 @@ A syntax error is left to the loader, so the operator gets its marked diagnostic
 
 dexd refuses duplicate keys in both formats: yaml-rust2 errors on inserting one instead of taking the last, and the JSON path uses a hand-written parser callback for the same rule.
 
-Measured against yaml-rust2 0.11: its scalar resolution follows the YAML 1.2 core schema closely, and tests lock the two places where it matters, because a version that adopted YAML 1.1 resolution would change what a deployed config means.
+yaml-rust2 0.11 resolves scalars by the YAML 1.2 core schema (documented). Tests lock the two places where that matters, because a version adopting YAML 1.1 resolution would change what a deployed config means.
 
 - Only `true` and `false` are booleans, so `kms_force: no` arrives as the string `no`, and dexd refuses it, naming the valid values.
 - Null resolution covers `null`, `~` and an empty value, case-sensitively, so `Null` and `NULL` arrive as ordinary strings.
