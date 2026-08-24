@@ -180,7 +180,7 @@ jobs:
       #
       # It does not exercise hwdec=drm or the DRM plane swap (no GPU here); see
       # docs/design/failure-handling.md and the test's doc comment.
-      - name: C1 live-fire (forced recovery vs real mpv)
+      - name: Forced recovery against a real mpv
         working-directory: ${{ env.CRATE_DIR }}
         run: |
           set -eux
@@ -188,7 +188,7 @@ jobs:
                 force_recovery_survives_against_real_mpv 2>&1) || { echo "$out"; exit 1; }
           echo "$out"
           echo "$out" | grep -q '1 passed' \
-            || { echo "::error::C1 gate did not actually run (filter matched nothing?)"; exit 1; }
+            || { echo "::error::the forced-recovery check did not run — did the test filter match nothing?"; exit 1; }
 
       # Every build must produce a distinct, ordered version, or apt reports the
       # package as already installed and does nothing while `dpkg -l` shows the
@@ -507,7 +507,7 @@ jobs:
       - name: Lint tool self-test
         run: node --test scripts/docs-lint.test.mjs
       - name: Lint the public docs and the rules
-        run: node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md README.md packages/dexd
+        run: node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md README.md packages/dexd .github/workflows/dexd.yml
 
   # The one check to mark required in branch protection. It runs with
   # `if: always()`, so it always reports: a check that can be skipped can never be

@@ -198,11 +198,11 @@ Every measured number, decision and assumption in the documentation traces to a 
 ## The mechanical gate
 
 ```
-node scripts/docs-lint.mjs                 # default paths: packages/dexd, docs, .github/workflows/dexd.yml, AGENTS.md, README.md
+node scripts/docs-lint.mjs                 # default paths: packages/dexd, docs, .github/workflows/dexd.yml, README.md
 node scripts/docs-lint.mjs docs/guides/prepare-video.md
 ```
 
-Errors fail the run; warnings are printed. It reads `docs/glossary.md` (the acronym allow-set), `docs/lint-allow.txt` (per-token or per-path exceptions — every entry needs a reason after `#`, or the tool refuses to start) and `docs/lint-coinages.tsv` (retired words). It runs in CI on `docs/`, `AGENTS.md` and `README.md` files; the crate's comments join the gate when their rewrite lands. Fix an error by rewording; add an allowlist entry only for a true false positive, with the reason.
+Errors fail the run; warnings are printed. It reads `docs/glossary.md` (the acronym allow-set), `docs/lint-allow.txt` (per-token or per-path exceptions — every entry needs a reason after `#`, or the tool refuses to start) and `docs/lint-coinages.tsv` (retired words). In CI it reads `docs/`, `AGENTS.md`, `README.md`, the crate — its comments, man pages, packaging and changelog — and the workflow file itself. A walk skips `AGENTS.md`, so CI names it. Fix an error by rewording; add an allowlist entry only for a true false positive, with the reason.
 
 ## Where things go
 

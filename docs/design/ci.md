@@ -157,11 +157,11 @@ Snapshots go under `/tmp`, because a snapshot written to `/` shows up in the nex
 
 ## Documentation lint
 
-`docs-lint` runs on the plain runner with Node 20: first the lint tool's own tests, then the tool over the public documentation, the glossary and the writing rules.
+`docs-lint` runs on the plain runner with Node 20: first the lint tool's own tests, then the tool over everything a reader outside the project sees — the documentation, the glossary, the writing rules, the crate's comments, man pages, packaging and changelog, and this workflow.
 
 ```sh
 node --test scripts/docs-lint.test.mjs
-node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md
+node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md README.md packages/dexd .github/workflows/dexd.yml
 ```
 
 ## Vacuous checks

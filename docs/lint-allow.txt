@@ -48,3 +48,4 @@ caps path=**/src/main.rs SIGABRT # POSIX signal name in the shipped watchdog ref
 caps NIST # the standards body's name, a proper noun cited as the source of the SHA-256 test vectors
 caps FIPS # the standard's name, cited as `FIPS 180-4` — a document id, not emphasis
 coinages path=**/Cargo.toml dex-loop # the package dexd supersedes, named literally in the Conflicts and Replaces fields, where dpkg reads a package name and not prose
+coinages path=**/workflows/dexd.yml dex-loop # the same package name, in the check that the Conflicts and Replaces fields survived the build
