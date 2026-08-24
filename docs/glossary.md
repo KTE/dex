@@ -256,7 +256,7 @@ Tier: user
 
 ### watchdog
 
-A timer kept by the service manager: dexd must report in every few seconds, and if it goes quiet for three minutes it is killed and restarted. It catches a player that is alive but stuck — the last of three layers after the health check and the heartbeat; the heartbeat shows `armed` when it is active.
+A timer kept by the service manager: dexd must report in every few seconds, and if it goes quiet for three minutes it is killed and restarted. It catches a player that is alive but stuck, after the health check and the heartbeat have not; the heartbeat shows `armed` when it is active.
 
 Also written: systemd watchdog · WatchdogSec (its unit setting) · `watchdog=armed` · `watchdog=inert`
 
@@ -324,7 +324,7 @@ Tier: developer
 
 The version and source commit compiled into dexd, printed as its first log line and by `--version`. `(nogit)` means the build could not learn its commit and is not official; `+dirty` means uncommitted changes; a journal that starts with an unidentifiable build is undebuggable later.
 
-Also written: DEX_BUILD_ID · `(nogit)` · `+dirty` · .dex-build-id (stamp file) · version line
+Also written: DEX_BUILD_ID · `(nogit)` · `+dirty` · .dex-build-id · version line
 
 Tier: developer
 
@@ -581,7 +581,7 @@ Tier: developer
 
 ### health check
 
-dexd's periodic check (about every ten seconds) that mpv's playback position (see time-pos) is still advancing, using only values mpv pushes as events. Two non-advancing samples in a row count as a stall and trigger an in-place recovery. First of three layers: the health check repairs, the heartbeat reports, the watchdog restarts.
+dexd's periodic check (about every ten seconds) that mpv's playback position (see time-pos) is still advancing, using only values mpv pushes as events. Two non-advancing samples in a row count as a stall and trigger an in-place recovery. The health check repairs, the heartbeat reports, the watchdog restarts.
 
 Also written: tier-0 health check (retired wording) · stall detection · HealthMonitor / HealthAction (the types)
 
@@ -765,7 +765,7 @@ Tier: developer
 
 ### mpv_get_property_string
 
-The libmpv call that reads a property's value synchronously; if the mpv core (see mpv core) is hung it blocks forever, no timeout. dexd removed it from its FFI surface entirely (the heartbeat learns values from events) so no diagnostic can itself become the hang.
+The libmpv call that reads a property's value synchronously; if the mpv core (see mpv core) is unresponsive it blocks forever, no timeout. dexd removed it from its FFI surface entirely (the heartbeat learns values from events) so no diagnostic can itself become the hang.
 
 Also written: synchronous property read · blocking property read · mpv_free (its companion)
 
@@ -971,6 +971,14 @@ Also written: NOTIFY_SOCKET · WATCHDOG=1 · WATCHDOG_USEC · WATCHDOG_PID · No
 
 Tier: developer
 
+### sink
+
+Whatever the player's HDMI output goes to: a monitor, a projector or a capture device. Its EDID decides which modes the connector offers, so one player drives different modes at different sinks, and a mode that works at one is refused at another.
+
+Also written: display sink · HDMI sink · the display · the capture device
+
+Tier: developer
+
 ### sidecar grammar
 
 The restricted JSON a sidecar must follow: one flat object, string and unsigned-integer values only, no duplicate keys, standard escapes. Anything else is a parse error, and a parse error refuses startup — an unreadable sidecar and a missing one are the same fact.
@@ -1101,7 +1109,7 @@ Tier: developer
 
 ### VBV
 
-The encoder-side model that caps a stream's instantaneous bitrate through a virtual buffer, set with -maxrate and -bufsize. dexd's artwork encodes cap peaks at 45 Mbps, safely under what the Pi 4 decoder sustains and under the HEVC level ceiling.
+The encoder-side model that caps a stream's instantaneous bitrate through a virtual buffer, set with -maxrate and -bufsize. The project's video encodes cap peaks at 45 Mbps, safely under what the Pi 4 decoder sustains and under the HEVC level ceiling.
 
 Also written: Video Buffering Verifier · -maxrate / -bufsize · HEVC level / tier ceiling (Main@L5@High)
 

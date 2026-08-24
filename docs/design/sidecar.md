@@ -1,4 +1,4 @@
-# Asset binding
+# The sidecar check
 
 This page explains how dexd establishes that it is playing the intended bytes at the intended frame rate. It covers the sidecar file that carries both, the restricted JSON it is written in, the checksum check and the asset check that reads the leading NAL units at startup, and the `dex-sidecar` tool that produces sidecars. It is written for a developer reading the player's source. Where these checks sit among the others, and the exit code each refusal produces, are in [startup-checks.md](startup-checks.md).
 

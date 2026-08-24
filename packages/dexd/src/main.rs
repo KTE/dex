@@ -1000,7 +1000,7 @@ fn main() -> ExitCode {
     // The frame rate therefore travels with the asset, bound by a sha256, and
     // an unbound asset is refused; `--test-rig-no-sidecar --fps F` is the
     // two-flag test-rig override.
-    // See docs/design/sidecar.md#asset-binding.
+    // See docs/design/sidecar.md.
     let sidecar_path = format!("{path}.json");
     let sidecar: Option<Sidecar> = if test_rig_no_sidecar {
         None

@@ -19,7 +19,7 @@ BCM2711       HEVC decode block -> CMA -> HVS -> PixelValve -> HDMI PHY
 
 - dexd registers the `loop://` stream whose read callback never returns 0, so mpv never sees an end of file. It sets the option set below, runs the [startup checks](startup-checks.md) before mpv is created, treats an unexpected `END_FILE` as fatal, and forwards mpv's log messages to standard error.
 - libmpv 0.40 does presentation and timing: scheduling locked to the display's refresh through `video-sync=display-resample`, `vo=gpu` with `gpu-context=drm` for modesetting, atomic commits and page flips, and `gpu-hwdec-interop=drmprime-overlay` to hand each decoded frame to a KMS plane.
-- FFmpeg, inside mpv, demuxes the raw Annex-B stream and decodes it through the V4L2 request API. An elementary stream carries no timestamps, so the frame rate comes from the sidecar as `container-fps-override` (see [Asset binding](sidecar.md)).
+- FFmpeg, inside mpv, demuxes the raw Annex-B stream and decodes it through the V4L2 request API. An elementary stream carries no timestamps, so the frame rate comes from the sidecar as `container-fps-override` (see [The sidecar check](sidecar.md)).
 - The kernel connects the stateless HEVC decoder (`rpi-hevc-dec`, `/dev/video19`) to DRM/KMS through the `vc4` driver by dma-buf, landing on a plane, a CRTC and the configured connector.
 - BCM2711 decodes into SAND-tiled NV12 in CMA. The HVS reads that layout without conversion and drives PixelValve to the HDMI PHY at 297 MHz TMDS for 3840×2160, 30 fps.
 

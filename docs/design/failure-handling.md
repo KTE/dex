@@ -4,9 +4,9 @@ This page describes how a running dexd notices that it has stopped showing pictu
 
 Terms are defined in [the glossary](../glossary.md); measured numbers and their conditions are in the [measurement record](measurements.md). The refusals that happen before mpv exists are on [Startup checks](startup-checks.md), and the unit settings named here are explained line by line in [The systemd unit](service-unit.md).
 
-## Recovery layers
+## How a fault is answered
 
-Four layers answer a fault; two are built.
+Four things answer a fault, in order; two of them are built.
 
 | Layer | Mechanism | Recovers |
 |---|---|---|
@@ -15,9 +15,9 @@ Four layers answer a fault; two are built.
 | Reboot escalation | planned | state that a restart does not clear, such as a stuck DRM device |
 | Hardware watchdog | planned | kernel hangs and total lockup |
 
-When a layer fails, the next one runs. `Restart=always` with `StartLimitIntervalSec=0` never gives up, so the process comes back, whichever layer repairs the fault.
+When one does not recover the player, the next runs. `Restart=always` with `StartLimitIntervalSec=0` never gives up, so the process comes back, whichever of them repairs the fault.
 
-The health check that drives the first layer runs on the supervisor thread, off the decode path, and never blocks presentation (decided).
+The health check, which drives the first of them, runs on the supervisor thread, off the decode path, and never blocks presentation (decided).
 
 ## Fatal events
 
