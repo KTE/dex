@@ -218,13 +218,12 @@ jobs:
           dpkg-deb --field "$deb" Package Version Architecture Depends Conflicts Replaces
           dpkg-deb --contents "$deb"
           # dexd and dex-loop ship four of the same files, so an install onto a card
-          # running dex-loop stops part-way unless the relationship is declared. A
-          # metadata key cargo-deb does not support is dropped without a word, which
-          # would leave the package building, installing on a clean card, and failing
-          # only on the upgrade nobody tests until a show is waiting on it.
+          # running dex-loop stops part-way unless the relationship is declared.
+          # cargo-deb drops a manifest key it does not support without an error, so
+          # read the fields back out of the built package.
           for field in Conflicts Replaces; do
             dpkg-deb --field "$deb" "$field" | grep -q 'dex-loop' \
-              || { echo "::error::$field does not name dex-loop — the package would fight dex-loop for its files"; exit 1; }
+              || { echo "::error::$field does not name dex-loop — dpkg would stop on the files the two packages share"; exit 1; }
           done
           dpkg-deb --field "$deb" Depends | grep -q libmpv \
             || { echo "::error::Depends does not mention libmpv — dpkg-shlibdeps did not resolve it"; exit 1; }

@@ -66,7 +66,7 @@ dexd: heartbeat loops=143 uptime=3600s temp=48.2C frame-drops=0 vo-delayed=0 pos
 
 After ten minutes of playback a healthy player shows `frame-drops=0`, `vo-delayed=0` and `watchdog=armed`.
 
-`n/a` means dexd has not received a value yet; `off` means mpv turned down dexd's request for that counter — dexd asks for both on every start, so an `off` is worth reporting.
+`n/a` means dexd has not received a value yet; `off` means mpv turned down dexd's request for that counter — dexd asks for `frame-drops` and `vo-delayed` on every start, so record an `off` and open an issue in the [dex repository](https://github.com/KTE/dex).
 
 **Note:** the heartbeat at start shows `n/a` for `frame-drops`, `vo-delayed` and `pos` — nothing has been decoded at that point. Numbers appear in the next heartbeat, ten minutes later. A line still showing `n/a` for those fields hours into a run means dexd asked mpv for those counters and never got a value; treat the run as unverified and check the decoder.
 

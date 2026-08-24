@@ -13,8 +13,10 @@ Documentation=https://github.com/KTE/dex
 # display.
 Conflicts=getty@tty1.service
 After=multi-user.target
-# The video, its sidecar and the exhibit config are on the data partition
-# mounted at /opt/dex; without this, dexd starts before them and refuses.
+# The video, its sidecar and the exhibit config live in /opt/dex. This costs
+# nothing while that is a directory on the root filesystem, and is what lets a
+# card put the assets on their own partition without editing this unit: without
+# it, dexd would start before that partition mounted and refuse.
 RequiresMountsFor=/opt/dex
 
 # Turns off systemd's start rate limit (5 starts / 10 s), which would leave the

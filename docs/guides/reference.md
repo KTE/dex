@@ -156,7 +156,7 @@ dexd: heartbeat loops=143 uptime=3600s temp=48.2C frame-drops=0 vo-delayed=2 pos
 | `pos-age` | seconds since that position was read |
 | `watchdog` | `armed pings-dropped=N` under the service, `inert` elsewhere |
 
-`n/a` is a value that has not arrived yet, `off` a counter mpv would not report on for this run — dexd asks for both on every start, so `off` is worth reporting. [Run, check, troubleshoot](run-check-troubleshoot.md) reads a healthy line field by field.
+`n/a` is a value that has not arrived yet, `off` a counter mpv would not report on for this run — dexd asks for `frame-drops` and `vo-delayed` on every start, so an `off` is worth an issue in the [dex repository](https://github.com/KTE/dex). [Run, check, troubleshoot](run-check-troubleshoot.md) reads a healthy line field by field.
 
 ## Files and paths
 

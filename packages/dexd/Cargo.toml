@@ -107,10 +107,8 @@ assets = [
 # the asset, and a video is prepared on a workstation, never on the device.
 
 # The package installs no exhibit config and creates no /etc/dex. The config
-# lives beside the video in /opt/dex, the mount point of the dex card's data
-# partition, so a technician edits it from any computer that reads the card. A missing
-# config makes dexd refuse to start and name the file to create — see
-# src/exhibit.rs.
+# lives beside the video in /opt/dex on the player. A missing config makes dexd
+# refuse to start and name the file to create — see src/exhibit.rs.
 
 maintainer-scripts = "deploy/maintainer-scripts"
 # A non-native package without a Debian changelog is a lintian error, and the

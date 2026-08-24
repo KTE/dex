@@ -26,7 +26,7 @@ dexd plays one `.265` file and no other format. The video must:
 - have a sidecar next to it that gives its frame rate and its checksum;
 - carry picture only — dexd plays no sound.
 
-dexd is built for 3840×2160 at 30 fps, and smaller videos play too. Higher frame rates are out of scope for now, and dexd does not refuse one: at 3840×2160 a Raspberry Pi 4 decodes 40 fps at 1.08× the speed it plays and 60 fps at 0.753×, so the ceiling lies between them (measured; see the [measurement record](../design/measurements.md)).
+dexd is built for 3840×2160 at 30 fps, and smaller videos play too. Higher frame rates are out of scope for now, and dexd does not refuse one. Stay at 30 fps: measured on a Raspberry Pi 4 at 3840×2160, 40 fps decodes barely faster than it plays and 60 fps decodes too slowly to play at all (see the [measurement record](../design/measurements.md)).
 
 See [Prepare your video](prepare-video.md) for the encode settings and commands.
 

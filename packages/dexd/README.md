@@ -72,7 +72,7 @@ appears over the picture.
 
 ## Releases
 
-Every change to the crate builds one package,
+Every change to dexd builds one package,
 `dexd_<version>-<build>+g<commit>_arm64.deb`; CI attaches it to that build's run as the
 `dexd-deb` artifact. Under Actions in the [dex repository](https://github.com/KTE/dex),
 open the `dexd deb` workflow, pick the newest successful run on `main`, and download and

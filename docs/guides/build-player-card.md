@@ -61,7 +61,7 @@ sudo apt-get install -y --no-install-recommends edid-decode libdrm-tests
 
 Install a package the project built, never one you built yourself: that package is the one every check ran against.
 
-Every change to the crate builds one, and the build keeps it. Under Actions in the [dex repository](https://github.com/KTE/dex), open the `dexd deb` workflow, pick the newest successful run on `main`, and download and unzip its `dexd-deb` artifact; it holds `dexd_<version>_arm64.deb`. Downloading it needs a GitHub account, and GitHub removes an artifact 90 days after its run; where the newest run's artifact has expired, ask a project member to run the workflow again. A releases page and an apt repository that serve the package are planned — see [Roadmap](../design/roadmap.md). Copy the file to the player and install it with apt:
+Every change to dexd builds a package, and the build run keeps it as a download. Under Actions in the [dex repository](https://github.com/KTE/dex), open the `dexd deb` workflow, pick the newest successful run on `main`, and download and unzip its `dexd-deb` artifact; it holds `dexd_<version>_arm64.deb`. Downloading it needs a GitHub account, and GitHub removes an artifact 90 days after its run; where the newest run's artifact has expired, ask a project member to run the workflow again. A releases page and an apt repository that serve the package are planned — see [Roadmap](../design/roadmap.md). Copy the file to the player and install it with apt:
 
 ```bash
 scp dexd_*_arm64.deb <user>@<host>.local:/tmp/

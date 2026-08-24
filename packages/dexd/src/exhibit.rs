@@ -30,8 +30,8 @@ pub const DEFAULT_EXHIBIT_CONFIG_PATH: &str = "/opt/dex/exhibit.yaml";
 
 /// Where the player looks when `--exhibit-config` is not given, in order.
 ///
-/// Both names sit in the assets directory, so the dex card in a computer shows
-/// the video, its sidecar and the exhibit config together. YAML is searched
+/// Both names sit in the assets directory, beside the video and its sidecar,
+/// so an installation's three files stay together. YAML is searched
 /// first, which only fixes which name a refusal calls the intended one:
 /// [`pick_default_config`] refuses outright when both files exist.
 /// See docs/design/exhibit-config.md#config-location.

@@ -57,10 +57,10 @@ than guess.
 .I stream.265
 The video to play. Optional on a deployed player, where the exhibit config's
 .B asset
-line names it \(em which is what lets several videos sit in
+line names it \(em which lets several videos sit in
 .I /opt/dex
-with the exhibit choosing one. Given here as well, it must resolve to the file
-the config names.
+with the exhibit config naming the one that plays. Given here as well, it must
+resolve to the file the config names.
 .TP
 .BI \-\-fps " F"
 Cross\-check the frame rate, written as
@@ -347,7 +347,7 @@ Where mpv keeps its cache. The unit sets it to
 .IR /var/cache/dexd ,
 the one directory the player may write.
 .SH NOTES
-The display mode belongs to the exhibit: the panel at the venue decides it,
+The display mode belongs to the installation: the panel at the venue decides it,
 not the video and not the unit, so it lives in the exhibit config beside the
 video. After changing
 .B display_mode

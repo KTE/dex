@@ -39,7 +39,7 @@ ffmpeg -i master.mov \
 - `scenecut=0` stops the encoder adding keyframes of its own at scene changes.
 - `-an` drops the audio; `-f hevc` writes the .265 file directly.
 
-**Important:** a .265 file records no rotation, so the picture is shown exactly as its pixels are stored. A master from a phone usually keeps its rotation in the video container rather than in its pixels, and the two routes here treat that differently: encoding applies the rotation, so the picture comes out upright with its width and height swapped, while `-noautorotate` and the stream copy below both leave the pixels as they were stored. Whichever route you take, check the result before the video goes to a venue:
+**Important:** a .265 file records no rotation, so the picture is shown exactly as its pixels are stored. A master from a phone usually keeps its rotation in the video container rather than in its pixels, and the two routes here treat that differently: encoding applies the rotation, so the picture comes out upright with its width and height swapped, while the stream copy below leaves the pixels as they were stored. Whichever route you take, check the result before the video goes to a venue:
 
 ```
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 artwork.265
@@ -147,7 +147,7 @@ Every message with its exit code is in the [reference](reference.md); symptoms t
 
 ## Test cards
 
-The example-content package provides short test cards — a frame counter, three rotating hands, colour bars, a checkerboard border and resolution wedges of fine converging lines. They exist to check that a player shows the picture correctly and loops gaplessly; that package documents how a test card becomes a video, not this page.
+The example-content package provides short test cards — a frame counter, three rotating hands, colour bars, a checkerboard border and resolution wedges of fine converging lines. They exist to check that a player shows the picture correctly and loops gaplessly; how a test card becomes a video is documented in that package.
 
 ## Reference
 
