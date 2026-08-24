@@ -249,7 +249,7 @@ jobs:
           ver=$("$extract/usr/bin/dexd" --version 2>&1 | head -1)
           echo "packaged binary reports: $ver"
           case "$ver" in
-            *nogit*) echo "::error::packaged binary reports (nogit) — build identity not stamped"; exit 1 ;;
+            *nogit*) echo "::error::packaged binary reports (nogit) — build identity not recorded"; exit 1 ;;
           esac
           # A positive assertion, because "does not contain nogit" is also true of the
           # empty string: the build identity must be 12 hex characters and must match the

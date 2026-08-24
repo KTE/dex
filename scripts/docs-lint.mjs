@@ -82,6 +82,11 @@ import { fileURLToPath } from 'node:url';
 // Constants
 // ---------------------------------------------------------------------------
 
+// A reference to a documentation page, with or without a heading anchor. The
+// anchor stops before a sentence's full stop: `…md#config-location.` ends a
+// sentence, and the period is punctuation rather than part of the slug.
+const DOC_REF_RE = /\bdocs\/[A-Za-z0-9._/-]+?\.md(?:#[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)?/g;
+
 const TEXT_EXTS = new Set(['.rs', '.md', '.toml', '.service', '.sh', '.1', '.yml', '.yaml']);
 const SKIP_DIRS = new Set(['target', 'LICENSES', 'node_modules', '.git', '.github/ISSUE_TEMPLATE']);
 
@@ -217,6 +222,20 @@ function quotedRanges(line) {
 /** @param {[number,number][]} ranges @param {number} idx */
 function inRanges(ranges, idx) {
   return ranges.some(([a, b]) => idx > a && idx < b);
+}
+
+/**
+ * A YAML scalar with its quotes blanked away and its columns kept, so a rule
+ * reports a position in the file and not in a substring.
+ * @param {string} v
+ */
+function scalarText(v) {
+  const q = v[0];
+  if (q === '"' || q === "'") {
+    const end = v.lastIndexOf(q);
+    if (end > 0) return ' ' + v.slice(1, end) + blank(v.slice(end));
+  }
+  return v;
 }
 
 /**
@@ -586,6 +605,22 @@ function extractHashComments(text, kind) {
       const m = raw.match(/^(Description\s*=\s*)(.*)$/);
       if (m) return ' '.repeat(m[1].length) + m[2];
     }
+    if (kind === 'hash') {
+      // A workflow's own name and every step name are printed on each run's
+      // page, so anyone looking at a build reads them: public text by any
+      // reading, and where a private plan code sat unnoticed for months. A
+      // `name:` indented under something else -- an artifact, an input -- is an
+      // identifier and stays data, which is what these two shapes select.
+      const n = raw.match(/^(name:\s*|\s*-\s+name:\s*)(.*)$/);
+      if (n) return ' '.repeat(n[1].length) + scalarText(n[2]);
+      // A workflow command reaches whoever reads a failed build.
+      const a = raw.match(/^(.*::(?:error|warning|notice)(?:\s[^:]*)?::)(.*)$/);
+      if (a) {
+        const rest = a[2];
+        const q = rest.lastIndexOf('"');
+        return ' '.repeat(a[1].length) + (q > 0 ? rest.slice(0, q) + blank(rest.slice(q)) : rest);
+      }
+    }
     return blank(raw);
   // Backticks quote a command or a flag in a `#` comment exactly as they do in
   // Markdown: the content is a literal and never reaches a rule.
@@ -846,6 +881,16 @@ function segPos(seg, off) {
  */
 function extract(filePath, text) {
   const ex = extractByKind(filePath, text);
+  // A documentation reference is a path, and a path is machinery. Its file name
+  // and its heading slug are made of words that nobody wrote as prose, so no
+  // prose rule should read them: a heading renamed to "the sidecar check" would
+  // otherwise report the retired command name its slug contains, and a guide's
+  // file name would report whatever the guide is called. The `links` rule reads
+  // the raw lines, so it still resolves them.
+  if (ex.kind !== 'md') {
+    ex.prose = ex.prose.map((line) => line.replace(DOC_REF_RE, (m) => blank(m)));
+    ex.words = countWords(ex.prose.join('\n'));
+  }
   ex.segments = buildSegments(ex);
   return ex;
 }
@@ -1411,12 +1456,12 @@ const RULES = [
       }
 
       // Every other file kind: the bare `docs/...md#anchor` references that
-      // doc-comments use in place of Markdown links. Resolved from the repo
-      // root, which is where the paths in those comments are written from.
-      f.ex.prose.forEach((line, idx) => {
-        // The anchor stops before a sentence's full stop: `...md#config-location.`
-        // ends a sentence, and the period is punctuation, not part of the anchor.
-        for (const m of line.matchAll(/\bdocs\/[A-Za-z0-9._/-]+?\.md(?:#[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)?/g)) {
+      // doc-comments use in place of Markdown links. Read from the raw lines,
+      // because `extract` blanks these out of prose so no other rule reads the
+      // words inside a path. Resolved from the repo root, which is where the
+      // paths in those comments are written from.
+      f.ex.rawLines.forEach((raw, idx) => {
+        for (const m of blankCodeSpans(raw).matchAll(DOC_REF_RE)) {
           check(m[0], idx + 1, (m.index || 0) + 1, root);
         }
       });

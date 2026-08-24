@@ -52,8 +52,17 @@ while `f32` / `f64`, the tails of numeric literals (`0xF6`) and metric fastener 
 standoffs`, `M3 screws`) are not plan codes. Beyond comments, prose also means: Rust string
 literals, `Description=` in a unit file, `description` and `extended-description` in `Cargo.toml`
 (they become the `.deb` `Description:` field, the most public sentence the package ships), string
-*values* in the shipped JSON config, and the arguments of the roff font macros (`.B`, `.I`, `.BR`,
-`.IP` …), which carry whole sentences. Two files keep their own vocabulary: roff uppercases every
+*values* in the shipped JSON config, the arguments of the roff font macros (`.B`, `.I`, `.BR`,
+`.IP` …), which carry whole sentences, and in a workflow the file's own `name:`, every step's
+`- name:` and the text of a `::error::` / `::warning::` / `::notice::` command — a step name is on
+every run's page and an annotation reaches whoever reads a failed build. A `name:` indented under
+another key is an artifact or an input, so it stays an identifier.
+
+A `docs/…md#section` reference is a path, and a path is machinery: it is blanked out of prose
+everywhere but Markdown, so no rule reads the words in a file name or a heading slug. The `links`
+rule reads the raw line and still resolves it. Without that, renaming a heading to "the sidecar
+check" reports the retired command name its slug contains, and a guide's own file name reports
+whatever the guide is called. Two files keep their own vocabulary: roff uppercases every
 `.SH` heading in a man page, and `docs/design/measurements.md` keeps its dates, card IDs and
 `MET` / `VOID` / `FAIL` / `PASS` verdicts.
 

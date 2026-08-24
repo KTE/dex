@@ -444,6 +444,49 @@ test('glossary: a term in the glossary stops being an unknown acronym', () => {
 });
 
 // ---------------------------------------------------------------------------
+// workflow names and annotations
+// ---------------------------------------------------------------------------
+
+test('yaml: the workflow name, a step name and an annotation are prose', () => {
+  const src = [
+    'name: C1 deb',
+    'jobs:',
+    '  build:',
+    '    steps:',
+    '      - name: T7 live-fire (forced recovery)',
+    '        run: |',
+    '          echo "::error::M5 did not run"; exit 1',
+  ].join('\n');
+  const f = of(lint('.github/workflows/dexd.yml', src), 'plan-codes');
+  assert.deepEqual(f.map((x) => [x.line, x.token]), [[1, 'C1'], [5, 'T7'], [7, 'M5']]);
+});
+
+test('yaml: a name: nested under another key is an identifier, not prose', () => {
+  const src = [
+    'jobs:',
+    '  build:',
+    '    steps:',
+    '      - uses: actions/upload-artifact@v4',
+    '        with:',
+    '          name: F6-deb',
+    '          path: T7/out',
+  ].join('\n');
+  assert.deepEqual(tokens(lint('.github/workflows/dexd.yml', src), 'plan-codes'), []);
+});
+
+test('yaml: a quoted step name is read, and the shell after an annotation is not', () => {
+  const src = [
+    'steps:',
+    '  - name: "F6 the exhibit config"',
+    '    run: echo "::error::C1 broke"; exit 1',
+  ].join('\n');
+  const f = of(lint('.github/workflows/dexd.yml', src), 'plan-codes');
+  assert.deepEqual(f.map((x) => x.token), ['F6', 'C1']);
+  // `exit 1` past the closing quote is shell, and reaches no rule.
+  assert.equal(lint('.github/workflows/dexd.yml', src).filter((x) => x.line === 3 && x.col > 40).length, 0);
+});
+
+// ---------------------------------------------------------------------------
 // links
 // ---------------------------------------------------------------------------
 
@@ -576,6 +619,37 @@ test('links: a dead bare reference in a doc comment is an error', () => {
   const f = linkFindings(dir, ['src', 'docs']);
   assert.deepEqual(f.map((x) => x.token), ['docs/design/target.md#gone-section']);
   assert.equal(f[0].severity, 'E');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('links: a documentation path is machinery — no prose rule reads inside it, and the link still resolves', () => {
+  const dir = linkTree({
+    'docs/design/target.md': [
+      '# Target',
+      '',
+      '## The sidecar check',
+      '',
+      'Its slug contains a retired command name.',
+      '',
+    ].join('\n'),
+    'docs/lint-coinages.tsv': 'sidecar-check\tdex-sidecar check\nplayer card\tdex card\n',
+    'src/a.rs': [
+      '//! See docs/design/target.md#the-sidecar-check.',
+      '//! And docs/guides/build-player-card.md for the recipe.',
+      'fn a() {}',
+      '',
+    ].join('\n'),
+    'docs/guides/build-player-card.md': '# Build a card\n\nText.\n',
+  });
+  /** @type {string[]} */
+  const out = [];
+  const io = { log: (s) => out.push(s), err: () => {}, cwd: dir };
+  run(['--format', 'json', '--coinages', 'docs/lint-coinages.tsv', 'src', 'docs'], io);
+  const found = JSON.parse(out.join('\n'));
+  assert.deepEqual(found.filter((x) => x.rule === 'coinages'), [],
+    'the slug and the file name are inside a path, so the coinage rule never sees them');
+  assert.deepEqual(found.filter((x) => x.rule === 'links'), [],
+    'the links rule reads the raw line, so both references still resolve');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
