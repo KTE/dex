@@ -163,7 +163,7 @@ dexd: heartbeat loops=143 uptime=3600s temp=48.2C frame-drops=0 vo-delayed=2 pos
 | Path | Holds |
 |---|---|
 | `/usr/bin/dexd`, `/usr/bin/dex-exhibit-apply`, `/usr/bin/dex-wait-hdmi` | the installed programs |
-| `/opt/dex` | the dex card's data partition — the one any computer can open: the video, its sidecar and the config |
+| `/opt/dex` | the assets directory on the player: the video, its sidecar and the config |
 | `/opt/dex/exhibit.yaml` or `/opt/dex/exhibit.json` | the exhibit config; the package installs none, so create it |
 | `/boot/firmware/cmdline.txt` | the boot options, including the forced display mode |
 | `/boot/firmware/cmdline.txt.bak-*` | backups from `dex-exhibit-apply`; the five newest are kept |

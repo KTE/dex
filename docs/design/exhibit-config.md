@@ -12,7 +12,7 @@ The `asset` key completes the pairing of display and video: one file names the v
 
 ## Config location
 
-dexd looks for `/opt/dex/exhibit.yaml`, then `/opt/dex/exhibit.json`; `--exhibit-config PATH` overrides both. `/opt/dex` is the mount point of the dex card's data partition, so the card in a computer shows the video, its sidecar and the config together; the unit waits for that mount (see [service-unit.md](service-unit.md)).
+dexd looks for `/opt/dex/exhibit.yaml`, then `/opt/dex/exhibit.json`; `--exhibit-config PATH` overrides both. `/opt/dex` is the assets directory, holding the video, its sidecar and the config together; the unit waits for it as a mount point (see [service-unit.md](service-unit.md)).
 
 The package installs no exhibit config: no default file, no file dpkg would preserve across upgrades, no `/etc/dex` directory. A player without one refuses to start and prints the path to create together with a two-line example (see [startup-checks.md](startup-checks.md)).
 

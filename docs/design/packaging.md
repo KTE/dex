@@ -34,7 +34,7 @@ Binaries go to `/usr/bin`, never `/usr/local/bin`: Debian policy reserves `/usr/
 
 `dex-exhibit-apply(1)` ships because it runs on the device, as root, whenever the exhibit config changes. `dex-sidecar(1)` does not ship: it writes and checks a sidecar, and a video is prepared on a workstation.
 
-The package installs no video, no sidecar and no exhibit config, and creates no `/etc/dex`. All three are content that changes per installation and live together in `/opt/dex`, the mount point of the dex card's data partition; `postinst` creates that directory. A missing config makes dexd refuse to start and name the file to create — see [exhibit config](exhibit-config.md).
+The package installs no video, no sidecar and no exhibit config, and creates no `/etc/dex`. All three are content that changes per installation and live together in `/opt/dex`, the assets directory; `postinst` creates it on the root filesystem. A missing config makes dexd refuse to start and name the file to create — see [exhibit config](exhibit-config.md).
 
 The unit is enabled at install (`enable = true`) and left stopped (`start = false`). A device that is only power-cycled comes back playing, and a technician chooses the moment the player takes DRM master. [The systemd unit](service-unit.md) covers its settings.
 

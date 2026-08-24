@@ -42,7 +42,7 @@ Three files make a player, all in `/opt/dex`:
 
 The package installs none of them; if one is missing, dexd refuses to start rather than guess and names the file to create.
 
-`/opt/dex` is the part of the dex card any computer can open. Put the card in a laptop to copy or edit the three files — no Linux knowledge, no network, no login. See [Configure the exhibit](configure-exhibit.md).
+`/opt/dex` is the assets directory on the player. Copy the three files there over the network and edit the exhibit config in place — [Build a dex card](build-player-card.md) gives the commands. A card whose assets sit on their own partition, editable with the card in a laptop, is planned and not built; see [Roadmap](../design/roadmap.md). See [Configure the exhibit](configure-exhibit.md).
 
 ## Hardware
 
@@ -85,4 +85,4 @@ The installed package links the mpv library. Debian builds that library against 
 - [Run, check, troubleshoot](run-check-troubleshoot.md) goes from a symptom to a fix.
 - [Reference](reference.md) lists the config keys, exit codes and messages.
 - The [glossary](../glossary.md) defines every term used here.
-- Manual pages, read with `man dexd`: `dexd`(1), `dex-sidecar`(1), `dex-exhibit-apply`(1), `dex-wait-hdmi`(1).
+- Manual pages on the player, read with `man dexd`: `dexd`(1), `dex-exhibit-apply`(1), `dex-wait-hdmi`(1). `dex-sidecar` runs on a workstation and has its page in the repository, at `packages/dexd/deploy/man/dex-sidecar.1`.

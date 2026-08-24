@@ -41,7 +41,7 @@ Other options:
 
 ## Ingest on the player
 
-A technician prepares the video on a workstation and copies it to the dex card. The video, its sidecar and the exhibit config sit together in `/opt/dex`, the card's FAT data partition, which any computer mounts (see [data partition](../glossary.md#data-partition)).
+A technician prepares the video on a workstation and copies it to the dex card over the network. The video, its sidecar and the exhibit config sit together in `/opt/dex`. Giving that directory its own FAT partition, so any computer mounts it and a technician edits the files with the card in a laptop, is the intended arrangement and is not built (see [data partition](../glossary.md#data-partition)); the card the guides build keeps the assets on its root filesystem.
 
 The planned stage moves preparation onto the player: during USB copy, the player converts with ffmpeg every file on the stick that has no converted counterpart yet.
 

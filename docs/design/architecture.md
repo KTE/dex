@@ -190,7 +190,7 @@ The event loop dispatches eight events and ignores the rest:
 | `/opt/dex` | root-owned, mode `0755`, mounted read-only into the unit | the video, its sidecar and the exhibit config |
 | `/var/cache/dexd` | created by systemd, owned by the service user | mpv's shader cache, through `XDG_CACHE_HOME` |
 
-`/opt/dex` is the mount point of the dex card's data partition, so the same three files are visible when the card is put in a computer. See [Exhibit config](exhibit-config.md).
+`/opt/dex` is the assets directory. On the card the guides build it is a directory on the root filesystem; the unit waits for it as a mount point, so a card that gives the assets their own partition needs no change. See [Exhibit config](exhibit-config.md).
 
 ## Pass criteria
 

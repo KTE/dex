@@ -16,7 +16,7 @@ RequiresMountsFor=/opt/dex
 
 A getty on tty1 holds DRM master, which would stop the player taking the display; `Conflicts=` stops the getty, so the player never fails with `device busy`.
 
-`/opt/dex` is the mount point of the dex card's data partition, where the video, its sidecar, and the [exhibit config](exhibit-config.md) live. Without `RequiresMountsFor=`, dexd starts before they are mounted and refuses.
+`/opt/dex` is the assets directory, where the video, its sidecar, and the [exhibit config](exhibit-config.md) live. `RequiresMountsFor=` costs nothing while it is a directory on the root filesystem, and is what lets a card put the assets on their own partition without touching the unit: without it, dexd would start before that partition mounted and refuse.
 
 A fresh device needs `sudo systemctl set-default multi-user.target`, so no desktop session claims the display.
 

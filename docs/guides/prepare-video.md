@@ -39,7 +39,13 @@ ffmpeg -i master.mov \
 - `scenecut=0` stops the encoder adding keyframes of its own at scene changes.
 - `-an` drops the audio; `-f hevc` writes the .265 file directly.
 
-**Important:** if the master carries a rotation flag — phone footage often does — add `-noautorotate`. A .265 file cannot record a rotation, and without the flag ffmpeg turns the picture while encoding, writing a 2160x3840 portrait file that looks correct on your desktop and sideways at the venue.
+**Important:** a .265 file records no rotation, so the picture is shown exactly as its pixels are stored. A master from a phone usually keeps its rotation in the video container rather than in its pixels, and the two routes here treat that differently: encoding applies the rotation, so the picture comes out upright with its width and height swapped, while `-noautorotate` and the stream copy below both leave the pixels as they were stored. Whichever route you take, check the result before the video goes to a venue:
+
+```
+ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 artwork.265
+```
+
+The width and height it prints are the ones the artwork will be shown at.
 
 ## Files already in HEVC
 
@@ -117,7 +123,7 @@ Copy both files — `artwork.265` and `artwork.265.json` — into `/opt/dex` on 
 asset: artwork.265
 ```
 
-`/opt/dex` is the part of the card any computer can open, so you can put the card in a computer and edit the exhibit config there, beside the video. The file name is yours to choose and several videos can sit there; the exhibit config names which one plays.
+`/opt/dex` is the assets directory on the player, reached over the network. The file name is yours to choose and several videos can sit there; the exhibit config names which one plays.
 
 A new video plays from the next start: `sudo systemctl restart dexd`. See [configure the exhibit](configure-exhibit.md).
 

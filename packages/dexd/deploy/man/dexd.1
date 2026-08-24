@@ -156,9 +156,10 @@ test harness, ends the process.
 .SH FILES
 .TP
 .I /opt/dex
-The assets directory, and the mount point of the dex card's data partition. A
-card in a computer shows the video, its sidecar and the exhibit config
-together.
+The assets directory: the video, its sidecar and the exhibit config together.
+On the card the guides build it is a directory on the root filesystem, reached
+over the network; the unit waits for it as a mount point, so a card that gives
+the assets their own partition needs no change.
 .TP
 .IR /opt/dex/exhibit.yaml ", " /opt/dex/exhibit.json
 The exhibit config. The package installs neither file; where none exists, dexd
@@ -186,8 +187,9 @@ Informational lines the player does not act on.
 The sidecar, required beside the video. It carries the frame rate, a checksum
 of the video's bytes and, where the preparation tool could read them, the
 video's width and height; dexd exits where the sidecar is missing, stale or
-does not match the video. Written by
-.BR dex\-sidecar (1).
+does not match the video. Written on a workstation by
+.BR dex\-sidecar ,
+which this package does not install.
 .TP
 .I /lib/systemd/system/dexd.service
 The unit: what starts the player at boot, restarts it after a failure and arms
@@ -314,14 +316,16 @@ Status 2, printed before playback. The line names both values on a
 disagreement, and the file to create or the command to run where one exists.
 .TP
 .B "warning: display_mode is ""auto"" and the asset is <WxH>"
-The connector offers no mode of the video's own size, so it plays at whatever
-size the connector negotiates while every other reading looks nominal. Set
+The connector offers no mode of the video's own size. This ends one of two
+ways: the artwork plays at the wrong size while every other reading looks
+nominal, or it never appears and the player restarts. Which repair applies is a
+property of the display. If it can build that size once forced, set
 .B display_mode
 and
 .B kms_force
 in the exhibit config, run
 .BR "sudo dex\-exhibit\-apply" ,
-and reboot.
+and reboot; if it cannot, prepare the video at a size the connector offers.
 .SH ENVIRONMENT
 .TP
 .B NOTIFY_SOCKET
@@ -365,7 +369,6 @@ measurement record in the repository,
 holds the conditions.
 .SH SEE ALSO
 .BR dex\-exhibit\-apply (1),
-.BR dex\-sidecar (1),
 .BR dex\-wait\-hdmi (1),
 .BR mpv (1),
 .BR journalctl (1),
