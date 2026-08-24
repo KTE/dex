@@ -200,15 +200,20 @@ A display that must not be forced: a 2560x1440 monitor whose EDID never
 mentions 2160 shows its preferred mode correctly. Set
 .B display_mode
 to
-.B 2560x1440@60
-or
-.BR auto ,
+.B auto
 and leave
 .B kms_force
 at
 .BR none .
-Forcing 4K here transmits a picture the monitor cannot show, and the screen
-stays black.
+Prefer
+.B auto
+to naming the mode: many panels offer one fractional refresh and nothing near
+it \(em one such monitor offers its 2560x1440 at 59.95 Hz alone \(em where
+.B 2560x1440@60
+matches no mode and the player restarts, while
+.B auto
+takes the connector's own preferred timing. Forcing 4K here transmits a
+picture the monitor cannot show, and the screen stays black.
 .SH FILES
 .TP
 .IR /opt/dex/exhibit.yaml ", " /opt/dex/exhibit.json
@@ -342,7 +347,9 @@ or a decimal such as
 .B @29.97
 in either key. mpv rejects the fraction while it parses its options, and rounds
 .B @29.97
-to 29 (measured on a Raspberry Pi 4; see
+to the nearest whole number, so it asks for the same 30 Hz mode that
+.B @30
+names (measured on a Raspberry Pi 4; see
 .IR docs/design/measurements.md ).
 .PP
 Do not edit
@@ -359,7 +366,6 @@ is the fallback. It runs before dexd and waits until an HDMI connector reads
 .BR connected .
 .SH SEE ALSO
 .BR dexd (1),
-.BR dex\-sidecar (1),
 .BR dex\-wait\-hdmi (1),
 .BR systemd.service (5)
 .PP

@@ -13,6 +13,8 @@ dexd (0.1.0-1) unstable; urgency=medium
   * While playing it checks that playback advances, recovers in place, writes
     a heartbeat to the system log, and lets the service manager restart it if
     it stops responding.
-  * Commands: dexd(1), dex-sidecar(1), dex-exhibit-apply(1), dex-wait-hdmi(1).
+  * Commands on the player: dexd(1), dex-exhibit-apply(1), dex-wait-hdmi(1).
+    The video is prepared on a workstation with dex-sidecar, which this package
+    does not install.
 
  -- Max Albrecht <1@178.is>  Tue, 18 Aug 2026 20:00:00 +0200

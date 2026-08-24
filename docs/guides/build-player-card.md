@@ -59,9 +59,9 @@ sudo apt-get install -y --no-install-recommends edid-decode libdrm-tests
 
 ## Installing dexd
 
-Install a released build, never one you built yourself: the released `.deb` is the package the project builds and checks automatically.
+Install a package the project built, never one you built yourself: that package is the one every check ran against.
 
-Download `dexd_<version>_arm64.deb` from the project's releases page, <https://github.com/KTE/dex/releases>; an apt repository that serves it is planned. Copy it to the player and install it with apt:
+Every change to the crate builds one, and the build keeps it. Under Actions in the [dex repository](https://github.com/KTE/dex), open the `dexd deb` workflow, pick the newest successful run on `main`, and download and unzip its `dexd-deb` artifact; it holds `dexd_<version>_arm64.deb`. A releases page and an apt repository that serve the package are planned — see [Roadmap](../design/roadmap.md). Copy the file to the player and install it with apt:
 
 ```bash
 scp dexd_*_arm64.deb <user>@<host>.local:/tmp/
