@@ -255,6 +255,12 @@ Processor use stayed at 25–27% with process time climbing between samples — 
 
 Not established: that the picture returned to the display.
 
+### The event an in-place recovery produces
+
+Conditions: mpv 0.40.0 on a Raspberry Pi, driven live.
+
+A `loadfile … replace` command makes mpv emit `END_FILE` with reason `stop` (value 2) for the file being replaced. dexd treats `END_FILE` as fatal, so an in-place recovery would kill the process it is repairing unless that one event is counted and absorbed; this is the reading the absorption rests on (see [failure-handling.md](failure-handling.md)).
+
 ### Recovery check in CI
 
 The recovery test runs against a real mpv under software decode with no display. As shipped it passes, running its full 30 s deadline. Disabling the recovery counter's increment fails the recovery step in 3.11 s, logging an in-place recovery attempt immediately followed by the fatal playback-ended line. The lint and unit-test steps still pass under the same change: that code path is reachable only through a live mpv event loop.
@@ -278,6 +284,8 @@ Nothing recovered during the twenty-five-hour run, so only tests exercise the co
 ### Packaging checks on hardware
 
 The package installs, enables, starts, stops, removes and purges, with systemd resolving the unit from `/usr/lib/systemd/system/dexd.service`. The arm64 binary embeds no libyaml. `ldd` lists none and `strings` finds no libyaml C symbols — every YAML symbol is Rust-mangled — and no crate in the YAML parser's dependency subtree has a build script, a `links` key, or is a `-sys` crate. See [packaging.md](packaging.md).
+
+`ldd` reports 228 shared objects for the installed binary. Linking libmpv accounts for the count: mpv pulls its own decoders, output paths and their dependencies in behind it, and dpkg-shlibdeps names only the packages providing the sonames the binary links itself (see [packaging.md](packaging.md)).
 
 The test suite runs on a development workstation and on a Pi before a change lands; counts move with every change, so none is quoted here — [development.md](development.md) says how to run them.
 

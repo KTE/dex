@@ -78,7 +78,7 @@ dexd clears the consecutive-stall counter before each attempt or escalation, so 
 
 ### Expected end-of-file
 
-`loadfile ... replace` makes mpv emit `END_FILE` with reason `stop` (value 2) for the file being replaced, confirmed live against mpv 0.40.0 on a Raspberry Pi (measured). dexd absorbs that event and continues:
+`loadfile ... replace` makes mpv emit `END_FILE` with reason `stop` (value 2) for the file being replaced (measured on mpv 0.40.0 on a Raspberry Pi; see [measurements.md](measurements.md#the-event-an-in-place-recovery-produces)). dexd absorbs that event and continues:
 
 ```
 dexd: health check: in-place recovery's loadfile replaced the stream; absorbing the expected END_FILE(reason=stop) for the file it replaced (0 more still outstanding), not treating it as a failure

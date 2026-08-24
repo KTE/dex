@@ -10,7 +10,7 @@ Output at 3840×2160 is a requirement (decided), and resolution alone disqualifi
 
 No published work offered a gapless 4K loop on the current Raspberry Pi graphics stack, so dexd was written. It feeds libmpv an endless byte stream, so the decoder never reaches the end of the file and never seeks (see [endless-stream.md](endless-stream.md)).
 
-Two further requirements are decided. The player must survive having mains power cut, which is how a gallery switches it off. The delivery format of a master is not a constraint: a master — the artist's original file — arrives in whatever format the artist has, and the project converts it before it reaches the player (see [../guides/prepare-video.md](../guides/prepare-video.md)).
+Two further requirements are decided. The player must survive having mains power cut, which is how a gallery switches it off. The delivery format is not a constraint: the artist's supplied master (see [artist's supplied master](../glossary.md#artists-supplied-master)) arrives in whatever format the artist authored it in, and the project converts it before it reaches the player (see [../guides/prepare-video.md](../guides/prepare-video.md)).
 
 ## Stages
 

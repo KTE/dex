@@ -22,6 +22,22 @@ Also written: Debian package · the .deb · dexd_<version>_arm64.deb
 
 Tier: user
 
+### archival master
+
+The copy of a video artwork a collection keeps for the long term, at the quality it was given, played from by nobody and edited by nobody. Time-based media conservation separates it from the copies made to show and to consult, because a file that is shown gets re-encoded, moved and eventually lost. No player holds one: what runs on a dex card is an exhibition format (see exhibition format) encoded from the artist's supplied master (see artist's supplied master).
+
+Also written: AM · preservation master · preservation copy
+
+Tier: user
+
+### artist's supplied master
+
+The video file the artist hands over, in whatever format they authored it in, before anyone encodes it for a player. Time-based media conservation names it so that the file a venue was given stays distinguishable from every copy made afterwards, which is the distinction that decides what to keep when a format dies. It is what the ffmpeg commands in [prepare-video.md](guides/prepare-video.md) read from; the .265 they write is a separate file.
+
+Also written: ASM · the master · the artist's file · the delivered file
+
+Tier: user
+
 ### asset
 
 The one video file the player loops — the video asset — named by the `asset` line of the exhibit config, as a file name next to the config (for example `artwork.265`) or an absolute path. If no asset is named, dexd refuses to start rather than guess. The artwork is the whole installation the asset plays in.
@@ -107,6 +123,14 @@ Tier: user
 The information a display sends over the HDMI cable describing itself and the modes it can show. dexd and the Raspberry Pi rely on it to choose a mode; some displays send it late or wrongly, which is why kms_force and dex-wait-hdmi exist.
 
 Also written: display identification · the display's self-description · edid-decode (tool that prints it)
+
+Tier: user
+
+### exhibition format
+
+The copy of a video artwork prepared to be shown, as against the copy kept for preservation or the one consulted for research. Time-based media conservation uses the term across media; for dex it is the `.265` file a player loops — HEVC pictures with no container, encoded from the artist's supplied master (see artist's supplied master) and bound to a sidecar (see sidecar). The exhibit config names which one plays, by the `asset` key (see asset).
+
+Also written: EF · exhibition copy · the .265
 
 Tier: user
 

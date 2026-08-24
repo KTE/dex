@@ -89,6 +89,8 @@ An apt repository for `apt install dexd` is planned — see
 
 ## Documentation
 
+[The documentation index](../../docs/README.md) maps both sets of pages.
+
 1. [What dexd is](../../docs/guides/what-dexd-is.md)
 2. [Build a dex card](../../docs/guides/build-player-card.md)
 3. [Prepare your video](../../docs/guides/prepare-video.md)

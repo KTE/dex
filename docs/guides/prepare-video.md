@@ -1,6 +1,6 @@
 # Prepare your video
 
-dexd plays one video, and it plays only a .265 file: HEVC pictures with no video container around them and no sound. Follow this page to turn your master — the finished export from your editing software — into that .265 file and its sidecar, before anything goes to a dex card.
+dexd plays one video, and it plays only a .265 file: HEVC pictures with no video container around them and no sound. Follow this page to turn the file the artist gave you — the [artist's supplied master](../glossary.md#artists-supplied-master), whatever format it arrived in — into that .265 file and its sidecar, before anything goes to a dex card.
 
 You need ffmpeg with ffprobe, and Rust's build tool `cargo`, on the workstation where you prepare the video.
 

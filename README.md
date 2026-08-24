@@ -3,7 +3,7 @@
 dexd is built to play the video of an installation on a Raspberry Pi, unattended, for weeks. This repository
 holds dexd and the parts around it.
 
-If you are setting up a player, start with [What dexd is](docs/guides/what-dexd-is.md).
+If you are setting up a player, start with [What dexd is](docs/guides/what-dexd-is.md). [The documentation index](docs/README.md) maps both sets of pages, for a technician and for a developer.
 
 ## Packages
 
