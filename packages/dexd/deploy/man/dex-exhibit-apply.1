@@ -1,0 +1,384 @@
+.TH DEX\-EXHIBIT\-APPLY 1 "August 19, 2026" "dexd 0.1.0" "dexd manual"
+.SH NAME
+dex\-exhibit\-apply \- write the exhibit config's forced display mode into the
+kernel command line
+.SH SYNOPSIS
+.B sudo dex\-exhibit\-apply
+.RB [ \-\-exhibit\-config
+.IR path ]
+.RB [ \-\-cmdline\-path
+.IR path ]
+.SH DESCRIPTION
+A forced display mode is a
+.B video=
+option on the kernel command line, in
+.IR /boot/firmware/cmdline.txt .
+.B dex\-exhibit\-apply
+reads
+.BR kms_force ,
+.B connector
+and
+.B display_mode
+from the exhibit config and writes that option there. Run it as root after
+every edit to
+.B kms_force
+or
+.BR connector .
+.PP
+.B dex\-exhibit\-apply
+rewrites only the
+.B video=
+option naming the configured connector. Every other option keeps its value and
+its position, and so does every other connector's
+.B video=
+option. A
+.B kms_force
+of
+.B none
+removes the option for that connector instead of writing one. A second run over
+an already matching file changes nothing and reports
+.BR "no change" .
+.PP
+Before any change it copies the current line to a timestamped backup beside it.
+It writes the new line to a temporary file and renames that over
+.IR cmdline.txt ,
+so a power cut during the write cannot leave a Raspberry Pi that will not boot.
+.PP
+.B dex\-exhibit\-apply
+prints
+.B REBOOT REQUIRED
+only when the file changed. dexd binds the display from the running kernel's
+.IR /proc/cmdline ,
+so the new option takes effect at the next boot.
+.SH OPTIONS
+.TP
+.BI \-\-exhibit\-config " path"
+The exhibit config to read. Default: whichever of
+.I /opt/dex/exhibit.yaml
+and
+.I /opt/dex/exhibit.json
+exists. At most one may exist.
+.B dex\-exhibit\-apply
+refuses when both exist and names both files: keep exactly one, or name the
+file with
+.BR \-\-exhibit\-config .
+The file extension selects the parser:
+.B .json
+is strict JSON,
+.B .yaml
+and
+.B .yml
+are YAML. This is the same search
+.BR dexd (1)
+makes, so the boot options and dexd always read the same file.
+.TP
+.BI \-\-cmdline\-path " path"
+The file to rewrite. Default
+.IR /boot/firmware/cmdline.txt .
+Test rig only: it points the rewrite at a copy, leaving the real boot options
+alone.
+.TP
+.BR \-h ", " \-\-help
+Print the usage text and exit with status 2.
+.SH CONFIG KEYS
+.TP
+.B asset
+The video to play: a file name beside the config, such as
+.BR artwork.265 ,
+or an absolute path.
+.B dex\-exhibit\-apply
+does not use it. You may leave it out, but then nothing names a video and dexd
+refuses to start rather than guess one.
+.TP
+.B display_mode
+Required.
+.BR auto ,
+or
+.B WxH@R
+with a whole\-number rate, such as
+.BR 3840x2160@30 .
+It is what dexd asks mpv for.
+.TP
+.B kms_force
+Default
+.BR none .
+.BR none ,
+or
+.B WxH@R
+with an optional trailing
+.BR D ,
+such as
+.BR 3840x2160@30D .
+This is the value written into
+.IR cmdline.txt .
+The
+.B D
+makes the connector count as connected before a display is attached, for a
+projector that presents its EDID late.
+.TP
+.B connector
+Default
+.BR HDMI\-A\-1 .
+The HDMI port the display is plugged into, and the connector whose
+.B video=
+option
+.B dex\-exhibit\-apply
+rewrites.
+.TP
+.BR display ", " venue ", " note
+Free text recording what this installation is. dexd type\-checks them and reads
+them nowhere else.
+.PP
+dexd refuses an unrecognised key instead of ignoring it, so a misspelled
+.B kms_forse
+stops the next start rather than dropping a forced display mode. The extension
+decides the format, and dexd refuses YAML in a file named
+.BR .json .
+Name the file for what is in it.
+.SH STARTUP CHECKS
+Two checks at the player's next start rest on these values. Both exit 2 rather
+than start on a display mode nobody set.
+.PP
+The cmdline check compares
+.B kms_force
+with the
+.B video=
+option in the running kernel's
+.IR /proc/cmdline .
+Each refusal names both repairs, because either side may be the stale one: the
+boot options may carry a leftover force, or a force this venue needs that a
+newly written config omits.
+.PP
+The resolution pre\-flight compares the
+.B WxH
+half of
+.B display_mode
+with the modes the connector lists in
+.IR /sys/class/drm/card*\-<connector>/modes ,
+before the video is opened. That list has no rate column, so the
+.B @R
+half is checked for grammar alone. A rate the connector does not offer fails
+later: mpv reports
+.B "Could not find mode matching 3840x2160@60"
+when the video output starts, and the player restarts instead of playing. Set
+.B display_mode
+to a rate the display offers, or to
+.BR auto .
+.SH EXAMPLES
+Swapping the display on an installed player:
+.PP
+.EX
+# set display_mode and kms_force for the new display
+sudoedit /opt/dex/exhibit.yaml
+sudo dex\-exhibit\-apply
+.EE
+.PP
+The last command prints one of two lines. After
+.B REBOOT REQUIRED
+run
+.BR "sudo reboot" .
+After
+.B "no change"
+the edit touched no boot option, and
+.B "sudo systemctl restart dexd"
+picks it up at the next player start.
+.PP
+A display that needs the force: a 4K capture device announces 3840x2160 at
+30 Hz as its preferred mode, and the graphics driver builds no 4K mode from
+that announcement. Forced, the same mode works (measured; see
+.IR docs/design/measurements.md ).
+Set
+.B display_mode
+to
+.B 3840x2160@30
+and
+.B kms_force
+to
+.BR 3840x2160@30D .
+.PP
+A display that must not be forced: a 2560x1440 monitor whose EDID never
+mentions 2160 shows its preferred mode correctly. Set
+.B display_mode
+to
+.B auto
+and leave
+.B kms_force
+at
+.BR none .
+Prefer
+.B auto
+to naming the mode: many panels offer one fractional refresh and nothing near
+it \(em one such monitor offers its 2560x1440 at 59.95 Hz alone \(em where
+.B 2560x1440@60
+matches no mode and the player restarts, while
+.B auto
+takes the connector's own preferred timing. Forcing 4K here transmits a
+picture the monitor cannot show, and the screen stays black.
+.SH FILES
+.TP
+.IR /opt/dex/exhibit.yaml ", " /opt/dex/exhibit.json
+The exhibit config, next to the video it names. At most one of the two.
+.TP
+.I /boot/firmware/cmdline.txt
+The kernel command line, one line of space\-separated options.
+.TP
+.I /boot/firmware/cmdline.txt.bak\-<seconds>
+The backup, named for the second it was written.
+.B dex\-exhibit\-apply
+keeps the five most recent and names each older one it removes on standard
+output.
+.TP
+.I /boot/firmware/cmdline.txt.new
+The temporary file the new line goes to before the rename.
+.B dex\-exhibit\-apply
+removes it when the rename fails, and the original stays as it was.
+.TP
+.I /proc/cmdline
+The running kernel's command line, which the cmdline check compares the exhibit
+config against.
+.SH EXIT STATUS
+.TP
+.B 0
+.I cmdline.txt
+now matches the exhibit config, either because
+.B dex\-exhibit\-apply
+rewrote it or because it already matched.
+.TP
+.B 1
+A file could not be read or written.
+.I cmdline.txt
+is either untouched or fully replaced, never half\-written.
+.TP
+.B 2
+.B dex\-exhibit\-apply
+refused and wrote nothing: the command was not run as root, no exhibit config
+was found or the one found is invalid, the command line was not understood, or
+the rewrite would produce an empty or multi\-line
+.IR cmdline.txt .
+.SH DIAGNOSTICS
+.TP
+.B dex\-exhibit\-apply: applying <path> (connector <C>, kms_force <F>)
+The first line of a run that got as far as reading the config. Check this line
+first when the display mode is wrong: it names the file this run read and the
+two values it acts on.
+.TP
+.B "dex\-exhibit\-apply: <path> already matches the exhibit config \-\- no change"
+Status 0, nothing written and no reboot needed. An edit that touched only
+.B asset
+or
+.B display_mode
+takes effect at the next player start:
+.BR "sudo systemctl restart dexd" .
+.TP
+.B "REBOOT REQUIRED \-\- dexd binds the display from the running kernel's /proc/cmdline"
+Status 0, after the lines naming the old line, the new line and the backup. The
+forced display mode takes effect at the next boot.
+.TP
+.B "error: dex\-exhibit\-apply must run as root (sudo dex\-exhibit\-apply)"
+Status 2, checked before any file is opened, so a run without
+.BR sudo (8)
+stops with every file as it was.
+.TP
+.B error: no exhibit config found (looked for <paths>)
+Status 2. Create
+.I /opt/dex/exhibit.yaml
+next to the video, or name a config with
+.BR \-\-exhibit\-config .
+.TP
+.B error: <n> exhibit configs exist at once (<paths>)
+Status 2. Keep exactly one file, or name the intended one with
+.BR \-\-exhibit\-config .
+Switching from JSON to YAML leaves the older file in place, and the message
+gives the
+.BR rm (1)
+line for it.
+.PP
+Every message dexd and its tools print, with the repair for each, is listed in
+.IR docs/guides/reference.md .
+.SH UPGRADES
+A player set up before the display mode moved into the exhibit config may still
+carry a service override file (a drop\-in under
+.IR /etc/systemd/system/dexd.service.d/ )
+that passes
+.BR \-\-mode .
+The packaged unit passes no arguments, and installing the package prints a note
+when such a file is present. A drop\-in whose value agrees with the config
+changes nothing until it is removed; one that disagrees makes dexd refuse to
+start, naming both values. Check the directory first, because this removes every
+override, not only the
+.B \-\-mode
+one:
+.PP
+.EX
+ls /etc/systemd/system/dexd.service.d/
+sudo rm /etc/systemd/system/dexd.service.d/*.conf
+sudo systemctl daemon\-reload
+.EE
+.PP
+dexd does not read a config left under
+.I /etc/dex
+either. Move it next to the video, but only if
+.I /opt/dex
+has no config yet, since two configs refuse:
+.PP
+.EX
+sudo mv /etc/dex/exhibit.* /opt/dex/ && sudo rmdir /etc/dex
+.EE
+.PP
+If
+.I /opt/dex
+already holds a config, copy the values across by hand and delete the old file.
+.SH NOTES
+Writing boot options is a separate step, run by hand.
+.BR dexd (1)
+runs as an unprivileged user and cannot write to the boot partition;
+.B dex\-exhibit\-apply
+is the privileged half, and it changes one option in one file.
+.PP
+Write refresh rates as whole numbers in both
+.B display_mode
+and
+.BR kms_force .
+The kernel's
+.B video=
+grammar has no fractional rate, and dexd refuses a fraction such as
+.B @30000/1001
+or a decimal such as
+.B @29.97
+in either key. mpv rejects the fraction while it parses its options, and
+.B @29.97
+names the same 30 Hz mode that
+.B @30
+does, because a display mode carries a whole-number refresh and nothing else
+(see
+.IR docs/glossary.md ,
+vrefresh).
+.PP
+Do not edit
+.I cmdline.txt
+by hand. State the display mode in the exhibit config: a hand edit the config
+does not match stops the player at its next start.
+.PP
+Where
+.B kms_force
+is
+.BR none ,
+.BR dex\-wait\-hdmi (1)
+is the fallback. It runs before dexd and waits until an HDMI connector reads
+.BR connected .
+.SH SEE ALSO
+.BR dexd (1),
+.BR dex\-wait\-hdmi (1),
+.BR systemd.service (5)
+.PP
+Guides in the repository:
+.IR docs/guides/configure\-exhibit.md ,
+.IR docs/guides/install\-dexos.md ,
+.IR docs/guides/run\-check\-troubleshoot.md ,
+.IR docs/guides/reference.md ,
+.IR docs/guides/what\-dexd\-is.md .
+Design notes:
+.IR docs/design/exhibit\-config.md ,
+.IR docs/design/startup\-checks.md ,
+.IR docs/design/service\-unit.md ,
+.IR docs/design/measurements.md .

@@ -1,0 +1,544 @@
+# Build the dexd Debian package for the Raspberry Pi players.
+#
+# The package derives `Depends:` from the shared libraries the binary links
+# (dpkg-shlibdeps, driven by `depends = "$auto"` in Cargo.toml), so apt refuses
+# a libmpv version mismatch when the package is installed. That holds only while
+# the build environment matches the target: `ubuntu-24.04-arm` gives native
+# arm64, the `debian:trixie` container gives Debian's libraries. Re-check the
+# pairing when the players move to a new Debian release:
+#   ssh <pi> '. /etc/os-release; echo $VERSION_CODENAME; dpkg -s libmpv2'
+#
+# rustc and cargo come from Debian, not rustup, because the package is built for
+# Debian and must build with the compiler the players have (trixie ships 1.85).
+# A dependency that needs a newer compiler cannot be adopted; the `rust-version`
+# floor in Cargo.toml states the same limit and this workflow enforces it. See
+# docs/design/ci.md.
+name: dexd deb
+
+# Manual dispatch only appears in the Actions interface for workflows that are on
+# the default branch.
+#
+# No path filters: a filtered workflow that does not run reports nothing, and a
+# required check that never reports blocks every merge. The workflow always runs,
+# the `changes` job decides what is relevant, and `gate` reports the one verdict
+# branch protection requires.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "experiment/**", "feature/**"]
+    tags: ["dexd-v*"]
+  pull_request:
+
+# One run per ref; a superseded run is cancelled. Grouping by ref keeps a tag
+# build, which produces the release artifact, from being cancelled by a push to a
+# branch.
+concurrency:
+  group: dexd-deb-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CRATE_DIR: packages/dexd
+  # build.rs compiles this into the binary as its build identity. An environment
+  # variable, because `rerun-if-changed` on a path that did not exist when the
+  # cached build ran counts as unchanged: with a warm target/ cache the build-id
+  # file is written and then ignored, and the package reports `(nogit)`. Cargo
+  # compares the value of a `rerun-if-env-changed` variable, so a changed value is
+  # always noticed.
+  DEX_BUILD_ID: ${{ github.sha }}
+
+jobs:
+  # Which parts of the tree changed, computed here so that every job and `gate` can
+  # read the answer. A few lines of `git diff` against the base keep a third-party
+  # action out of a workflow that packages software for devices.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      crate: ${{ steps.detect.outputs.crate }}
+      docs: ${{ steps.detect.outputs.docs }}
+      reason: ${{ steps.detect.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # need history to diff against a base
+      - id: detect
+        run: |
+          set -eu
+          # A tag build or a manual dispatch runs everything: a release is built from the
+          # whole tree, and a person pressing the button means run it.
+          case "${{ github.event_name }}" in
+            workflow_dispatch) echo "crate=true" >> "$GITHUB_OUTPUT"; echo "docs=true" >> "$GITHUB_OUTPUT"
+                               echo "reason=manual dispatch" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          case "${{ github.ref }}" in
+            refs/tags/*) echo "crate=true" >> "$GITHUB_OUTPUT"; echo "docs=true" >> "$GITHUB_OUTPUT"
+                         echo "reason=tag build" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # A new branch, a force-push or a first commit gives an unusable base (all zeros,
+          # or an object this checkout does not have). Run everything in that case, so an
+          # unknown diff cannot skip a real change.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "crate=true" >> "$GITHUB_OUTPUT"; echo "docs=true" >> "$GITHUB_OUTPUT"
+            echo "reason=no usable diff base, running everything" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          crate=false; docs=false; reason=""
+          if echo "$changed" | grep -qE '^(packages/dexd/|\.github/workflows/dexd\.yml$)'; then
+            crate=true; reason="crate or this workflow changed"
+          fi
+          # The documentation check covers the public docs, the writing rules, the glossary
+          # and the lint tool.
+          if echo "$changed" | grep -qE '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$|scripts/docs-lint|packages/dexd/|\.github/workflows/dexd\.yml$)'; then
+            docs=true; reason="${reason:+$reason; }docs, rules or the docs lint changed"
+          fi
+          echo "crate=$crate" >> "$GITHUB_OUTPUT"
+          echo "docs=$docs" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason:-nothing relevant changed}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.crate == 'true'
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -eux
+          apt-get update
+          # libmpv-dev is what the crate links; dpkg-dev provides dpkg-shlibdeps, which
+          # turns those links into Depends. rustc and cargo come from Debian, not rustup.
+          # ffmpeg supplies ffmpeg and ffprobe for tests/sidecar_write.rs, which encodes
+          # real HEVC streams to run `dex-sidecar write` against and skips itself when
+          # they are missing.
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config ca-certificates git \
+            rustc cargo rust-clippy libmpv-dev dpkg-dev lintian ffmpeg
+          # Record the versions built and linked against. When a .deb refuses to install on
+          # a device, compare these lines with that device's own `dpkg -s libmpv2` and
+          # `rustc --version`.
+          dpkg -s libmpv2 | grep -E '^(Package|Version):'
+          rustc --version
+          cargo --version
+          # Fails the step when ffprobe is missing, so the sidecar-writer tests cannot skip
+          # and still report a pass.
+          ffprobe -version | head -n1
+
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ env.CRATE_DIR }}/target
+          key: dexd-deb-${{ hashFiles('packages/dexd/Cargo.lock') }}
+          restore-keys: dexd-deb-
+
+      # Pinned to the 2.x line: cargo-deb 3.7 uses let-chains and needs rustc >= 1.88,
+      # which trixie's rustc (printed in the log above) does not meet. Raise the pin
+      # only when that rustc satisfies the newer cargo-deb, or when the build stops
+      # using Debian's rustc.
+      #
+      # The guard tests the file: cargo installs to ~/.cargo/bin, which is not on
+      # $PATH here (cargo comes from apt, and no rustup adds it), so on a cache hit
+      # `command -v cargo-deb` reports it missing while `cargo install` exits 101 with
+      # the binary already in place. `cargo deb` itself works either way — cargo
+      # searches $CARGO_HOME/bin for subcommands.
+      - name: Install cargo-deb
+        run: test -x "$HOME/.cargo/bin/cargo-deb" || cargo install --locked cargo-deb --version "^2"
+
+      # The full suite runs here because this container has libmpv; a checkout on macOS
+      # cannot link the binary and can only run `cargo test --lib`.
+      - name: Clippy
+        working-directory: ${{ env.CRATE_DIR }}
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: ${{ env.CRATE_DIR }}
+        run: cargo test --release
+
+      # Runs the forced-recovery test against a real mpv core. It carries #[ignore] in
+      # tests/cli.rs so a plain `cargo test` never picks it up; this step is where it runs.
+      #
+      # The grep is the assertion: libtest exits 0 when a filter matches nothing, so a
+      # renamed or deleted test would leave this step passing having run nothing.
+      # Requiring "1 passed" turns that into a failure.
+      #
+      # It does not exercise hwdec=drm or the DRM plane swap (no GPU here); see
+      # docs/design/failure-handling.md and the test's doc comment.
+      - name: Forced recovery against a real mpv
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          out=$(cargo test --release --test cli -- --ignored --exact \
+                force_recovery_survives_against_real_mpv 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          echo "$out" | grep -q '1 passed' \
+            || { echo "::error::the forced-recovery check did not run — did the test filter match nothing?"; exit 1; }
+
+      # Every build must produce a distinct, ordered version, or apt reports the
+      # package as already installed and does nothing while `dpkg -l` shows the
+      # expected version and the device keeps running the older binary.
+      #
+      # Scheme: <run-number>+g<short-sha>. The run number leads because dpkg compares
+      # digit runs numerically, so ordering follows time. A commit-only revision does
+      # not order: `dpkg --compare-versions` sorts 0.1.0-1+gzz999999 above
+      # 0.1.0-1+g000aaaaa, so an older build can outrank a newer one and apt refuses
+      # the upgrade as a downgrade.
+      - name: Build package
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          short=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)
+          cargo deb --deb-revision "${GITHUB_RUN_NUMBER}+g${short}"
+
+      # Print the derived Depends into the log and assert that libmpv is in it. If
+      # dpkg-shlibdeps stops resolving libmpv, the package still builds and still
+      # installs, onto a device that has no libmpv, and fails at runtime.
+      - name: Verify derived dependencies
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          deb=$(find target/debian -name '*.deb' -print -quit)
+          test -n "$deb"
+          dpkg-deb --field "$deb" Package Version Architecture Depends Conflicts Replaces
+          dpkg-deb --contents "$deb"
+          # dexd and dex-loop ship four of the same files, so an install onto a card
+          # running dex-loop stops part-way unless the relationship is declared.
+          # cargo-deb drops a manifest key it does not support without an error, so
+          # read the fields back out of the built package.
+          for field in Conflicts Replaces; do
+            dpkg-deb --field "$deb" "$field" | grep -q 'dex-loop' \
+              || { echo "::error::$field does not name dex-loop — dpkg would stop on the files the two packages share"; exit 1; }
+          done
+          dpkg-deb --field "$deb" Depends | grep -q libmpv \
+            || { echo "::error::Depends does not mention libmpv — dpkg-shlibdeps did not resolve it"; exit 1; }
+          # The behaviour floor, which dpkg-shlibdeps cannot derive: from the linked
+          # symbols alone the answer is `libmpv2 (>= 0.19.0)`, the oldest version exporting
+          # them, while dexd needs libmpv 0.40 behaviour (drmprime-overlay, and `END_FILE`
+          # (reason=stop) on a loadfile replace). Asserted here because deleting the
+          # explicit constraint from Cargo.toml still produces a package that builds and
+          # installs.
+          dpkg-deb --field "$deb" Depends | grep -qE 'libmpv2 \(>= 0\.(4[0-9]|[5-9][0-9])' \
+            || { echo "::error::Depends lost its explicit libmpv2 >= 0.40 floor"; exit 1; }
+          # The binary must be able to say which build it is. `(nogit)` means build.rs
+          # found neither the build-id file nor a usable git, and the installed package
+          # cannot be traced back to a commit.
+          # `dpkg-deb -x` instead of piping --fsys-tarfile into tar: the tarfile's members
+          # carry no './' prefix, so `tar -xO ./usr/bin/dexd` finds nothing and exits 2.
+          extract=$(mktemp -d)
+          dpkg-deb -x "$deb" "$extract"
+          test -x "$extract/usr/bin/dexd"
+          # `--version` writes to stderr, so 2>&1 is required: without it $ver is empty,
+          # the `case` below matches nothing, and the check reports success having observed
+          # nothing.
+          ver=$("$extract/usr/bin/dexd" --version 2>&1 | head -1)
+          echo "packaged binary reports: $ver"
+          case "$ver" in
+            *nogit*) echo "::error::packaged binary reports (nogit) — build identity not recorded"; exit 1 ;;
+          esac
+          # A positive assertion, because "does not contain nogit" is also true of the
+          # empty string: the build identity must be 12 hex characters and must match the
+          # commit being built.
+          # `cut`, because run steps in a `container:` job execute under /bin/sh (dash on
+          # trixie), where bash substring expansion is a "Bad substitution" error.
+          short=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)
+          echo "$ver" | grep -qE "\($short(\+dirty)?\)" \
+            || { echo "::error::version '$ver' does not carry this commit ($short)"; exit 1; }
+
+          # The package version must differ per build, beyond the binary's internal string:
+          # apt decides whether to install by version alone.
+          pkgver=$(dpkg-deb --field "$deb" Version)
+          echo "package version: $pkgver"
+          case "$pkgver" in
+            *"$GITHUB_RUN_NUMBER+g$short"*) : ;;
+            *) echo "::error::package version '$pkgver' lacks the run number/commit — apt will refuse to reinstall it"; exit 1 ;;
+          esac
+
+      # Policy check on the built package. `--fail-on error,warning` makes a finding
+      # fail the run. Accepted tags live in deploy/lintian-overrides with their
+      # reasons, so silencing one is a reviewable diff. See docs/design/packaging.md.
+      - name: Lintian
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          deb=$(find target/debian -name '*.deb' -print -quit)
+          lintian --tag-display-limit 0 --fail-on error,warning "$deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dexd-deb
+          path: ${{ env.CRATE_DIR }}/target/debian/*.deb
+          if-no-files-found: error
+
+  # Static checks on the files that ship without being compiled: the systemd unit
+  # and the shell scripts. A separate job, so it reports independently of the
+  # package build and still runs when the build breaks.
+  lint:
+    needs: changes
+    if: needs.changes.outputs.crate == 'true'
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+    steps:
+      - name: Install linters
+        run: |
+          set -eux
+          apt-get update
+          # devscripts provides checkbashisms; systemd provides systemd-analyze.
+          apt-get install -y --no-install-recommends \
+            shellcheck devscripts systemd git ca-certificates reuse
+
+      - uses: actions/checkout@v4
+
+      # systemd ignores a directive it does not recognise in a given section. On a typo
+      # or a key in the wrong section, systemd does not report it: the unit starts and
+      # does less than it says. This step reports it.
+      #
+      # The two "Command ... is not executable" notices are expected: those binaries
+      # live in the package, which is not installed in this container.
+      - name: systemd-analyze verify
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          out=$(systemd-analyze verify deploy/dexd.service 2>&1 || true)
+          echo "$out"
+          # Fail on anything other than the expected not-executable notices.
+          if echo "$out" | grep -vE 'is not executable|^$' | grep -q .; then
+            echo "::error::systemd-analyze reported problems with dexd.service"
+            echo "$out" | grep -vE 'is not executable|^$'
+            exit 1
+          fi
+
+      # Maintainer scripts run as root on every device, under /bin/sh (dash on Debian).
+      # A bashism there fails the install on the device.
+      - name: Shell checks
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          set -eux
+          shellcheck deploy/dex-wait-hdmi deploy/maintainer-scripts/*
+          checkbashisms deploy/maintainer-scripts/*
+
+      # REUSE (reuse.software): every file carries copyright and licence information
+      # machine-readably, which is what a distribution packager needs to package dex.
+      #
+      # Scoped to the crate with --root. Repo-wide compliance waits on the
+      # GPL-inherited packages (pi-gen, dex-os), whose licensing is unsettled. See
+      # docs/design/packaging.md.
+      - name: REUSE lint
+        working-directory: ${{ env.CRATE_DIR }}
+        run: reuse --root . lint
+
+  # The dependency policy as a check: advisories, a trimmed licence allow-list and
+  # a ban on the procedural-macro toolchain. deny.toml holds the rules; see
+  # docs/design/packaging.md.
+  #
+  # Runs on the bare runner with rustup, outside the trixie container, because the
+  # Debian-compiler rule binds what builds the shipped artifact. cargo-deny
+  # produces nothing that ships and needs a newer rustc than trixie has; cargo-deb
+  # builds the package, which is why that one is pinned instead.
+  deny:
+    needs: changes
+    if: needs.changes.outputs.crate == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-deny
+        run: |
+          set -eux
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: cargo deny check
+        working-directory: ${{ env.CRATE_DIR }}
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo install --locked cargo-deny
+          cargo deny check
+
+  # Install, remove and purge against a real dpkg: maintainer scripts that fail,
+  # files that outlive a purge, a service user never created. No static linter
+  # reaches this class of bug.
+  #
+  # piuparts is not packaged for arm64 on this runner; the container is the throwaway
+  # environment the cycle needs, so it runs directly. See docs/design/ci.md.
+  lifecycle:
+    if: needs.changes.outputs.crate == 'true'
+    runs-on: ubuntu-24.04-arm
+    container: debian:trixie
+    needs: [changes, build]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dexd-deb
+
+      - name: Install / remove / purge
+        run: |
+          set -eux
+          apt-get update
+          deb=$(find . -name '*.deb' -print -quit); test -n "$deb"
+
+          # Snapshot the filesystem so a purge can be checked for leftovers.
+          snap() { find / -xdev \( -path /proc -o -path /sys -o -path /run -o -path /tmp \
+                     -o -path /var/log -o -path /var/lib/apt -o -path /var/cache \
+                     -o -path /var/lib/dpkg -o -path /github \) -prune -o -print 2>/dev/null | sort; }
+
+          # `apt install ./dexd.deb` pulls in libmpv2 with everything apt Recommends
+          # alongside it (aria2, yt-dlp), plus systemd and dbus for the unit; README.md
+          # documents this same command for a real install. systemd, dbus and policykit are
+          # Debian-protected: they never autoremove. Their own postinst scripts create
+          # state (a machine-id, the systemd catalog, enablement markers) that no dpkg file
+          # list mentions, so a path check cannot tell it apart from a file dexd's postrm
+          # did not remove.
+          #
+          # A device already carries those packages in its base image. This first
+          # install/remove/purge/autoremove cycle runs unobserved to reach the same state,
+          # so the "before" snapshot starts where a device does and the leftovers diff at
+          # the end compares like with like.
+          apt-get install -y "./${deb#./}"
+          apt-get remove -y dexd
+          apt-get purge -y dexd
+          apt-get autoremove --purge -y
+
+          # Snapshots go to /tmp: snap() walks the whole filesystem, so a snapshot written
+          # to / would show up in the next snapshot as a new file. /tmp is already in
+          # snap()'s prune list, for the same reason.
+          snap > /tmp/before.txt
+
+          # --- the real, asserted run ---
+          apt-get install -y "./${deb#./}"
+
+          # --- postinst did what it promises ---
+          test -x /usr/bin/dexd
+          test -x /usr/bin/dex-wait-hdmi
+          getent passwd dex                       # the service user exists
+
+          # postinst joins dex only to groups that already exist (its own
+          # `getent group "$g"` guard). A device has both video and render; this minimal
+          # debian:trixie container has no udev, so render is absent here and membership in
+          # it cannot be asserted.
+          #
+          # video is a static base-passwd group present in every Debian environment, so its
+          # existence, and dex's membership in it, are asserted unconditionally below. That
+          # keeps one real assertion in force if a future container also lacks render.
+          getent group video >/dev/null \
+            || { echo "::error::video group unexpectedly absent from this container -- the membership check below would be vacuous"; exit 1; }
+          for g in video render; do
+            if getent group "$g" >/dev/null; then
+              id -nG dex | grep -qw "$g" \
+                || { echo "::error::postinst did not add dex to the existing '$g' group"; exit 1; }
+            else
+              echo "group '$g' does not exist in this container (expected: no udev here) -- skipping membership check"
+            fi
+          done
+
+          test -d /opt/dex                        # asset directory created
+          test -f /lib/systemd/system/dexd.service
+          test -f /usr/share/man/man1/dexd.1.gz
+          # The package ships no video asset: the video is content, not part of the software.
+          test ! -e /opt/dex/loop.265
+          # It ships no exhibit config either, and no /etc/dex. The exhibit config lives
+          # beside the video in /opt/dex, where a technician writes it.
+          test ! -e /etc/dex
+          test ! -e /opt/dex/exhibit.yaml
+          test ! -e /opt/dex/exhibit.json
+
+          apt-get remove -y dexd
+          test ! -e /usr/bin/dexd             # binary gone
+          getent passwd dex                       # the service user is kept on purpose
+          test -d /opt/dex                        # the asset directory is kept on purpose
+
+          apt-get purge -y dexd
+          test ! -e /lib/systemd/system/dexd.service
+          getent passwd dex                       # still retained after purge
+          test -d /opt/dex
+          test ! -e /etc/dex                      # never created, so nothing to purge
+
+          apt-get autoremove --purge -y
+
+          # --- leftovers ---
+          # Two leftovers are intended, both from postrm: /opt/dex holds the video, its
+          # sidecar and the exhibit config, which the package never shipped, and the `dex`
+          # user may be named by anything the technician wrote. A third leftover is a bug,
+          # so this step diffs the two snapshots rather than checking only the exit code.
+          # The "before" snapshot follows the unobserved cycle above, so apt's own state
+          # cancels out.
+          #
+          # Temp files, because run steps in a `container:` job execute under /bin/sh (dash
+          # on trixie), which has no process substitution for `diff <(...) <(...)`.
+          snap > /tmp/after.txt
+          grep -v '^/opt/dex' /tmp/before.txt > /tmp/before.filtered.txt
+          grep -v '^/opt/dex' /tmp/after.txt > /tmp/after.filtered.txt
+          if ! diff /tmp/before.filtered.txt /tmp/after.filtered.txt > /tmp/leftovers.diff; then
+            echo "::error::purge left files behind beyond the two intended:"
+            cat /tmp/leftovers.diff
+            exit 1
+          fi
+          echo "lifecycle OK — install, remove and purge all behave as designed"
+
+  # The writing check: every file an outsider reads must pass
+  # scripts/docs-lint.mjs (plan codes, private references, coinages, caps emphasis,
+  # first person, dates as structure — see AGENTS.md). The crate's comments,
+  # messages and man pages are in scope, so a new comment is checked like a new
+  # page. An exception needs an entry with a reason in docs/lint-allow.txt.
+  docs-lint:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Lint tool self-test
+        run: node --test scripts/docs-lint.test.mjs
+      - name: Lint the public docs and the rules
+        run: node scripts/docs-lint.mjs --coinages docs/lint-coinages.tsv docs AGENTS.md README.md packages/dexd .github/workflows/dexd.yml
+
+  # The one check to mark required in branch protection. It runs with
+  # `if: always()`, so it always reports: a check that can be skipped can never be
+  # required. It decides in shell, which lets it tell a legitimate skip (nothing
+  # relevant changed) from a failure and from a cancellation. Anything further to
+  # assert about a run belongs here.
+  gate:
+    name: required
+    if: always()
+    needs: [changes, build, lint, deny, lifecycle, docs-lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide
+        run: |
+          set -eu
+          printf '%s' '${{ toJSON(needs) }}' > /tmp/needs.json
+          echo "relevant: crate=${{ needs.changes.outputs.crate }} docs=${{ needs.changes.outputs.docs }} (${{ needs.changes.outputs.reason }})"
+          jq -r 'to_entries[] | "  \(.key): \(.value.result)"' /tmp/needs.json
+
+          # failure or cancelled is a hard no. `skipped` is acceptable only when `changes`
+          # said nothing relevant changed; a job skipped because a dependency failed must
+          # not pass here.
+          if jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' /tmp/needs.json >/dev/null; then
+            echo "::error::a required job failed or was cancelled"; exit 1
+          fi
+          # Each job answers to one flag: docs-lint to `docs`, the rest to `crate`. A skip
+          # is legitimate only when its flag is false.
+          if jq -e --arg crate "${{ needs.changes.outputs.crate }}" --arg docs "${{ needs.changes.outputs.docs }}" \
+               'any(to_entries[]; .key != "changes" and .value.result == "skipped"
+                    and ((.key == "docs-lint" and $docs == "true") or (.key != "docs-lint" and $crate == "true")))' \
+               /tmp/needs.json >/dev/null; then
+            echo "::error::a job was skipped although its inputs changed -- that is a dependency failure, not a legitimate skip"
+            exit 1
+          fi
+          echo "gate: PASS"

@@ -1,0 +1,51 @@
+# cargo-deny makes the dependency policy checkable: the check fails the build on
+# a licence, ban, source or advisory violation.
+# Rationale: docs/design/packaging.md, "Dependency policy".
+#
+# Run: cargo deny check
+
+[advisories]
+# Yanked crates fail the check. Add an ignore entry only with the advisory id
+# and a reason.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# An allow-list trimmed to what the dependency graph contains: a dependency
+# arriving under an unlisted licence fails and needs a one-line edit with a
+# reason. Unused entries warn on every run, so do not add licences in advance.
+allow = [
+    "Apache-2.0", # 14 crates
+    "MIT",        # 16 crates
+    "MIT-0",      # dexd itself
+    # foldhash arrives through yaml-rust2, hashlink and hashbrown. Zlib is
+    # permissive, with no copyleft and no attribution obligation.
+    "Zlib", # 1 crate (foldhash)
+]
+confidence-threshold = 0.9
+
+[bans]
+# Two versions of one crate are the first sign of a dependency set outgrowing
+# what a reader can audit.
+multiple-versions = "warn"
+wildcards = "deny"
+
+# serde is used without its `derive` feature, which keeps the syn/quote/
+# proc-macro2 toolchain out of every package build; these bans make turning the
+# feature back on fail the check. If a dependency needs procedural macros,
+# delete these entries and give the reason in the commit.
+[[bans.deny]]
+name = "syn"
+[[bans.deny]]
+name = "quote"
+[[bans.deny]]
+name = "proc-macro2"
+[[bans.deny]]
+name = "serde_derive"
+
+[sources]
+# crates.io only: a git dependency has no version and no audit trail, which does
+# not suit software expected to run untouched for the length of an exhibition.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

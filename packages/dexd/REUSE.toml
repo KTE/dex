@@ -1,0 +1,18 @@
+# REUSE (reuse.software): machine-readable licensing for the crate, so a distro
+# packager can check the licence per file instead of reading prose. `reuse lint`
+# runs in CI.
+#
+# One declaration for the whole crate, because it is one author under one
+# licence. Give the files their own SPDX headers if this ever mixes licences or
+# takes third-party code. See docs/design/packaging.md.
+version = 1
+
+SPDX-PackageName = "dexd"
+SPDX-PackageSupplier = "Max Albrecht <1@178.is>"
+SPDX-PackageDownloadLocation = "https://github.com/KTE/dex"
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Max Albrecht"
+SPDX-License-Identifier = "MIT-0"

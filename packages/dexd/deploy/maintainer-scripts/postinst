@@ -1,0 +1,66 @@
+#!/bin/sh
+# Create what dexd.service requires and cannot create itself: the unprivileged
+# `dex` user it runs as, and the asset directory it reads. Runs only on the
+# package's configure action. See docs/design/service-unit.md.
+set -e
+
+case "$1" in
+configure)
+  # A system user with no login, no home and no password. It needs `video` and
+  # `render` only to open /dev/dri; the unit's sandboxing denies the rest.
+  if ! getent passwd dex >/dev/null; then
+    adduser --system --group --home /nonexistent --no-create-home \
+      --shell /usr/sbin/nologin dex
+  fi
+  # Add `dex` to the groups the system has; a group it lacks is skipped. Adding
+  # a user to a group it is already in is a no-op, so re-running the script
+  # repairs an install whose groups were dropped.
+  for g in video render; do
+    if getent group "$g" >/dev/null; then
+      adduser dex "$g" >/dev/null || true
+    fi
+  done
+
+  # The asset directory, root-owned and world-readable: the unit mounts it
+  # read-only and the player only reads. The package ships no video and no
+  # sidecar, because both change per installation.
+  mkdir -p /opt/dex
+  chmod 0755 /opt/dex
+
+  # A player needs three files in /opt/dex: the video, its sidecar and the
+  # exhibit config. The package ships none, so the install message names them.
+  if [ ! -e /opt/dex/exhibit.yaml ] && [ ! -e /opt/dex/exhibit.json ]; then
+    echo "dexd: installed. To play, put three files in /opt/dex and start the unit:" >&2
+    echo "    the video (for example artwork.265), its sidecar (artwork.265.json)," >&2
+    echo "    and exhibit.yaml naming the video and the display mode:" >&2
+    echo "        asset: artwork.265" >&2
+    echo "        display_mode: auto" >&2
+    echo "    sudo systemctl start dexd" >&2
+    echo "  dexd refuses to start without the sidecar or the config, rather than guess." >&2
+  fi
+
+  # dexd does not read /etc/dex. Report a config found there at install time,
+  # while someone is at the console to act on it.
+  if [ -e /etc/dex/exhibit.yaml ] || [ -e /etc/dex/exhibit.json ]; then
+    echo "dexd: NOTE: a config exists under /etc/dex, which dexd no longer reads." >&2
+    echo "  Move it next to the video: sudo mv /etc/dex/exhibit.* /opt/dex/ && sudo rmdir /etc/dex" >&2
+  fi
+
+  # A drop-in that still passes --mode. Report it without failing the install:
+  # the package must not delete a file an administrator created. A drop-in whose
+  # value disagrees with the exhibit config already makes dexd refuse to start
+  # and name both values; this message covers the leftover that would start.
+  dropin_dir=/etc/systemd/system/dexd.service.d
+  if [ -d "$dropin_dir" ] && grep -q -- '--mode' "$dropin_dir"/*.conf 2>/dev/null; then
+    echo "dexd: NOTE: $dropin_dir still overrides --mode -- that setting" >&2
+    echo "  moved to /opt/dex/exhibit.yaml's display_mode. If the" >&2
+    echo "  drop-in's value disagrees with the exhibit config, the unit will" >&2
+    echo "  refuse to start (naming both). Remove the drop-in:" >&2
+    echo "    sudo rm $dropin_dir/*.conf && sudo systemctl daemon-reload" >&2
+  fi
+  ;;
+esac
+
+#DEBHELPER#
+
+exit 0

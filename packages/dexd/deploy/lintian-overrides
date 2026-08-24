@@ -1,0 +1,21 @@
+# Why each tag below does not apply. Detail: docs/design/packaging.md, "Lintian".
+
+# cargo-deb 2.12 writes the unit to lib/systemd/system; on the merged-usr layout
+# trixie uses, that is usr/lib/systemd/system, the same directory through a
+# symlink, and systemd resolves the unit there. Delete this override once the
+# cargo-deb pin moves to a release that writes the usr path.
+dexd: aliased-location
+
+# The tag asks the changelog to close an intent-to-package bug, a rule for
+# packages uploaded into the Debian archive. The dexd package is built in CI and
+# installed on the project's own devices.
+dexd: initial-upload-closes-no-bugs
+
+# Lintian matches the string `did not find expected <stream-start>`, one of
+# libyaml's error messages, which yaml-rust2 reproduces because it is a Rust port
+# of libyaml's scanner and parser. The arm64 binary links no libyaml: `ldd` lists
+# none, `strings` finds no libyaml C symbol, and no crate in that subtree has a
+# build.rs, a `links` key or a `-sys` name. Re-check the override if the YAML
+# dependency is ever swapped for one with a C backend.
+dexd: embedded-library libyaml [usr/bin/dexd]
+dexd: embedded-library libyaml [usr/bin/dex-exhibit-apply]

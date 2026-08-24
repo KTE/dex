@@ -1,0 +1,238 @@
+.TH DEX\-SIDECAR 1 "August 19, 2026" "dexd 0.1.0" "dexd manual"
+.SH NAME
+dex\-sidecar \- write and check the sidecar that binds a frame rate
+to a video
+.SH SYNOPSIS
+.B dex\-sidecar write
+.I stream.265
+.RB [ \-\-fps
+.IR F ]
+.RB [ \-\-out
+.IR file ]
+.RB [ \-\-force ]
+.br
+.B dex\-sidecar check
+.I sidecar.json stream.265
+.SH DESCRIPTION
+A raw HEVC stream contains compressed pictures and nothing else, so it carries
+no frame rate. dex\-sidecar stores the rate beside the video in a sidecar: a
+small JSON file with the frame rate and a checksum of the video's bytes. dexd
+refuses to start when that file is missing, unreadable, or bound to different
+bytes, so write a sidecar for every video before you copy it to a dex card.
+.PP
+.B dex\-sidecar write
+creates the sidecar for a video.
+.B dex\-sidecar check
+parses an existing sidecar and confirms that its checksum still matches the
+video on disk; run it after copying a video and its sidecar to the card.
+.PP
+Both commands use dexd's own code to read the sidecar and compute the checksum,
+so the sidecar format has one implementation: a sidecar dex\-sidecar accepts is
+one dexd can read. dexd also checks the video itself and its config at startup
+\(em see
+.BR dexd (1).
+.B write
+builds the file, reads it back with that code and re\-checks the checksum
+before the file takes its final name, so a failure at that point writes
+nothing.
+.SH OPTIONS
+The options belong to
+.BR write .
+.B check
+takes no options: it names the sidecar and the video as its two arguments.
+.TP
+.BI \-\-fps " F"
+The frame rate to bind, written as
+.BR 30 ,
+.B 29.97
+or
+.BR 30000/1001 .
+Without it, dex\-sidecar reads the rate from the video with ffprobe. See
+.B FRAME RATE
+below.
+.TP
+.BI \-\-out " file"
+Where to write the sidecar. The default is the video's path with
+.B .json
+appended. See
+.B FILES
+below.
+.TP
+.B \-\-force
+Proceed past the two refusals
+.B write
+makes: replacing an existing sidecar, and a frame\-rate disagreement (see
+.BR "FRAME RATE" ).
+.SH FRAME RATE
+dex\-sidecar accepts a frame rate between 1 and 1000 frames per second. Without
+.BR \-\-fps ,
+it runs ffprobe and takes the rate the video's own headers carry. It discards a
+value outside that range, or one that is not a frame rate at all: with no
+timing in the video, ffprobe answers with a number it uses internally for
+timing. dex\-sidecar then refuses and asks for
+.BR \-\-fps .
+.PP
+Timing in the headers is written by the encoder, and many encoders write none.
+When there is no rate to read, or ffprobe is not installed,
+.B \-\-fps
+is required.
+.PP
+Given both a
+.B \-\-fps
+and a rate from the video, the two must agree within 0.02 frames per second.
+Two spellings of one rate agree, so
+.B 30000/1001
+and
+.B 29.97
+pass; 3 against 30 does not. dex\-sidecar refuses a disagreement unless you pass
+.BR \-\-force ;
+with
+.B \-\-force
+it writes the
+.B \-\-fps
+value and warns, naming the rate ffprobe read. At the wrong rate the video
+plays too fast or too slow for as long as it runs, and nothing reports an
+error.
+.SH OUTPUT
+.B write
+prints the sidecar it wrote on standard output, and the path it wrote to on
+standard error:
+.PP
+.RS 4
+.nf
+{"fps":"30","sha256":"<64 hex digits>","width":3840,"height":2160}
+.fi
+.RE
+.PP
+Width and height come from ffprobe. dexd does not need them to play the video;
+when
+.B display_mode
+is
+.B auto
+it compares them with the modes the connector offers and warns in the system
+log if the display cannot show that size. When ffprobe does not report the
+size, dex\-sidecar leaves both out and says so on standard error.
+.PP
+.B check
+prints one line on standard output:
+.PP
+.RS 4
+.nf
+OK fps=30 sha256=<64 hex digits> width=3840 height=2160
+.fi
+.RE
+.PP
+Width and height print as
+.B \-
+when the sidecar does not carry them.
+.SH FILES
+.TP
+.I stream.265
+The raw HEVC stream. The checksum covers its bytes as they are on disk,
+unmodified, which are the bytes the player reads at startup.
+.TP
+.I stream.265.json
+The sidecar. dexd looks for this name next to the video and has no option to
+change it, so if you wrote it elsewhere with
+.BR \-\-out ,
+copy it next to the video under this name before you put the card in the
+player.
+.B write
+creates the file under a temporary name in the same directory and renames it
+into place, so an interrupted run leaves no half\-written sidecar.
+.TP
+.I /opt/dex
+The assets directory on the player. The video, its sidecar and the exhibit
+config sit here together.
+.SH EXIT STATUS
+.TP
+.B 0
+dex\-sidecar wrote the sidecar, or the sidecar and the video match.
+.TP
+.B 1
+dex\-sidecar could not read the video or the sidecar, could not write the
+sidecar, or verification failed.
+.TP
+.B 2
+The command line was malformed, or dex\-sidecar refused the frame rate or an
+existing sidecar.
+.SH DIAGNOSTICS
+Every message goes to standard error, prefixed
+.BR error: ,
+.B warning:
+or
+.BR note: .
+The refusals, and what each one asks for (exit 2):
+.TP
+.B <file> already exists; pass \-\-force to replace it
+The sidecar is already there. Pass
+.B \-\-force
+to replace it, or
+.B \-\-out
+to write elsewhere.
+.TP
+.B \-\-fps <F> is not a frame rate dexd can read
+Write the rate as a positive whole number, a positive decimal, or a positive
+fraction.
+.TP
+.B \-\-fps <F> disagrees with <D>, the rate ffprobe read
+Drop
+.B \-\-fps
+to use the rate from the video, or pass
+.B \-\-force
+if the given rate is right and ffprobe is wrong.
+.TP
+.B no frame rate for <file>, and none could be read from the stream
+The video carries no timing, or ffprobe is missing or could not read the file.
+Pass
+.BR \-\-fps .
+.PP
+The failures (exit 1):
+.TP
+.B not a file: <path> \fRor\fB <path> is empty
+You gave
+.B write
+a directory, a device, or an empty file.
+.TP
+.B asset does not match its sidecar: sha256 <A> != sidecar <B>
+The video or the sidecar is stale, wrong, or truncated. Copy the video again
+and run
+.BR "dex\-sidecar check" ,
+or prepare the video again with
+.BR "dex\-sidecar write" .
+.TP
+.B the sidecar just built was rejected by dexd's own parser
+The input is in order; this is a defect in dex\-sidecar. Nothing is
+written.
+.PP
+Anything dex\-sidecar cannot read or write is reported by name with the reason
+from the operating system.
+.SH ENVIRONMENT
+.TP
+.B PATH
+Searched for ffprobe, which dex\-sidecar runs to read the frame rate and the
+size of the video. With no ffprobe on PATH,
+.B \-\-fps
+is required and the sidecar carries no width or height.
+.SH NOTES
+Run dex\-sidecar on the workstation where you prepare the video, not on the
+player: it needs the video file and ffprobe.
+.PP
+Do not write a sidecar by hand. The checksum has to cover the bytes the player
+reads and the frame rate has to be one dexd reads back unchanged;
+.B write
+checks both against dexd's own code before it puts the file in place.
+.SH SEE ALSO
+.BR dexd (1),
+.BR dex\-exhibit\-apply (1),
+.BR dex\-wait\-hdmi (1)
+.PP
+In the repository:
+.I docs/guides/prepare\-video.md
+(prepare your video),
+.I docs/guides/run\-check\-troubleshoot.md
+(run, check, troubleshoot),
+.I docs/guides/reference.md
+(reference),
+.I docs/design/sidecar.md
+(the sidecar and the asset check).

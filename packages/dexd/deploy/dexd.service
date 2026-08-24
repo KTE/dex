@@ -1,0 +1,78 @@
+# dex gapless loop player. Installed and enabled by the dexd .deb, which also
+# creates the `dex` user and /opt/dex.
+#
+# One step remains on a new player, so no desktop session takes the display:
+#   sudo systemctl set-default multi-user.target
+#
+# Setting by setting: docs/design/service-unit.md.
+
+[Unit]
+Description=dex gapless loop player
+Documentation=https://github.com/KTE/dex
+# A getty on tty1 becomes DRM master and blocks the player from taking the
+# display.
+Conflicts=getty@tty1.service
+After=multi-user.target
+# The video, its sidecar and the exhibit config live in /opt/dex. This costs
+# nothing while that is a directory on the root filesystem, and is what lets a
+# card put the assets on their own partition without editing this unit: without
+# it, dexd would start before that partition mounted and refuse.
+RequiresMountsFor=/opt/dex
+
+# Turns off systemd's start rate limit (5 starts / 10 s), which would leave the
+# unit failed after a burst of crashes. Keep the key in [Unit]; systemd ignores
+# it in [Service]. Check with `systemd-analyze verify` after moving lines
+# between sections.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Type stays `simple`: dexd sends no READY=1, and a `notify` unit that never
+# sends it stays inactive. NotifyAccess=main gives the main process the notify
+# socket, which is what makes WatchdogSec= work under Type=simple.
+#
+# dexd pings WATCHDOG=1 once per health-check tick, about every 10 s. 180 s
+# covers dropped pings and the longest in-place recovery. Do not add a ping to
+# any exit path, here or in main.rs. See docs/design/failure-handling.md.
+WatchdogSec=180
+NotifyAccess=main
+# dex-wait-hdmi waits for a connected HDMI connector before the player starts;
+# a projector can take 30 s to 90 s to present EDID while the Pi boots in 15 s.
+# TimeoutStartSec must exceed the script's own wait (DEX_HDMI_TIMEOUT, default
+# 120 s), so raise this line whenever DEX_HDMI_TIMEOUT is raised.
+TimeoutStartSec=150
+ExecStartPre=/usr/bin/dex-wait-hdmi
+# No arguments: what the player plays and how it drives the display come from
+# /opt/dex/exhibit.yaml (or .json) and the sidecar next to the asset. An asset
+# path or `--mode` added here is a cross-check — dexd refuses to start on any
+# disagreement with the config. See docs/design/exhibit-config.md.
+ExecStart=/usr/bin/dexd
+
+Restart=always
+RestartSec=2
+# StartLimitIntervalSec belongs in [Unit] above; systemd ignores it here.
+
+User=dex
+SupplementaryGroups=video render
+
+# mpv needs a writable cache directory: it resolves a shader-cache path under
+# $XDG_CACHE_HOME during video-output init, and the `dex` user's home is
+# /nonexistent. CacheDirectory= makes systemd create /var/cache/dexd owned by
+# User=, writable under ProtectSystem=strict, and removed on purge.
+CacheDirectory=dexd
+Environment=XDG_CACHE_HOME=/var/cache/dexd
+
+# The player reads /opt/dex and writes only its cache directory.
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/dex
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+# There is no graceful shutdown; power is cut at the mains, so an abrupt exit
+# has to be safe. The kernel releases DRM master when the process exits.
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
