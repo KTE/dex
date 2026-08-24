@@ -444,6 +444,155 @@ test('glossary: a term in the glossary stops being an unknown acronym', () => {
 });
 
 // ---------------------------------------------------------------------------
+// links
+// ---------------------------------------------------------------------------
+
+/** A tree with one target doc, plus whatever the caller adds. @param {Record<string,string>} files */
+function linkTree(files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-lint-links-'));
+  fs.mkdirSync(path.join(dir, 'docs', 'design'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'docs', 'guides'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'docs', 'glossary.md'), '### HEVC\nThe codec.\n');
+  fs.writeFileSync(path.join(dir, 'docs', 'design', 'target.md'), [
+    '# Target',
+    '',
+    '## Mode behaviour by sink',
+    '',
+    'Text.',
+    '',
+    '### vout_drm',
+    '',
+    'An underscore survives the slug.',
+    '',
+    '## HEVC (High Efficiency Video Coding)',
+    '',
+    'Punctuation is dropped.',
+    '',
+    '## Repeated',
+    '',
+    'First.',
+    '',
+    '## Repeated',
+    '',
+    'The second one takes a -1 suffix.',
+    '',
+    '```',
+    '## Not a heading',
+    '```',
+    '',
+  ].join('\n'));
+  for (const [rel, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  }
+  return dir;
+}
+
+/** @param {string} dir @param {string[]} [paths] */
+function linkFindings(dir, paths = ['docs']) {
+  /** @type {string[]} */
+  const out = [];
+  run(['--format', 'json', '--rules', 'links', ...paths],
+    { log: (s) => out.push(s), err: () => {}, cwd: dir });
+  return JSON.parse(out.join('\n'));
+}
+
+test('links: a missing file and a missing anchor are errors, and both are named', () => {
+  const dir = linkTree({
+    'docs/guides/g.md': [
+      '# Guide',
+      '',
+      'See [gone](../design/absent.md).',
+      'See [stale](../design/target.md#two-sinks-two-mode-behaviours).',
+      '',
+    ].join('\n'),
+  });
+  const f = linkFindings(dir);
+  assert.deepEqual(f.map((x) => [x.line, x.token]), [
+    [3, '../design/absent.md'],
+    [4, '../design/target.md#two-sinks-two-mode-behaviours'],
+  ]);
+  assert.ok(f.every((x) => x.severity === 'E'));
+  assert.match(f[0].message, /does not exist/);
+  assert.match(f[1].message, /anchor/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('links: anchors that resolve — underscores, punctuation, a repeat suffix and a self-link', () => {
+  const dir = linkTree({
+    'docs/guides/g.md': [
+      '# Guide',
+      '## Own section',
+      '',
+      '[a](../design/target.md#mode-behaviour-by-sink)',
+      '[b](../design/target.md#vout_drm)',
+      '[c](../design/target.md#hevc-high-efficiency-video-coding)',
+      '[d](../design/target.md#repeated)',
+      '[e](../design/target.md#repeated-1)',
+      '[f](#own-section)',
+      '[g](../design/target.md)',
+      '',
+    ].join('\n'),
+  });
+  assert.deepEqual(linkFindings(dir), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('links: external URLs, fenced examples and code spans are not resolved', () => {
+  const dir = linkTree({
+    'docs/guides/g.md': [
+      '# Guide',
+      '',
+      '[home](https://example.invalid/x) and [mail](mailto:someone@example.invalid)',
+      'Write `[label](../design/absent.md)` to link a page.',
+      '',
+      '```markdown',
+      '[example](../design/absent.md)',
+      '```',
+      '',
+    ].join('\n'),
+  });
+  assert.deepEqual(linkFindings(dir), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('links: a bare docs/ reference in a doc comment resolves, and its sentence stop is not part of the anchor', () => {
+  const dir = linkTree({
+    'src/a.rs': [
+      '//! See docs/design/target.md#mode-behaviour-by-sink.',
+      '//! And docs/design/target.md#vout_drm, mid-sentence.',
+      'fn a() {}',
+      '',
+    ].join('\n'),
+  });
+  assert.deepEqual(linkFindings(dir, ['src', 'docs']), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('links: a dead bare reference in a doc comment is an error', () => {
+  const dir = linkTree({
+    'src/a.rs': '//! See docs/design/target.md#gone-section.\nfn a() {}\n',
+  });
+  const f = linkFindings(dir, ['src', 'docs']);
+  assert.deepEqual(f.map((x) => x.token), ['docs/design/target.md#gone-section']);
+  assert.equal(f[0].severity, 'E');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('links: a heading rewritten between runs is re-read, not served from the cache', () => {
+  const dir = linkTree({
+    'docs/guides/g.md': '# Guide\n\n[a](../design/target.md#renamed-later)\n',
+  });
+  assert.equal(linkFindings(dir).length, 1, 'the anchor is absent to begin with');
+  const t = path.join(dir, 'docs', 'design', 'target.md');
+  fs.writeFileSync(t, `${fs.readFileSync(t, 'utf8')}\n## Renamed later\n\nText.\n`);
+  const now = new Date();
+  fs.utimesSync(t, now, new Date(now.getTime() + 2000));
+  assert.deepEqual(linkFindings(dir), [], 'the rewritten file is read again');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
 // end to end
 // ---------------------------------------------------------------------------
 

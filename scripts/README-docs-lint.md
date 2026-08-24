@@ -33,6 +33,11 @@ alternative was ever on the table) are deliberately out of scope.
 - `comment-length` (W/E) — doc-comment blocks over 20 / 40 lines, or arguing a decision.
 - `structure` (E/W) — emoji in headings and bullets, session-verb headings. `©`, `®`, `™` and the
   arrows are typography, not status markers.
+- `links` (E) — a Markdown link, or a bare `docs/…md#section` reference in a comment, whose file or
+  whose `#anchor` does not exist. Anchors are matched by GitHub's slug, so a repeated heading is
+  reachable as `-1`, `-2`, and an underscore survives. `http(s):` and `mailto:` targets are not
+  fetched; a link inside a fence or a code span is an example and is not resolved; a full stop after
+  a bare reference ends the sentence and is not part of the anchor.
 
 ## What counts as prose
 

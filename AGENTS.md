@@ -27,6 +27,7 @@ Agents: read this file and `docs/glossary.md` before writing or editing any of t
 13. One qualifier per claim, and a label instead of adverbs. Use *measured / decided / documented / derived / assumed / not tested*, once. *(reader)*
 14. Structure by subject; status in words. Headings name what, never when; no emoji as status; no "(later)" splits. *(lint)*
 15. A rule, not an aphorism; a mechanism, not a metaphor. If a sentence could be printed on a poster, replace it with the instruction it stands for. *(reader)*
+16. Every cross-reference resolves. A link to a page, and the `#anchor` naming a section of it, must both exist — in Markdown links and in the `docs/…md#section` references doc-comments use. Rename a heading and the links into it are part of the rename. *(lint)*
 
 Numbers carry their unit and conditions ("29.1 fps at 3840×2160, 30 fps, Raspberry Pi 4"). Measured values say so briefly and link `docs/design/measurements.md` for the full conditions rather than repeating them.
 

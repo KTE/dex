@@ -75,6 +75,7 @@ import { fileURLToPath } from 'node:url';
  * @property {Coinage[]} coinages
  * @property {Set<string>} dict
  * @property {Set<string>|null} ruleFilter
+ * @property {string} root         the directory display paths are relative to
  */
 
 // ---------------------------------------------------------------------------
@@ -1361,7 +1362,123 @@ const RULES = [
       return out;
     },
   },
+
+  {
+    id: 'links',
+    describe: 'cross-references that no longer resolve',
+    run(f) {
+      const out = [];
+      const root = f.ctx.root;
+
+      /** @param {string} target @param {number} lineNo @param {number} col */
+      const check = (target, lineNo, col, fromDir) => {
+        const [rel, frag] = splitFragment(target);
+        const abs = rel ? path.resolve(fromDir, rel) : f.absPath;
+        if (!fs.existsSync(abs)) {
+          out.push(finding(f, lineNo, col, 'E', 'links',
+            'link target does not exist', target));
+          return;
+        }
+        if (!frag || path.extname(abs) !== '.md') return;
+        if (!headingSlugs(abs).has(frag)) {
+          out.push(finding(f, lineNo, col, 'E', 'links',
+            'no heading in the target makes this anchor', target));
+        }
+      };
+
+      if (f.ex.kind === 'md') {
+        // Raw lines, because `prose` blanks link targets by design; fences and
+        // code spans are re-excluded here so an example link is not resolved.
+        let inFence = false;
+        let marker = '';
+        f.ex.rawLines.forEach((raw, idx) => {
+          const fence = raw.match(/^\s*(```+|~~~+)/);
+          if (fence) {
+            if (!inFence) { inFence = true; marker = fence[1][0]; }
+            else if (fence[1][0] === marker) inFence = false;
+            return;
+          }
+          if (inFence) return;
+          const line = blankCodeSpans(raw);
+          for (const m of line.matchAll(/\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+            const target = m[1];
+            if (/^(https?:|mailto:|#|<)/.test(target) && !target.startsWith('#')) continue;
+            if (/^(https?:|mailto:)/.test(target)) continue;
+            check(target, idx + 1, (m.index || 0) + 1, path.dirname(f.absPath));
+          }
+        });
+        return out;
+      }
+
+      // Every other file kind: the bare `docs/...md#anchor` references that
+      // doc-comments use in place of Markdown links. Resolved from the repo
+      // root, which is where the paths in those comments are written from.
+      f.ex.prose.forEach((line, idx) => {
+        // The anchor stops before a sentence's full stop: `...md#config-location.`
+        // ends a sentence, and the period is punctuation, not part of the anchor.
+        for (const m of line.matchAll(/\bdocs\/[A-Za-z0-9._/-]+?\.md(?:#[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)?/g)) {
+          check(m[0], idx + 1, (m.index || 0) + 1, root);
+        }
+      });
+      return out;
+    },
+  },
 ];
+
+/**
+ * Split `path/to/doc.md#anchor` into its two halves. A target that is only a
+ * fragment names a heading in the file the link is written in.
+ * @param {string} target
+ * @returns {[string, string]}
+ */
+function splitFragment(target) {
+  const i = target.indexOf('#');
+  if (i < 0) return [target, ''];
+  return [target.slice(0, i), target.slice(i + 1)];
+}
+
+/**
+ * The anchors a Markdown file offers, by GitHub's slug: lowercased, link
+ * markup reduced to its text, everything but letters, digits, spaces,
+ * underscores and hyphens dropped, spaces to hyphens. A repeated heading takes
+ * a `-1`, `-2` suffix, so those are registered too. Headings inside a fence are
+ * code and make no anchor. Keyed on modification time so a rewritten file in a
+ * test is read again.
+ * @param {string} abs
+ * @returns {Set<string>}
+ */
+const slugCache = new Map();
+function headingSlugs(abs) {
+  const key = `${abs}\u0000${fs.statSync(abs).mtimeMs}`;
+  const hit = slugCache.get(key);
+  if (hit) return hit;
+  const slugs = new Set();
+  const seen = new Map();
+  let inFence = false;
+  let marker = '';
+  for (const raw of fs.readFileSync(abs, 'utf8').split('\n')) {
+    const fence = raw.match(/^\s*(```+|~~~+)/);
+    if (fence) {
+      if (!inFence) { inFence = true; marker = fence[1][0]; }
+      else if (fence[1][0] === marker) inFence = false;
+      continue;
+    }
+    if (inFence) continue;
+    const h = raw.match(/^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$/);
+    if (!h) continue;
+    const base = h[1]
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/[`*_~]/g, (c) => (c === '_' ? c : ''))
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N} _-]/gu, '')
+      .replace(/ /g, '-');
+    const n = seen.get(base) || 0;
+    seen.set(base, n + 1);
+    slugs.add(n === 0 ? base : `${base}-${n}`);
+  }
+  slugCache.set(key, slugs);
+  return slugs;
+}
 
 /** The measurement record: dates and verdict words are its content. @param {string} p */
 function isMeasurementRecord(p) {
@@ -1663,7 +1780,7 @@ function collectFiles(inputs, cwd, skip = new Set(), opts = {}) {
 function lintSource(displayPath, text, ctx) {
   const ex = extract(displayPath, text);
   /** @type {FileCtx} */
-  const f = { path: displayPath, absPath: displayPath, text, ex, ctx };
+  const f = { path: displayPath, absPath: path.resolve(ctx.root, displayPath), text, ex, ctx };
   /** @type {Finding[]} */
   let out = [];
   for (const rule of RULES) {
@@ -1681,6 +1798,7 @@ function makeCtx(over = {}) {
     coinages: over.coinages || defaultCoinages(),
     dict: over.dict || new Set(),
     ruleFilter: over.ruleFilter || null,
+    root: over.root || process.cwd(),
   };
 }
 
@@ -1824,6 +1942,7 @@ function run(argv, io = {}) {
     coinages,
     dict: loadSystemDictionary(),
     ruleFilter: opts.rules ? new Set(opts.rules) : null,
+    root: cwd,
   });
 
   const inputs = opts.paths.length ? opts.paths : DEFAULT_PATHS;
